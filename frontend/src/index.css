@@ -1,0 +1,152 @@
+@import url('https://api.fontshare.com/v2/css?f[]=cabinet-grotesk@400,500,700,800,900&f[]=satoshi@400,500,700,900&display=swap');
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+    --dh-bg: #F9F9F6;
+    --dh-surface: #FFFFFF;
+    --dh-border: #E5E5DF;
+    --dh-text: #1A1D1A;
+    --dh-muted: #5C635A;
+    --dh-accent: #D95D39;
+    --dh-accent-hover: #B34A2A;
+
+    --dh-success-bg: #E4F0D0;
+    --dh-success-fg: #3B591C;
+    --dh-warning-bg: #FBEED5;
+    --dh-warning-fg: #7D5A1B;
+    --dh-error-bg: #F3E8E8;
+    --dh-error-fg: #823030;
+    --dh-neutral-bg: #F0F0EA;
+    --dh-neutral-fg: #5C635A;
+}
+
+@layer base {
+    :root {
+        --background: 60 20% 97%;
+        --foreground: 120 5% 11%;
+        --card: 0 0% 100%;
+        --card-foreground: 120 5% 11%;
+        --popover: 0 0% 100%;
+        --popover-foreground: 120 5% 11%;
+        --primary: 120 5% 11%;
+        --primary-foreground: 0 0% 100%;
+        --secondary: 60 12% 95%;
+        --secondary-foreground: 120 5% 11%;
+        --muted: 60 12% 95%;
+        --muted-foreground: 100 4% 37%;
+        --accent: 15 66% 54%;
+        --accent-foreground: 0 0% 100%;
+        --destructive: 0 47% 35%;
+        --destructive-foreground: 0 0% 100%;
+        --border: 60 10% 89%;
+        --input: 60 10% 89%;
+        --ring: 15 66% 54%;
+        --radius: 2px;
+    }
+}
+
+@layer base {
+    * { @apply border-border; }
+    html, body, #root { height: 100%; }
+    body {
+        margin: 0;
+        font-family: 'Satoshi', 'Segoe UI', system-ui, -apple-system, sans-serif;
+        background: var(--dh-bg);
+        color: var(--dh-text);
+        -webkit-font-smoothing: antialiased;
+        -moz-osx-font-smoothing: grayscale;
+        font-feature-settings: "ss01" on, "cv11" on;
+    }
+    h1, h2, h3, h4 {
+        font-family: 'Cabinet Grotesk', 'Satoshi', sans-serif;
+        letter-spacing: -0.01em;
+    }
+    ::selection { background: var(--dh-accent); color: #fff; }
+}
+
+/* Dense grid look */
+.dh-grid { border: 1px solid var(--dh-border); background: var(--dh-surface); }
+.dh-grid-cell { border-right: 1px solid var(--dh-border); border-bottom: 1px solid var(--dh-border); }
+.dh-grid-cell:last-child { border-right: 0; }
+
+.dh-card {
+    background: var(--dh-surface);
+    border: 1px solid var(--dh-border);
+    border-radius: 2px;
+}
+
+.dh-chip {
+    display: inline-flex; align-items: center;
+    padding: 2px 8px; font-size: 11px; font-weight: 700;
+    text-transform: uppercase; letter-spacing: 0.04em;
+    border-radius: 2px; line-height: 18px;
+}
+.dh-chip-success { background: var(--dh-success-bg); color: var(--dh-success-fg); }
+.dh-chip-warning { background: var(--dh-warning-bg); color: var(--dh-warning-fg); }
+.dh-chip-error   { background: var(--dh-error-bg);   color: var(--dh-error-fg);   }
+.dh-chip-neutral { background: var(--dh-neutral-bg); color: var(--dh-neutral-fg); }
+
+.dh-btn {
+    display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+    padding: 8px 14px; font-weight: 600; font-size: 13px;
+    border-radius: 2px; transition: background-color .15s, color .15s, border-color .15s;
+    cursor: pointer; user-select: none;
+}
+.dh-btn:active { transform: scale(0.98); }
+.dh-btn-primary { background: var(--dh-accent); color: #fff; }
+.dh-btn-primary:hover { background: var(--dh-accent-hover); }
+.dh-btn-primary:disabled { background: #cccccc; cursor: not-allowed; }
+.dh-btn-outline { background: var(--dh-surface); color: var(--dh-text); border: 1px solid var(--dh-border); }
+.dh-btn-outline:hover { background: #F0F0EA; }
+.dh-btn-ghost { background: transparent; color: var(--dh-text); }
+.dh-btn-ghost:hover { background: #F0F0EA; }
+
+.dh-input {
+    width: 100%; padding: 9px 12px; font-size: 14px;
+    background: var(--dh-surface); color: var(--dh-text);
+    border: 1px solid var(--dh-border); border-radius: 2px;
+    outline: none;
+}
+.dh-input:focus-visible { border-color: var(--dh-accent); box-shadow: 0 0 0 3px rgba(217,93,57,0.15); }
+
+.dh-table { width: 100%; border-collapse: collapse; font-size: 14px; }
+.dh-table th {
+    text-align: left; padding: 10px 14px; font-size: 11px;
+    font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em;
+    color: var(--dh-muted); background: var(--dh-bg);
+    border-bottom: 1px solid var(--dh-border);
+    position: sticky; top: 0; z-index: 1;
+}
+.dh-table td { padding: 12px 14px; border-bottom: 1px solid var(--dh-border); vertical-align: middle; }
+.dh-table tbody tr { transition: background-color .12s; cursor: pointer; }
+.dh-table tbody tr:hover { background: var(--dh-bg); }
+
+.dh-tab {
+    padding: 12px 4px; margin-right: 24px; font-size: 14px; font-weight: 600;
+    color: var(--dh-muted); border-bottom: 2px solid transparent;
+    transition: color .15s, border-color .15s; cursor: pointer;
+}
+.dh-tab:hover { color: var(--dh-text); }
+.dh-tab-active { color: var(--dh-accent); border-color: var(--dh-accent); }
+
+.dh-sidebar-link {
+    display: flex; align-items: center; gap: 12px; padding: 9px 14px;
+    font-size: 14px; font-weight: 500; color: var(--dh-muted);
+    border-left: 2px solid transparent; transition: background-color .12s, color .12s, border-color .12s;
+    text-decoration: none;
+}
+.dh-sidebar-link:hover { background: var(--dh-bg); color: var(--dh-text); }
+.dh-sidebar-link-active {
+    color: var(--dh-text); background: var(--dh-bg);
+    border-left-color: var(--dh-accent); font-weight: 700;
+}
+
+.dh-kpi-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em;
+    font-weight: 700; color: var(--dh-muted); }
+.dh-kpi-value { font-family: 'Cabinet Grotesk', sans-serif; font-size: 36px;
+    font-weight: 800; line-height: 1.1; letter-spacing: -0.02em; color: var(--dh-text); }
+
+.dh-fade-in { animation: dhFadeIn .18s ease-out; }
+@keyframes dhFadeIn { from { opacity: 0; transform: translateY(2px); } to { opacity: 1; transform: none; } }

@@ -1,0 +1,97 @@
+{
+  "theme": "light",
+  "typography": {
+    "heading_font": "Cabinet Grotesk",
+    "body_font": "Satoshi",
+    "font_strategy": "The 'Swiss Brutalist' adapted for B2B. Use 'Cabinet Grotesk' for sharp, authoritative headings and 'Satoshi' for highly legible, geometric body text.",
+    "import_instruction": "Add to CSS: @import url('https://api.fontshare.com/v2/css?f[]=cabinet-grotesk@400,500,700,800,900&f[]=satoshi@400,500,700,900&display=swap');"
+  },
+  "colors": {
+    "background_primary": "#F9F9F6",
+    "background_secondary": "#FFFFFF",
+    "border": "#E5E5DF",
+    "text_primary": "#1A1D1A",
+    "text_secondary": "#5C635A",
+    "accent_primary": "#D95D39",
+    "accent_hover": "#B34A2A",
+    "status": {
+      "success": { "bg": "#E4F0D0", "text": "#3B591C" },
+      "warning": { "bg": "#FBEED5", "text": "#7D5A1B" },
+      "error": { "bg": "#F3E8E8", "text": "#823030" },
+      "neutral": { "bg": "#F0F0EA", "text": "#5C635A" }
+    }
+  },
+  "visual_enhancers": {
+    "surfaces": "GRID BORDERS (The 'Technical' Look): Exposed skeleton for bento grids and tables. Use pure white cards against the off-white background with sharp 1px solid borders.",
+    "shadows": "Minimalist. Avoid soft diffuse shadows for layout elements. Rely on 1px borders and occasional crisp drop-shadows only for popovers and dropdowns.",
+    "border_radius": "rounded-sm (2px) for cards, buttons, and inputs. Never full rounded pills in the main dashboard."
+  },
+  "layouts": {
+    "dashboard": "Mode B: High Density Grid. grid-cols-1 md:grid-cols-4. Strict hierarchy. Top KPI metrics in compact bento tiles without gaps (border-collapse look) or tight gap-4. Table-First structure below.",
+    "sidebar": "Classic Sidebar. Fixed on left, distinct border-r separating from main content. Background #FFFFFF.",
+    "client_details": "3 Tabs (Visão geral, Módulos, Usuários). Grid of cards for Modules with toggle enable/disable."
+  },
+  "components": [
+    {
+      "name": "Sidebar",
+      "instructions": "Persistent left sidebar. Background #FFFFFF with dark text. Distinct border-r (#E5E5DF). Must have Dashboard, Clientes, Módulos links."
+    },
+    {
+      "name": "Data Tables",
+      "instructions": "Dense tables for Clientes and Users. text-sm. Hover states on rows with slightly darker bg (#F9F9F6). Sticky header with border-b."
+    },
+    {
+      "name": "Tabs",
+      "instructions": "Underline style, no pills. Active tab has #D95D39 text and underline."
+    },
+    {
+      "name": "Status Chips",
+      "instructions": "Small inline pill (rounded-full or rounded-sm) with bold text. Use the status colors defined in the colors object."
+    }
+  ],
+  "accessibility": {
+    "contrast": "Ensure all text, especially within status chips, meets APCA/WCAG AA 4.5:1 ratio.",
+    "focus": "focus-visible:ring-2 focus-visible:ring-[#D95D39] focus-visible:outline-none",
+    "data_testid": "MANDATORY on all actionable items, e.g., data-testid='login-submit', data-testid='menu-dashboard'."
+  },
+  "media": {
+    "images": [
+      {
+        "url": "https://images.unsplash.com/photo-1454117096348-e4abbeba002c?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NTYxOTF8MHwxfHNlYXJjaHwzfHxtaW5pbWFsaXN0JTIwYWJzdHJhY3QlMjBnZW9tZXRyaWMlMjB0ZXh0dXJlfGVufDB8fHx8MTc4NzkxNDMxOXww&ixlib=rb-4.1.0&q=85",
+        "category": "login_background",
+        "description": "Minimalist geometric texture for the login split screen."
+      },
+      {
+        "url": "https://images.unsplash.com/photo-1500648767791-00dcc994a43e?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NDQ2NDF8MHwxfHNlYXJjaHwxfHxwcm9mZXNzaW9uYWwlMjBoZWFkc2hvdCUyMHBvcnRyYWl0fGVufDB8fHx8MTc4NzkxNDMyNHww&ixlib=rb-4.1.0&q=85",
+        "category": "avatar",
+        "description": "Admin user profile picture (male)."
+      },
+      {
+        "url": "https://images.unsplash.com/photo-1494790108377-be9c29b29330?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NDQ2NDF8MHwxfHNlYXJjaHwzfHxwcm9mZXNzaW9uYWwlMjBoZWFkc2hvdCUyMHBvcnRyYWl0fGVufDB8fHx8MTc4NzkxNDMyNHww&ixlib=rb-4.1.0&q=85",
+        "category": "avatar",
+        "description": "Admin user profile picture (female)."
+      }
+    ],
+    "icons": "lucide-react. Standardizing on Lucide since it's pre-installed. Use strokeWidth={1.5} for a crisper, more technical look."
+  },
+  "motion": {
+    "interactions": "Crisp and minimal. Fast transform scale (0.98) on button clicks.",
+    "page_transitions": "None needed for dense dashboard. Use simple fade-in for tab contents."
+  },
+  "instructions_to_main_agent": [
+    "Implement Shadcn UI for standard components but override borders to rounded-sm (2px) and use 1px solid borders for a 'Technical' grid look.",
+    "BANNED FONTS: Inter, Roboto, Open Sans, Lato, Space Grotesk.",
+    "BANNED COLORS: #7351B7 (purple), Teal Green/Blue (#1B93A4).",
+    "Never use generic centered layouts. Dashboard metrics must be a rigid grid.",
+    "Do not use transparent dropdown backgrounds. Always give them solid background (#FFFFFF) with 1px border and a crisp shadow.",
+    "All text must be in Portuguese (BR). Example: Dashboard, Clientes, Módulos, Visão geral, Usuários.",
+    "Include data-testid on every button, link, and major interactive element."
+  ],
+  "UNIVERSAL_GUIDELINES_FOR_MAIN_AGENT": [
+    "You tend to converge toward generic outputs. Avoid this.",
+    "Create depth through layered design elements with z-index hierarchy, but in this specific dashboard, rely on the GRID BORDERS structural approach.",
+    "Do not center align the app container.",
+    "Add transitions for specific interactive elements excluding transforms.",
+    "DO NOT use placeholder URLs for images. Use the provided ones."
+  ]
+}
