@@ -39,6 +39,11 @@ preparar o handoff (botão "Abrir módulo") para o Módulo de Pedidos que existe
 - Env vars novas: `HANDOFF_JWT_SECRET`, `HANDOFF_ISSUER`, `ORDERS_MODULE_KEY`, `KITCHEN_MODULE_KEY` (apenas backend).
 - Testes: backend 22/22 pytest + frontend E2E (iteration_2.json).
 
+## Bugfix (29/08/2026 — 401 repetidos no frontend)
+- Causa: access_token JWT expira em 60 min e o frontend nunca chamava `/api/auth/refresh`; após expiração, todas as chamadas autenticadas retornavam 401 "Token expirado" (diagnóstico documentado na conversa — backend e contrato intactos).
+- Correção mínima em `/app/frontend/src/lib/api.js`: interceptor axios com refresh single-flight (1 chamada compartilhada por 401s concorrentes), flag `_retried` anti-loop, exclusão das rotas de auth (login/logout/refresh/forgot/reset/me — `/me` tratado como probe), repetição da requisição original após refresh, redirect full-page para `/login` se o refresh falhar. TTL de 60 min mantido por decisão do usuário.
+- Testes: 31/31 pytest (nova suíte test_token_refresh.py) + E2E com cookies forjados (access expirado + refresh válido): refresh único, retry do launch-token com `?handoff=` correto, sem loop, login errado sem refresh, logout OK (iteration_3.json) + self-test do ajuste `/auth/me` (0 refresh no boot de visitante).
+
 ## Backlog (não implementado — próximas fases)
 - P1: CRUD real de usuários do restaurante no Hub + convites.
 - P1: RBAC de hub_users (super_admin / admin / viewer) — schema pronto, UI pendente.

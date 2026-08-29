@@ -62,13 +62,15 @@ class TestLaunchToken:
                             algorithms=["HS256"], audience="dacot-orders")
         assert claims["role"] == "admin"
 
-    def test_role_whitelisted_value_accepted(self, api, client, hamburgueria, env_backend):
+    def test_role_always_server_derived_even_for_whitelisted_value(
+            self, api, client, hamburgueria, env_backend):
+        # Backend design (server.py ~line 629): role is NEVER taken from the frontend.
         r = client.post(f"{api}/hub/tenants/{hamburgueria['id']}/modules/orders/launch-token",
                         json={"role": "waiter"}, timeout=30)
         assert r.status_code == 200, r.text
         claims = jwt.decode(r.json()["handoff"], env_backend["HANDOFF_JWT_SECRET"],
                             algorithms=["HS256"], audience="dacot-orders")
-        assert claims["role"] == "waiter"
+        assert claims["role"] == "admin"
 
     def test_module_not_active_returns_400(self, api, client, hamburgueria):
         r = client.post(f"{api}/hub/tenants/{hamburgueria['id']}/modules/delivery/launch-token",

@@ -8,6 +8,49 @@ export const api = axios.create({
   withCredentials: true,
 });
 
+const AUTH_PATHS = [
+  "/auth/login",
+  "/auth/logout",
+  "/auth/refresh",
+  "/auth/forgot-password",
+  "/auth/reset-password",
+  "/auth/me",
+];
+
+let refreshPromise = null;
+
+api.interceptors.response.use(
+  (response) => response,
+  async (error) => {
+    const original = error.config;
+    const status = error.response?.status;
+    const url = original?.url || "";
+    const isAuthRoute = AUTH_PATHS.some((p) => url.includes(p));
+
+    if (status !== 401 || isAuthRoute || !original || original._retried) {
+      return Promise.reject(error);
+    }
+    original._retried = true;
+
+    try {
+      // single-flight: 401s concorrentes aguardam o mesmo refresh
+      if (!refreshPromise) {
+        refreshPromise = api
+          .post("/auth/refresh")
+          .finally(() => { refreshPromise = null; });
+      }
+      await refreshPromise;
+      return api(original);
+    } catch (refreshError) {
+      // sessão não recuperável: navegação full-page limpa todo o estado React
+      if (typeof window !== "undefined" && !window.location.pathname.startsWith("/login")) {
+        window.location.href = "/login";
+      }
+      return Promise.reject(refreshError);
+    }
+  }
+);
+
 export function formatApiErrorDetail(detail) {
   if (detail == null) return "Algo deu errado. Tente novamente.";
   if (typeof detail === "string") return detail;
