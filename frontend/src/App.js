@@ -12,6 +12,7 @@ import Clientes from "@/pages/Clientes";
 import ClienteNovo from "@/pages/ClienteNovo";
 import ClienteDetalhes from "@/pages/ClienteDetalhes";
 import Modulos from "@/pages/Modulos";
+import Portal from "@/pages/Portal";
 
 export default function App() {
   return (
@@ -29,6 +30,7 @@ export default function App() {
               <Route path="/clientes/:id" element={<ClienteDetalhes />} />
               <Route path="/modulos" element={<Modulos />} />
             </Route>
+            <Route path="/portal" element={<ProtectedRoute><Portal /></ProtectedRoute>} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
           <Toaster position="top-right" />

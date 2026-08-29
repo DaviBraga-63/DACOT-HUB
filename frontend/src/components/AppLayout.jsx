@@ -1,4 +1,4 @@
-import { NavLink, useNavigate, Outlet } from "react-router-dom";
+import { NavLink, useNavigate, Outlet, Navigate } from "react-router-dom";
 import { LayoutDashboard, Building2, Blocks, LogOut, User } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 
@@ -11,6 +11,13 @@ const NAV = [
 export default function AppLayout() {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
+
+  // Restaurant clients never enter the DACOT admin area (UX redirect — backend
+  // is the real enforcement, all /api/hub/* endpoints require staff).
+  if (user?.user_type === "restaurant") {
+    return <Navigate to="/portal" replace />;
+  }
+
   const initials = (user?.name || user?.email || "?")
     .split(/\s+/).slice(0, 2).map((s) => s[0]).join("").toUpperCase();
 

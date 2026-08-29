@@ -44,6 +44,18 @@ preparar o handoff (botão "Abrir módulo") para o Módulo de Pedidos que existe
 - Correção mínima em `/app/frontend/src/lib/api.js`: interceptor axios com refresh single-flight (1 chamada compartilhada por 401s concorrentes), flag `_retried` anti-loop, exclusão das rotas de auth (login/logout/refresh/forgot/reset/me — `/me` tratado como probe), repetição da requisição original após refresh, redirect full-page para `/login` se o refresh falhar. TTL de 60 min mantido por decisão do usuário.
 - Testes: 31/31 pytest (nova suíte test_token_refresh.py) + E2E com cookies forjados (access expirado + refresh válido): refresh único, retry do launch-token com `?handoff=` correto, sem loop, login errado sem refresh, logout OK (iteration_3.json) + self-test do ajuste `/auth/me` (0 refresh no boot de visitante).
 
+## Implementado (29/08/2026 — Separação Equipe DACOT × Clientes de Restaurante)
+- **Dois escopos de role separados** (nunca colapsados): `hub_users` ganha `user_type: "staff"` (roles super_admin/admin/viewer); `tenant_users` ganha `user_type: "restaurant"`, `password_hash`, `token_version` e roles operacionais (admin/manager/waiter/kitchen) com `tenant_id` obrigatório.
+- **JWT** carrega apenas claim `ut` (user_type) para localizar a conta; `role` e `tenant_id` são sempre re-derivados do banco a cada request.
+- **Login unificado** (`/api/auth/login`) detecta a população; `/auth/me`, `/auth/refresh`, forgot/reset funcionam para ambas (reset escolhe a coleção via `user_type` no doc do token).
+- **Dependências de autorização**: `get_staff_user` (leitura admin, inclui viewer), `get_staff_write` (super_admin/admin; viewer recebe 403), `get_restaurant_user` (portal; exige tenant_id na identidade).
+- **Portal do cliente** (`/portal` + `GET /api/portal/context` + `POST /api/portal/modules/{mkey}/launch-token`): tenant vem exclusivamente da sessão; handoff representa o usuário do restaurante (`sub=tenant_user:<id>`, role operacional do DB, restaurant_id da sessão).
+- **Migração não-destrutiva** no startup: backfill de `user_type`, mapeamento de roles de exibição → operacionais, senha seed `Cliente@2026` para tenant_users, seeds idempotentes de staff (admin@dacot.com, viewer@dacot.com).
+- Frontend: Login redireciona por user_type; AppLayout redireciona clientes ao portal; Portal simplificado com módulos do próprio restaurante e botão Abrir apenas para ativos.
+- Auditoria manual curl: 14/14 casos (viewer 403 em escritas, cliente 403 em todo /api/hub/*, body malicioso ignorado, handoff com role correta por usuário).
+- Testes: 67/67 pytest (nova suíte test_access_separation.py com 35 testes) + E2E 15/15 (iteration_4.json).
+- Hardening pós-auditoria: lockout de brute-force usa `X-Forwarded-For` (primeiro hop) em vez do IP do pod do ingress — 429 confirmado na 6ª tentativa via URL pública; Portal.jsx não dispara `/portal/context` quando o logado é staff (0 chamadas espúrias, verificado).
+
 ## Backlog (não implementado — próximas fases)
 - P1: CRUD real de usuários do restaurante no Hub + convites.
 - P1: RBAC de hub_users (super_admin / admin / viewer) — schema pronto, UI pendente.

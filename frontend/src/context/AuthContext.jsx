@@ -23,7 +23,7 @@ export function AuthProvider({ children }) {
     try {
       const { data } = await api.post("/auth/login", { email, password });
       setUser(data);
-      return true;
+      return data;
     } catch (e) {
       setError(formatApiErrorDetail(e.response?.data?.detail) || e.message);
       return false;

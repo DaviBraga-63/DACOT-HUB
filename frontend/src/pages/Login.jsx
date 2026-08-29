@@ -12,9 +12,9 @@ export default function Login() {
   const submit = async (e) => {
     e.preventDefault();
     setBusy(true); setError(null);
-    const ok = await login(email.trim(), password);
+    const data = await login(email.trim(), password);
     setBusy(false);
-    if (ok) navigate("/", { replace: true });
+    if (data) navigate(data.user_type === "restaurant" ? "/portal" : "/", { replace: true });
   };
 
   return (
