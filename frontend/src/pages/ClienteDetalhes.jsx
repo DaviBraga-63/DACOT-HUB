@@ -170,6 +170,24 @@ function ModulesTab({ tenantId, tenantSlug, modules, reload }) {
     reload();
   };
 
+  const openModule = async (m) => {
+    try {
+      const { data } = await api.post(
+        `/hub/tenants/${tenantId}/modules/${m.key}/launch-token`,
+      );
+      if (!data?.handoff || !data?.launch_url) {
+        toast.info("Configure a URL de acesso do módulo antes de abrir.");
+        return;
+      }
+      const sep = data.launch_url.includes("?") ? "&" : "?";
+      const url = `${data.launch_url}${sep}handoff=${encodeURIComponent(data.handoff)}`;
+      window.open(url, "_blank", "noopener,noreferrer");
+    } catch (e) {
+      const detail = e.response?.data?.detail;
+      toast.error(typeof detail === "string" ? detail : "Não foi possível gerar o token de acesso.");
+    }
+  };
+
   return (
     <div className="grid grid-cols-1 md:grid-cols-2 gap-4 dh-fade-in" data-testid="modules-tab">
       {modules.map((m) => (
@@ -212,14 +230,13 @@ function ModulesTab({ tenantId, tenantSlug, modules, reload }) {
                                  onDone={() => { setEditing(null); reload(); }} />
               ) : (
                 <div className="flex items-center gap-2">
-                  <a
-                    href={m.launch_url || "#"}
-                    target="_blank" rel="noreferrer"
-                    onClick={(e) => { if (!m.launch_url) { e.preventDefault(); toast.info("Configure a URL de acesso do módulo."); } }}
+                  <button
+                    type="button"
+                    onClick={() => openModule(m)}
                     className="dh-btn dh-btn-outline flex-1"
                     data-testid={`open-${m.key}`}>
                     <ExternalLink size={13} strokeWidth={1.8} /> Abrir módulo
-                  </a>
+                  </button>
                   <button className="dh-btn dh-btn-ghost" onClick={() => setEditing(m.key)}
                           data-testid={`config-${m.key}`} title="Configurar URL">
                     <Settings2 size={13} strokeWidth={1.8} />

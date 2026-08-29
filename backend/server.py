@@ -38,6 +38,19 @@ EMAIL_BASE_URL = (os.environ.get("INTEGRATION_PROXY_URL") or "").strip().rstrip(
 EMAIL_KEY = os.environ.get("EMERGENT_EMAIL_KEY", "")
 EMAIL_FROM_NAME = os.environ.get("EMAIL_FROM_NAME") or "DACOT Hub"
 
+# ─── Module handoff (integration with external modules) ────────────────────────
+HANDOFF_JWT_SECRET = os.environ.get("HANDOFF_JWT_SECRET", "")
+HANDOFF_ISSUER = os.environ.get("HANDOFF_ISSUER", "dacot-hub")
+HANDOFF_VERSION = 1
+HANDOFF_MAX_TTL_SECONDS = 60
+HANDOFF_AUDIENCE = {"orders": "dacot-orders", "kitchen": "dacot-kitchen"}
+MODULE_ACCESS_KEYS = {
+    "orders": os.environ.get("ORDERS_MODULE_KEY", ""),
+    "kitchen": os.environ.get("KITCHEN_MODULE_KEY", ""),
+}
+VALID_HANDOFF_ROLES = {"admin", "manager", "waiter", "kitchen"}
+HUB_ADMIN_ROLES = {"super_admin", "admin"}
+
 app = FastAPI(title="DACOT Hub API")
 api_router = APIRouter(prefix="/api")
 
@@ -588,6 +601,99 @@ async def dashboard_activity(limit: int = 15, _u: dict = Depends(get_current_use
         "target_id": d.get("target_id"), "tenant_id": d.get("tenant_id"),
         "metadata": d.get("metadata", {}), "created_at": d.get("created_at"),
     } for d in docs]
+
+
+# ─── Module handoff (Launch Token) ─────────────────────────────────────────────
+@api_router.post("/hub/tenants/{tid}/modules/{mkey}/launch-token")
+async def launch_token(tid: str, mkey: str,
+                       user: dict = Depends(get_current_user)):
+    # Auth: only hub admins can mint handoff tokens
+    if user.get("role") not in HUB_ADMIN_ROLES:
+        raise HTTPException(403, "Sem permissão para gerar token de módulo")
+    if not HANDOFF_JWT_SECRET or len(HANDOFF_JWT_SECRET) < 32:
+        raise HTTPException(500, "Segredo de handoff não configurado no servidor")
+    if not ObjectId.is_valid(tid):
+        raise HTTPException(404, "Cliente não encontrado")
+    tenant = await db.tenants.find_one({"_id": ObjectId(tid)})
+    if not tenant:
+        raise HTTPException(404, "Cliente não encontrado")
+    module = await db.modules.find_one({"key": mkey})
+    if not module:
+        raise HTTPException(404, "Módulo não encontrado no catálogo")
+    activation = await db.tenant_modules.find_one(
+        {"tenant_id": tid, "module_key": mkey, "active": True}
+    )
+    if not activation:
+        raise HTTPException(400, "Módulo não está ativo para este cliente")
+
+    # role/module/restaurant_id are NEVER taken from the frontend — always server-derived.
+    # The Hub-issued handoff represents an admin-initiated access.
+    role = "admin"
+
+    aud = HANDOFF_AUDIENCE.get(mkey, f"dacot-{mkey}")
+    now = now_utc()
+    exp = now + timedelta(seconds=HANDOFF_MAX_TTL_SECONDS)
+    jti = secrets.token_urlsafe(16)
+    claims = {
+        "iss": HANDOFF_ISSUER,
+        "aud": aud,
+        "sub": f"hub_user:{user['_id']}",
+        "restaurant_id": str(tenant["_id"]),        # canonical, server-signed
+        "restaurant_slug": tenant.get("slug", ""),
+        "role": role,
+        "module": mkey,                              # server-signed
+        "jti": jti,
+        "iat": int(now.timestamp()),
+        "nbf": int(now.timestamp()) - 5,
+        "exp": int(exp.timestamp()),
+        "handoff_version": HANDOFF_VERSION,
+    }
+    token = jwt.encode(claims, HANDOFF_JWT_SECRET, algorithm="HS256")
+
+    launch_url = (activation.get("launch_url") or "").strip()
+    if not launch_url and module.get("launch_url_template"):
+        launch_url = module["launch_url_template"].replace("{slug}", tenant.get("slug", ""))
+
+    await log_activity(
+        actor_id=user["_id"], actor_name=user.get("name", user["email"]),
+        action="module.launch_token_issued", target_type="module",
+        target_id=mkey, tenant_id=tid,
+        metadata={"module": module["name"], "jti": jti, "aud": aud, "role": role},
+    )
+    return {
+        "handoff": token,
+        "launch_url": launch_url,
+        "expires_in": HANDOFF_MAX_TTL_SECONDS,
+        "expires_at": exp.isoformat(),
+        "jti": jti,
+    }
+
+
+# ─── Public module status (module-to-module) ───────────────────────────────────
+@api_router.get("/public/tenants/{tid}/modules/{mkey}/status")
+async def public_module_status(tid: str, mkey: str, request: Request):
+    if not ObjectId.is_valid(tid):
+        raise HTTPException(404, "Recurso não encontrado")
+    tenant = await db.tenants.find_one({"_id": ObjectId(tid)})
+    if not tenant:
+        raise HTTPException(404, "Recurso não encontrado")
+    module = await db.modules.find_one({"key": mkey})
+    if not module:
+        raise HTTPException(404, "Recurso não encontrado")
+    provided = request.headers.get("X-Module-Key", "")
+    expected = MODULE_ACCESS_KEYS.get(mkey, "")
+    if not expected or not provided or not secrets.compare_digest(provided, expected):
+        raise HTTPException(401, "Chave de módulo inválida")
+    act = await db.tenant_modules.find_one(
+        {"tenant_id": tid, "module_key": mkey, "active": True}
+    )
+    if not act:
+        return {"active": False, "module": mkey}
+    return {
+        "active": True,
+        "module": mkey,
+        "activated_at": act.get("activated_at"),
+    }
 
 
 # ─── Health ────────────────────────────────────────────────────────────────────

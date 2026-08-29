@@ -1,0 +1,36 @@
+{
+  "summary": "Iteration 2 testing of DACOT Hub module handoff. Backend: 22/22 pytest tests passed (launch-token happy path with full JWT claim validation, role non-authority, 400 for inactive/in-dev modules, 404 for unknown tenant/module, 401 unauthenticated, unique jti, activity log 'module.launch_token_issued'; public status endpoint 401 without/with wrong X-Module-Key, 200 with ORDERS_MODULE_KEY, 404 for unknown tenant/module before key check, no admin data leakage, delivery 401 as expected; regression on login/me/wrong-password, dashboard stats, modules catalog, tenants CRUD + kitchen activate/launch-token/deactivate->400). Frontend E2E: login -> Clientes -> Hamburgueria Exemplo -> aba Módulos -> 'Abrir módulo' (open-orders) triggers POST launch-token (200) and window.open('https://pedidos.dacot.app/hamburgueria-exemplo?handoff=<JWT>') with the JWT byte-identical to the backend response; HANDOFF_JWT_SECRET absent from served JS bundles; kitchen toggle activate/deactivate works with state refetch.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "ClienteDetalhes (Módulos)", "issues": ["Console React hydration warning: '<span> cannot be a child of <option>' from the status <select> (STATUS_OPTS map) — caused by the visual-editor instrumentation wrapping the option text; harmless in prod but noisy in dev console", "Status selector is a native <select> ('STATUS: ATIVO') rather than a shadcn Select — inconsistent with the rest of the design system"]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/backend_test.py",
+    "/app/backend/tests/conftest.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "public_module_status returns {active:false} (200) with no 'module' key when the module is inactive — response shape differs between active/inactive; consider always returning module key for consumer simplicity.",
+    "launch-token accepts role from body when whitelisted (waiter/manager/kitchen) — verified server-side whitelist works, but the Hub UI never sends role, so consider dropping the body param entirely to reduce attack surface.",
+    "No natural test case exists for an active module without launch_url (both orders and kitchen have launch_url_template), so the 'Configure a URL de acesso' toast path is untested (N/A)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/conftest.py",
+    "/app/backend/tests/backend_test.py"
+  ],
+  "success_rate": {"backend": "100% (22/22)", "frontend": "100% (all tested flows)"},
+  "seed_data_creation": "Temporary tenant 'TEST_Handoff Tenant' created and deleted within test_tenant_crud; kitchen module toggled on Hamburgueria Exemplo and reverted to original state.",
+  "should_call_test_agent_after_fix": false,
+  "should_main_agent_self_test": true,
+  "test_credentials": "davibraga0706@gmail.com / Dacot@2026 (from /app/memory/test_credentials.md); X-Module-Key orders = ORDERS_MODULE_KEY from /app/backend/.env",
+  "context_for_next_testing_agent": "Regression suite lives at /app/backend/tests/ (conftest.py provides api/client/anon/hamburgueria/env_backend fixtures). pytest.ini uses xdist LoadScope. Tenant list response uses field 'id' (not '_id') and tenant-modules use 'key' (not 'module_key'). Hamburgueria Exemplo id 6a916a0576546a69049b99d5. Untested: 'Abrir módulo' with no resolvable launch_url (no natural case), delivery/kitchen public status active-false shape.",
+  "rca_of_the_issue": "No product defects found. The only test failure during the first run was a test-side field-name assumption (m['module_key']); fixed in the test file and re-run green."
+}

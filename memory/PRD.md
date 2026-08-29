@@ -31,6 +31,14 @@ preparar o handoff (botão "Abrir módulo") para o Módulo de Pedidos que existe
 - Logging automático de todas as ações no activity_log.
 - Testes: backend 100% + frontend 100% (iteration_1.json).
 
+## Implementado (28/02/2026 — Integração Handoff Hub ↔ Módulo de Pedidos)
+- Contrato técnico: `/app/DACOT_Module_Integration_Contract.md` + doc de env vars `/app/DACOT_Handoff_Env_Vars.md`.
+- `POST /api/hub/tenants/{tid}/modules/{mkey}/launch-token`: JWT HS256 (60s, single-use por jti) com claims iss/aud/sub/restaurant_id/restaurant_slug/role/module/jti/iat/exp/nbf/handoff_version. Só super_admin/admin. Valida tenant, módulo no catálogo e ativação ativa. Nenhum dado do body é autoridade (restaurant_id/role/module sempre derivados no servidor; body ignorado).
+- `GET /api/public/tenants/{tid}/modules/{mkey}/status`: autenticado por `X-Module-Key` (chave por módulo, compare_digest); valida existência (404) antes da chave (401); resposta consistente `{active, module, activated_at?}`; somente leitura, sem dados administrativos.
+- Botão "Abrir módulo" agora solicita launch-token ao backend e abre `launch_url?handoff=<jwt>` em nova aba; JWT nunca gerado no frontend (segredo ausente do bundle — verificado).
+- Env vars novas: `HANDOFF_JWT_SECRET`, `HANDOFF_ISSUER`, `ORDERS_MODULE_KEY`, `KITCHEN_MODULE_KEY` (apenas backend).
+- Testes: backend 22/22 pytest + frontend E2E (iteration_2.json).
+
 ## Backlog (não implementado — próximas fases)
 - P1: CRUD real de usuários do restaurante no Hub + convites.
 - P1: RBAC de hub_users (super_admin / admin / viewer) — schema pronto, UI pendente.
