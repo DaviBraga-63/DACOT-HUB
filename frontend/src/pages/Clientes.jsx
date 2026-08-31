@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { api } from "@/lib/api";
-import { Plus, Search } from "lucide-react";
+import { Plus, Search, Building2, ChevronRight } from "lucide-react";
 import StatusBadge from "@/components/StatusBadge";
 
 const FILTERS = [
@@ -37,35 +37,34 @@ export default function Clientes() {
 
   return (
     <div className="space-y-6" data-testid="clientes-page">
-      <div className="flex items-end justify-between">
+      <div className="flex items-start justify-between gap-4 flex-wrap">
         <div>
-          <div className="text-[11px] uppercase tracking-widest font-bold text-[var(--dh-accent)] mb-1">Gestão</div>
-          <h1 className="text-3xl lg:text-4xl font-black tracking-tight" style={{fontFamily:"Cabinet Grotesk"}}>Clientes</h1>
-          <p className="text-sm text-[var(--dh-muted)] mt-1">Restaurantes cadastrados na plataforma DACOT.</p>
+          <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-slate-900" style={{fontFamily:"Cabinet Grotesk"}}>Clientes</h1>
+          <p className="text-sm text-slate-500 mt-1.5">Restaurantes cadastrados na plataforma DACOT.</p>
         </div>
         <Link to="/clientes/novo" className="dh-btn dh-btn-primary" data-testid="new-tenant-btn">
           <Plus size={15} strokeWidth={2} /> Novo cliente
         </Link>
       </div>
 
-      <div className="dh-card">
-        <div className="flex items-center justify-between px-4 py-3 border-b border-[var(--dh-border)] gap-4">
-          <div className="flex gap-1">
+      <div className="dh-card overflow-hidden">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100 gap-4 flex-wrap">
+          <div className="flex gap-1.5 flex-wrap">
             {FILTERS.map((f) => (
               <button key={f.key}
                       onClick={() => setStatus(f.key)}
                       data-testid={`filter-${f.key}`}
-                      className={`px-3 py-1.5 text-[12px] font-semibold rounded-sm transition-colors ${
+                      className={`px-3.5 py-1.5 text-[13px] font-medium rounded-full transition-colors ${
                         status === f.key
-                          ? "bg-[var(--dh-text)] text-white"
-                          : "text-[var(--dh-muted)] hover:bg-[var(--dh-bg)]"
+                          ? "bg-slate-900 text-white"
+                          : "text-slate-500 hover:bg-slate-100"
                       }`}>
                 {f.label}
               </button>
             ))}
           </div>
-          <div className="relative w-full max-w-xs">
-            <Search size={14} strokeWidth={1.7} className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--dh-muted)]" />
+          <div className="relative w-full sm:max-w-xs">
+            <Search size={14} strokeWidth={1.8} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
             <input
               value={q} onChange={(e) => setQ(e.target.value)}
               placeholder="Buscar por nome, responsável, e-mail…"
@@ -86,41 +85,63 @@ export default function Clientes() {
                 <th className="text-right">Módulos</th>
                 <th className="text-right">Usuários</th>
                 <th>Cadastro</th>
+                <th className="w-8"></th>
               </tr>
             </thead>
             <tbody>
-              {loading && (
-                <tr><td colSpan={7} className="text-center text-[var(--dh-muted)] py-10">Carregando…</td></tr>
-              )}
+              {loading && [0,1,2,3].map((i) => (
+                <tr key={i}>
+                  <td><div className="space-y-1.5"><div className="dh-skeleton h-4 w-36" /><div className="dh-skeleton h-3 w-24" /></div></td>
+                  <td><div className="dh-skeleton h-4 w-24" /></td>
+                  <td><div className="space-y-1.5"><div className="dh-skeleton h-4 w-40" /><div className="dh-skeleton h-3 w-20" /></div></td>
+                  <td><div className="dh-skeleton h-5 w-16 rounded-full" /></td>
+                  <td><div className="dh-skeleton h-4 w-6 ml-auto" /></td>
+                  <td><div className="dh-skeleton h-4 w-6 ml-auto" /></td>
+                  <td><div className="dh-skeleton h-4 w-20" /></td>
+                  <td></td>
+                </tr>
+              ))}
               {!loading && rows.length === 0 && (
-                <tr><td colSpan={7} className="text-center text-[var(--dh-muted)] py-10">Nenhum cliente encontrado.</td></tr>
+                <tr>
+                  <td colSpan={8} className="py-16">
+                    <div className="flex flex-col items-center justify-center text-center gap-3">
+                      <span className="dh-icon-tile-neutral w-12 h-12 rounded-xl">
+                        <Building2 size={20} strokeWidth={1.6} />
+                      </span>
+                      <div className="text-sm font-medium text-slate-700">Nenhum cliente encontrado</div>
+                      <div className="text-[13px] text-slate-400">Ajuste os filtros ou cadastre um novo restaurante.</div>
+                      <Link to="/clientes/novo" className="dh-btn dh-btn-outline mt-1">Novo cliente</Link>
+                    </div>
+                  </td>
+                </tr>
               )}
               {rows.map((t) => (
                 <tr key={t.id}
                     onClick={() => navigate(`/clientes/${t.id}`)}
                     data-testid={`tenant-row-${t.id}`}>
                   <td>
-                    <div className="font-semibold">{t.name}</div>
-                    <div className="text-[11px] text-[var(--dh-muted)] font-mono">{t.slug}</div>
+                    <div className="font-semibold text-slate-900">{t.name}</div>
+                    <div className="text-[11px] text-slate-400 font-mono mt-0.5">{t.slug}</div>
                   </td>
-                  <td className="text-[13px]">{t.owner_name}</td>
+                  <td className="text-[13px] text-slate-600">{t.owner_name}</td>
                   <td className="text-[13px]">
-                    <div>{t.email}</div>
-                    <div className="text-[11px] text-[var(--dh-muted)]">{t.phone}</div>
+                    <div className="text-slate-700">{t.email}</div>
+                    <div className="text-[11px] text-slate-400 mt-0.5">{t.phone}</div>
                   </td>
                   <td><StatusBadge status={t.status} /></td>
-                  <td className="text-right tabular-nums font-semibold">{t.active_modules}</td>
-                  <td className="text-right tabular-nums">{t.users_count}</td>
-                  <td className="text-[12px] text-[var(--dh-muted)]">
+                  <td className="text-right tabular-nums font-semibold text-slate-900">{t.active_modules}</td>
+                  <td className="text-right tabular-nums text-slate-600">{t.users_count}</td>
+                  <td className="text-[12px] text-slate-400">
                     {t.created_at ? new Date(t.created_at).toLocaleDateString("pt-BR") : "—"}
                   </td>
+                  <td><ChevronRight size={15} strokeWidth={1.8} className="text-slate-300" /></td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
-        <div className="px-4 py-3 border-t border-[var(--dh-border)] flex items-center justify-between text-[12px] text-[var(--dh-muted)]">
-          <span>Mostrando <b className="text-[var(--dh-text)]">{rows.length}</b> cliente(s)</span>
+        <div className="px-5 py-3.5 border-t border-slate-100 flex items-center justify-between text-[12px] text-slate-400">
+          <span>Mostrando <b className="text-slate-700 font-semibold">{rows.length}</b> cliente(s)</span>
           <span>Total geral: {counts.all}</span>
         </div>
       </div>

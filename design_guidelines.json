@@ -1,97 +1,79 @@
 {
-  "theme": "light",
+  "project_name": "DACOT Hub",
+  "theme": "Light theme (base background #F9F9F6) to convey elegance, organization, and a premium B2B SaaS feel.",
   "typography": {
-    "heading_font": "Cabinet Grotesk",
-    "body_font": "Satoshi",
-    "font_strategy": "The 'Swiss Brutalist' adapted for B2B. Use 'Cabinet Grotesk' for sharp, authoritative headings and 'Satoshi' for highly legible, geometric body text.",
-    "import_instruction": "Add to CSS: @import url('https://api.fontshare.com/v2/css?f[]=cabinet-grotesk@400,500,700,800,900&f[]=satoshi@400,500,700,900&display=swap');"
+    "primary": "Cabinet Grotesk (Use for headings, numbers, and key UI labels)",
+    "secondary": "Satoshi (Use for body text, table cells, and descriptions)",
+    "hierarchy": {
+      "h1_page_title": "text-2xl or text-3xl font-bold tracking-tight text-slate-900",
+      "h2_section": "text-xl font-semibold tracking-tight text-slate-800",
+      "h3_card_title": "text-base font-semibold text-slate-900",
+      "body": "text-sm text-slate-600",
+      "muted": "text-sm text-slate-500",
+      "overline": "text-xs font-semibold uppercase tracking-wider text-slate-400"
+    }
   },
   "colors": {
-    "background_primary": "#F9F9F6",
-    "background_secondary": "#FFFFFF",
-    "border": "#E5E5DF",
-    "text_primary": "#1A1D1A",
-    "text_secondary": "#5C635A",
-    "accent_primary": "#D95D39",
-    "accent_hover": "#B34A2A",
+    "brand_accent": "#D95D39",
+    "brand_accent_note": "Terracotta - Use sparingly for CTAs, active states, and important highlights to maintain elegance.",
+    "background_app": "#F9F9F6",
+    "surface_card": "#FFFFFF",
+    "surface_sidebar": "#FFFFFF",
+    "text_primary": "#0F172A",
+    "text_secondary": "#475569",
+    "border_subtle": "#E2E8F0",
     "status": {
-      "success": { "bg": "#E4F0D0", "text": "#3B591C" },
-      "warning": { "bg": "#FBEED5", "text": "#7D5A1B" },
-      "error": { "bg": "#F3E8E8", "text": "#823030" },
-      "neutral": { "bg": "#F0F0EA", "text": "#5C635A" }
+      "active_success": "bg-emerald-50 text-emerald-700 border border-emerald-200",
+      "inactive_neutral": "bg-slate-50 text-slate-700 border border-slate-200",
+      "warning": "bg-amber-50 text-amber-700 border border-amber-200"
     }
   },
   "visual_enhancers": {
-    "surfaces": "GRID BORDERS (The 'Technical' Look): Exposed skeleton for bento grids and tables. Use pure white cards against the off-white background with sharp 1px solid borders.",
-    "shadows": "Minimalist. Avoid soft diffuse shadows for layout elements. Rely on 1px borders and occasional crisp drop-shadows only for popovers and dropdowns.",
-    "border_radius": "rounded-sm (2px) for cards, buttons, and inputs. Never full rounded pills in the main dashboard."
+    "corners": "Move from 0px brutalist to soft rounded corners. Cards: rounded-xl. Buttons/Inputs: rounded-lg. Badges: rounded-full.",
+    "shadows": "Extremely subtle. Use shadow-sm for cards. shadow-md for dropdowns/modals. Drop heavy brutalist borders.",
+    "borders": "1px solid border-slate-200 on cards and sidebars to define edges without heaviness.",
+    "glassmorphism": "Avoid heavy glass. Use backdrop-blur-md with bg-white/80 only for sticky headers/topbars if needed. No transparent backgrounds over content."
   },
   "layouts": {
-    "dashboard": "Mode B: High Density Grid. grid-cols-1 md:grid-cols-4. Strict hierarchy. Top KPI metrics in compact bento tiles without gaps (border-collapse look) or tight gap-4. Table-First structure below.",
-    "sidebar": "Classic Sidebar. Fixed on left, distinct border-r separating from main content. Background #FFFFFF.",
-    "client_details": "3 Tabs (Visão geral, Módulos, Usuários). Grid of cards for Modules with toggle enable/disable."
+    "app_shell": "Left Sidebar (staff: w-64, responsive) + Main Content Area. Topbar minimal (breadcrumbs or user profile).",
+    "spacing": "Generous. p-6 or p-8 inside cards. gap-6 in grids.",
+    "dashboard": "4 KPI Cards top row. Then an asymmetrical grid (e.g., col-span-8 for chart, col-span-4 for recent activity feed).",
+    "client_portal": "Minimalist single column, max-w-5xl mx-auto, high top margin (mt-12 or mt-20) to feel like a premium launchpad."
   },
-  "components": [
-    {
-      "name": "Sidebar",
-      "instructions": "Persistent left sidebar. Background #FFFFFF with dark text. Distinct border-r (#E5E5DF). Must have Dashboard, Clientes, Módulos links."
+  "components": {
+    "buttons": {
+      "primary": "bg-[#D95D39] text-white hover:bg-[#c24b2b] rounded-lg px-4 py-2 font-medium transition-all shadow-sm",
+      "secondary": "bg-white text-slate-700 border border-slate-200 hover:bg-slate-50 rounded-lg px-4 py-2 font-medium transition-all"
     },
-    {
-      "name": "Data Tables",
-      "instructions": "Dense tables for Clientes and Users. text-sm. Hover states on rows with slightly darker bg (#F9F9F6). Sticky header with border-b."
-    },
-    {
-      "name": "Tabs",
-      "instructions": "Underline style, no pills. Active tab has #D95D39 text and underline."
-    },
-    {
-      "name": "Status Chips",
-      "instructions": "Small inline pill (rounded-full or rounded-sm) with bold text. Use the status colors defined in the colors object."
-    }
-  ],
-  "accessibility": {
-    "contrast": "Ensure all text, especially within status chips, meets APCA/WCAG AA 4.5:1 ratio.",
-    "focus": "focus-visible:ring-2 focus-visible:ring-[#D95D39] focus-visible:outline-none",
-    "data_testid": "MANDATORY on all actionable items, e.g., data-testid='login-submit', data-testid='menu-dashboard'."
-  },
-  "media": {
-    "images": [
-      {
-        "url": "https://images.unsplash.com/photo-1454117096348-e4abbeba002c?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NTYxOTF8MHwxfHNlYXJjaHwzfHxtaW5pbWFsaXN0JTIwYWJzdHJhY3QlMjBnZW9tZXRyaWMlMjB0ZXh0dXJlfGVufDB8fHx8MTc4NzkxNDMxOXww&ixlib=rb-4.1.0&q=85",
-        "category": "login_background",
-        "description": "Minimalist geometric texture for the login split screen."
-      },
-      {
-        "url": "https://images.unsplash.com/photo-1500648767791-00dcc994a43e?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NDQ2NDF8MHwxfHNlYXJjaHwxfHxwcm9mZXNzaW9uYWwlMjBoZWFkc2hvdCUyMHBvcnRyYWl0fGVufDB8fHx8MTc4NzkxNDMyNHww&ixlib=rb-4.1.0&q=85",
-        "category": "avatar",
-        "description": "Admin user profile picture (male)."
-      },
-      {
-        "url": "https://images.unsplash.com/photo-1494790108377-be9c29b29330?crop=entropy&cs=srgb&fm=jpg&ixid=M3w3NDQ2NDF8MHwxfHNlYXJjaHwzfHxwcm9mZXNzaW9uYWwlMjBoZWFkc2hvdCUyMHBvcnRyYWl0fGVufDB8fHx8MTc4NzkxNDMyNHww&ixlib=rb-4.1.0&q=85",
-        "category": "avatar",
-        "description": "Admin user profile picture (female)."
-      }
-    ],
-    "icons": "lucide-react. Standardizing on Lucide since it's pre-installed. Use strokeWidth={1.5} for a crisper, more technical look."
+    "cards": "bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden",
+    "tables": "w-full text-left text-sm. Headers: border-b border-slate-200 text-slate-500 font-medium py-3. Rows: border-b border-slate-100 py-3 text-slate-700 hover:bg-slate-50/50 transition-colors.",
+    "sidebar_items": "flex items-center gap-3 px-3 py-2 rounded-md text-sm font-medium text-slate-600 hover:bg-slate-50 transition-colors. Active state: bg-[#D95D39]/10 text-[#D95D39] (Terracotta).",
+    "badges": "inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium",
+    "inputs": "w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-[#D95D39]/20 focus:border-[#D95D39]",
+    "module_catalog_card": "flex flex-col p-5 border border-slate-200 rounded-xl bg-white hover:shadow-md transition-all. Top: Icon inside a soft bg-[#D95D39]/10 rounded-lg text-[#D95D39] w-fit p-2. Content: Title + Description. Bottom: Status badge + Action Button."
   },
   "motion": {
-    "interactions": "Crisp and minimal. Fast transform scale (0.98) on button clicks.",
-    "page_transitions": "None needed for dense dashboard. Use simple fade-in for tab contents."
+    "hover_states": "Micro-interactions: Buttons slightly scale down on click (active:scale-[0.98]). Cards elevate slightly on hover (hover:-translate-y-[2px] hover:shadow-md) with duration-200 ease-out.",
+    "loading": "Use soft skeleton pulses (animate-pulse bg-slate-200) instead of heavy spinners where possible."
+  },
+  "accessibility": {
+    "contrast": "Ensure Terracotta text on light backgrounds passes WCAG AA.",
+    "focus": "All focusable elements must have focus-visible:ring-2 focus-visible:ring-[#D95D39]/50 focus-visible:outline-none focus-visible:ring-offset-1."
   },
   "instructions_to_main_agent": [
-    "Implement Shadcn UI for standard components but override borders to rounded-sm (2px) and use 1px solid borders for a 'Technical' grid look.",
-    "BANNED FONTS: Inter, Roboto, Open Sans, Lato, Space Grotesk.",
-    "BANNED COLORS: #7351B7 (purple), Teal Green/Blue (#1B93A4).",
-    "Never use generic centered layouts. Dashboard metrics must be a rigid grid.",
-    "Do not use transparent dropdown backgrounds. Always give them solid background (#FFFFFF) with 1px border and a crisp shadow.",
-    "All text must be in Portuguese (BR). Example: Dashboard, Clientes, Módulos, Visão geral, Usuários.",
-    "Include data-testid on every button, link, and major interactive element."
+    "You are modifying `.js` files, not `.tsx`. Ensure JSX syntax is standard for JS files.",
+    "CRITICAL: PRESERVE ALL `data-testid` attributes. Do not remove them.",
+    "CRITICAL: Do NOT change the existing logic, especially the 'Abrir módulo' handoff integration.",
+    "Remove or override old `.dh-*` brutalist classes (e.g., 2px solid borders, no-radius) with the new Tailwind utility classes (rounded-xl, border-slate-200, shadow-sm, softer colors).",
+    "Use `lucide-react` for all icons. Standardize strokeWidth to 1.5 or 2.",
+    "Use `sonner` for toast notifications.",
+    "Implement an empty state standard for tables and lists: an icon (lucide), a muted text message, and optionally a CTA to create.",
+    "Ensure the application is fully responsive. Sidebar should be a drawer/hamburger on mobile."
   ],
   "UNIVERSAL_GUIDELINES_FOR_MAIN_AGENT": [
-    "You tend to converge toward generic outputs. Avoid this.",
-    "Create depth through layered design elements with z-index hierarchy, but in this specific dashboard, rely on the GRID BORDERS structural approach.",
-    "Do not center align the app container.",
-    "Add transitions for specific interactive elements excluding transforms.",
-    "DO NOT use placeholder URLs for images. Use the provided ones."
+    "Do not use generic centered layouts for the whole app. Use standard SaaS left-sidebar layout for Staff, and centered max-w layout ONLY for the Client Portal.",
+    "Do not apply `transition: all`. Specify `transition-colors`, `transition-transform`, etc.",
+    "Never use AI assistant Emoji characters. Use lucide-react icons.",
+    "Keep the aesthetic clean and uncluttered. Let the #F9F9F6 background provide breathing room around the #FFFFFF cards."
   ]
 }

@@ -35,14 +35,14 @@ export default function ClienteNovo() {
   return (
     <div className="max-w-3xl space-y-6" data-testid="new-tenant-page">
       <div>
-        <Link to="/clientes" className="text-[11px] uppercase tracking-widest font-bold text-[var(--dh-muted)] hover:text-[var(--dh-text)] inline-flex items-center gap-1">
-          <ArrowLeft size={12} /> Clientes
+        <Link to="/clientes" className="text-[12px] font-medium text-slate-400 hover:text-slate-700 transition-colors inline-flex items-center gap-1.5">
+          <ArrowLeft size={13} strokeWidth={1.8} /> Clientes
         </Link>
-        <h1 className="text-3xl lg:text-4xl font-black tracking-tight mt-2" style={{fontFamily:"Cabinet Grotesk"}}>Novo cliente</h1>
-        <p className="text-sm text-[var(--dh-muted)] mt-1">Cadastre um restaurante na plataforma DACOT.</p>
+        <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-slate-900 mt-3" style={{fontFamily:"Cabinet Grotesk"}}>Novo cliente</h1>
+        <p className="text-sm text-slate-500 mt-1.5">Cadastre um restaurante na plataforma DACOT.</p>
       </div>
 
-      <form onSubmit={submit} className="dh-card p-6 space-y-5">
+      <form onSubmit={submit} className="dh-card p-6 sm:p-7 space-y-6">
         <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
           <Field label="Nome do restaurante" required>
             <input required className="dh-input" value={form.name} onChange={set("name")} data-testid="input-name" />
@@ -71,7 +71,7 @@ export default function ClienteNovo() {
 
         {err && <div className="dh-chip dh-chip-error">{err}</div>}
 
-        <div className="flex items-center justify-end gap-3 pt-2 border-t border-[var(--dh-border)]">
+        <div className="flex items-center justify-end gap-3 pt-5 border-t border-slate-100">
           <Link to="/clientes" className="dh-btn dh-btn-ghost">Cancelar</Link>
           <button type="submit" disabled={busy} className="dh-btn dh-btn-primary" data-testid="submit-tenant">
             {busy ? "Salvando…" : "Cadastrar cliente"}
@@ -85,8 +85,8 @@ export default function ClienteNovo() {
 function Field({ label, required, children }) {
   return (
     <label className="block">
-      <div className="text-[11px] uppercase tracking-widest font-bold text-[var(--dh-muted)] mb-2">
-        {label}{required && <span className="text-[var(--dh-accent)]">*</span>}
+      <div className="text-[13px] font-medium text-slate-700 mb-1.5">
+        {label}{required && <span className="text-[var(--dh-accent)]"> *</span>}
       </div>
       {children}
     </label>

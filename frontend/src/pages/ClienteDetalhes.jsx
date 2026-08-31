@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback } from "react";
 import { useParams, Link } from "react-router-dom";
 import { api } from "@/lib/api";
-import { ArrowLeft, ExternalLink, Mail, Phone, MapPin, Calendar, Settings2 } from "lucide-react";
+import { ArrowLeft, ExternalLink, Mail, Phone, MapPin, Calendar, Settings2, Users as UsersIcon } from "lucide-react";
 import StatusBadge from "@/components/StatusBadge";
 import { toast } from "sonner";
 
@@ -46,36 +46,40 @@ export default function ClienteDetalhes() {
   };
 
   if (!tenant) {
-    return <div className="text-sm text-[var(--dh-muted)]">Carregando…</div>;
+    return (
+      <div className="space-y-6">
+        <div className="dh-skeleton h-4 w-24" />
+        <div className="dh-skeleton h-9 w-72" />
+        <div className="dh-card p-7"><div className="dh-skeleton h-40 w-full" /></div>
+      </div>
+    );
   }
 
   return (
     <div className="space-y-6" data-testid="tenant-detail-page">
       <div>
-        <Link to="/clientes" className="text-[11px] uppercase tracking-widest font-bold text-[var(--dh-muted)] hover:text-[var(--dh-text)] inline-flex items-center gap-1">
-          <ArrowLeft size={12} /> Clientes
+        <Link to="/clientes" className="text-[12px] font-medium text-slate-400 hover:text-slate-700 transition-colors inline-flex items-center gap-1.5">
+          <ArrowLeft size={13} strokeWidth={1.8} /> Clientes
         </Link>
-        <div className="flex items-start justify-between mt-2 gap-6">
+        <div className="flex items-start justify-between mt-3 gap-6 flex-wrap">
           <div>
-            <div className="flex items-center gap-3">
-              <h1 className="text-3xl lg:text-4xl font-black tracking-tight" style={{fontFamily:"Cabinet Grotesk"}} data-testid="tenant-name">{tenant.name}</h1>
+            <div className="flex items-center gap-3 flex-wrap">
+              <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-slate-900" style={{fontFamily:"Cabinet Grotesk"}} data-testid="tenant-name">{tenant.name}</h1>
               <StatusBadge status={tenant.status} testid="tenant-status" />
             </div>
-            <div className="mt-1 text-[13px] text-[var(--dh-muted)] font-mono">tenant/{tenant.slug}</div>
+            <div className="mt-1.5 text-[12px] text-slate-400 font-mono">tenant/{tenant.slug}</div>
           </div>
-          <div className="flex items-center gap-2">
-            <select
-              value={tenant.status} onChange={(e) => changeStatus(e.target.value)}
-              className="dh-input py-1.5 pl-3 pr-8 text-[12px] font-semibold uppercase tracking-wider"
-              data-testid="change-status">
-              {STATUS_OPTS.map((s) => <option key={s.v} value={s.v}>Status: {s.l}</option>)}
-            </select>
-          </div>
+          <select
+            value={tenant.status} onChange={(e) => changeStatus(e.target.value)}
+            className="dh-input w-auto py-2 pl-3 pr-8 text-[13px] font-medium"
+            data-testid="change-status">
+            {STATUS_OPTS.map((s) => <option key={s.v} value={s.v}>Status: {s.l}</option>)}
+          </select>
         </div>
       </div>
 
       {/* Tabs */}
-      <div className="border-b border-[var(--dh-border)] flex items-center">
+      <div className="border-b border-slate-200 flex items-center">
         {TABS.map((t) => (
           <button key={t.key}
                   onClick={() => setTab(t.key)}
@@ -87,34 +91,36 @@ export default function ClienteDetalhes() {
       </div>
 
       {tab === "overview" && (
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 dh-fade-in">
-          <div className="dh-card p-6 lg:col-span-2 space-y-4" data-testid="tenant-info">
-            <div className="text-[11px] uppercase tracking-widest font-bold text-[var(--dh-muted)]">Informações</div>
-            <InfoRow icon={Mail} label="E-mail" value={tenant.email} />
-            <InfoRow icon={Phone} label="Telefone" value={tenant.phone || "—"} />
-            <InfoRow icon={MapPin} label="Endereço" value={tenant.address || "—"} />
-            <InfoRow icon={Calendar} label="Cadastrado em"
-                     value={tenant.created_at ? new Date(tenant.created_at).toLocaleString("pt-BR") : "—"} />
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-5 dh-fade-in">
+          <div className="dh-card p-6 sm:p-7 lg:col-span-2" data-testid="tenant-info">
+            <h2 className="text-base font-semibold text-slate-900 mb-5" style={{fontFamily:"Cabinet Grotesk"}}>Informações</h2>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-5">
+              <InfoRow icon={Mail} label="E-mail" value={tenant.email} />
+              <InfoRow icon={Phone} label="Telefone" value={tenant.phone || "—"} />
+              <InfoRow icon={MapPin} label="Endereço" value={tenant.address || "—"} />
+              <InfoRow icon={Calendar} label="Cadastrado em"
+                       value={tenant.created_at ? new Date(tenant.created_at).toLocaleString("pt-BR") : "—"} />
+            </div>
             {tenant.notes && (
-              <div className="pt-3 mt-2 border-t border-[var(--dh-border)]">
-                <div className="text-[11px] uppercase tracking-widest font-bold text-[var(--dh-muted)] mb-1">Observações</div>
-                <div className="text-[14px]">{tenant.notes}</div>
+              <div className="pt-5 mt-5 border-t border-slate-100">
+                <div className="text-[11px] uppercase tracking-wider font-semibold text-slate-400 mb-1.5">Observações</div>
+                <div className="text-[14px] text-slate-700 leading-relaxed">{tenant.notes}</div>
               </div>
             )}
-            <div className="grid grid-cols-3 gap-4 pt-4 mt-2 border-t border-[var(--dh-border)]">
+            <div className="grid grid-cols-3 gap-4 pt-5 mt-5 border-t border-slate-100">
               <MetricSmall label="Módulos ativos" value={tenant.active_modules} />
               <MetricSmall label="Usuários" value={tenant.users_count} />
               <MetricSmall label="Responsável" value={tenant.owner_name} textual />
             </div>
           </div>
-          <div className="dh-card p-6" data-testid="tenant-activity">
-            <div className="text-[11px] uppercase tracking-widest font-bold text-[var(--dh-muted)] mb-3">Atividade recente</div>
-            <ul className="space-y-3">
-              {activity.length === 0 && <li className="text-sm text-[var(--dh-muted)]">Sem eventos.</li>}
+          <div className="dh-card p-6 sm:p-7" data-testid="tenant-activity">
+            <h2 className="text-base font-semibold text-slate-900 mb-4" style={{fontFamily:"Cabinet Grotesk"}}>Atividade recente</h2>
+            <ul className="space-y-3.5">
+              {activity.length === 0 && <li className="text-sm text-slate-500">Sem eventos.</li>}
               {activity.map((a) => (
-                <li key={a.id} className="pb-2 border-b border-[var(--dh-border)] last:border-b-0 text-[13px]">
-                  <div><b>{a.actor_name}</b> <span className="text-[var(--dh-muted)]">— {a.action.replace(/_/g, " ")}</span></div>
-                  <div className="text-[11px] text-[var(--dh-muted)]">{new Date(a.created_at).toLocaleString("pt-BR")}</div>
+                <li key={a.id} className="pb-3.5 border-b border-slate-100 last:border-b-0 last:pb-0 text-[13px]">
+                  <div className="leading-snug"><b className="text-slate-900">{a.actor_name}</b> <span className="text-slate-500">— {a.action.replace(/_/g, " ")}</span></div>
+                  <div className="text-[11px] text-slate-400 mt-1">{new Date(a.created_at).toLocaleString("pt-BR")}</div>
                 </li>
               ))}
             </ul>
@@ -134,10 +140,12 @@ export default function ClienteDetalhes() {
 function InfoRow({ icon: Icon, label, value }) {
   return (
     <div className="flex items-start gap-3">
-      <Icon size={15} strokeWidth={1.6} className="text-[var(--dh-muted)] mt-1" />
-      <div>
-        <div className="text-[11px] uppercase tracking-widest font-bold text-[var(--dh-muted)]">{label}</div>
-        <div className="text-[14px]">{value}</div>
+      <span className="dh-icon-tile-neutral w-8 h-8 shrink-0">
+        <Icon size={14} strokeWidth={1.8} />
+      </span>
+      <div className="min-w-0">
+        <div className="text-[11px] uppercase tracking-wider font-semibold text-slate-400">{label}</div>
+        <div className="text-[14px] text-slate-800 mt-0.5 break-words">{value}</div>
       </div>
     </div>
   );
@@ -146,8 +154,8 @@ function InfoRow({ icon: Icon, label, value }) {
 function MetricSmall({ label, value, textual }) {
   return (
     <div>
-      <div className="text-[10px] uppercase tracking-widest font-bold text-[var(--dh-muted)]">{label}</div>
-      <div className={textual ? "text-[14px] font-semibold" : "text-2xl font-black"} style={!textual ? {fontFamily:"Cabinet Grotesk"} : {}}>{value ?? "—"}</div>
+      <div className="text-[11px] uppercase tracking-wider font-semibold text-slate-400">{label}</div>
+      <div className={textual ? "text-[14px] font-semibold text-slate-800 mt-1" : "dh-kpi-value mt-1"}>{value ?? "—"}</div>
     </div>
   );
 }
@@ -189,20 +197,20 @@ function ModulesTab({ tenantId, tenantSlug, modules, reload }) {
   };
 
   return (
-    <div className="grid grid-cols-1 md:grid-cols-2 gap-4 dh-fade-in" data-testid="modules-tab">
+    <div className="grid grid-cols-1 md:grid-cols-2 gap-5 dh-fade-in" data-testid="modules-tab">
       {modules.map((m) => (
-        <div key={m.key} className="dh-card p-5" data-testid={`module-card-${m.key}`}>
+        <div key={m.key} className="dh-card p-6" data-testid={`module-card-${m.key}`}>
           <div className="flex items-start justify-between gap-4 mb-3">
             <div>
-              <div className="flex items-center gap-2">
-                <div className="text-[17px] font-black tracking-tight" style={{fontFamily:"Cabinet Grotesk"}}>{m.name}</div>
+              <div className="flex items-center gap-2.5 flex-wrap">
+                <div className="text-[17px] font-semibold tracking-tight text-slate-900" style={{fontFamily:"Cabinet Grotesk"}}>{m.name}</div>
                 {m.active
-                  ? <span className="dh-chip dh-chip-success">ATIVO</span>
+                  ? <span className="dh-chip dh-chip-success">Ativo</span>
                   : <StatusBadge status={m.status} />}
               </div>
-              <div className="text-[11px] text-[var(--dh-muted)] font-mono">{m.category || "—"}</div>
+              <div className="text-[11px] text-slate-400 font-medium uppercase tracking-wider mt-1">{m.category || "Módulo"}</div>
             </div>
-            <label className="inline-flex items-center cursor-pointer">
+            <label className="inline-flex items-center cursor-pointer shrink-0">
               <input
                 type="checkbox"
                 checked={m.active}
@@ -211,20 +219,16 @@ function ModulesTab({ tenantId, tenantSlug, modules, reload }) {
                 className="sr-only peer"
                 data-testid={`toggle-${m.key}`}
               />
-              <span className={`w-10 h-5 rounded-sm relative transition-colors border ${
-                m.active ? "bg-[var(--dh-accent)] border-[var(--dh-accent)]"
-                          : (m.can_activate ? "bg-[var(--dh-neutral-bg)] border-[var(--dh-border)]"
-                                              : "bg-[var(--dh-neutral-bg)] border-[var(--dh-border)] opacity-50")
-              }`}>
-                <span className={`absolute top-0.5 h-4 w-4 bg-white rounded-sm shadow transition-transform ${m.active ? "translate-x-5" : "translate-x-0.5"}`}></span>
+              <span className={`dh-toggle ${m.active ? "dh-toggle-on" : "dh-toggle-off"} ${!m.active && !m.can_activate ? "dh-toggle-disabled" : ""}`}>
+                <span className={`dh-toggle-knob ${m.active ? "translate-x-[20px]" : "translate-x-[2px]"}`}></span>
               </span>
             </label>
           </div>
 
-          <p className="text-[13px] text-[var(--dh-muted)] mb-4 leading-relaxed">{m.description}</p>
+          <p className="text-[13px] text-slate-500 mb-4 leading-relaxed">{m.description}</p>
 
           {m.active && (
-            <div className="pt-3 border-t border-[var(--dh-border)] space-y-2">
+            <div className="pt-4 border-t border-slate-100 space-y-2.5">
               {editing === m.key ? (
                 <LaunchUrlEditor tenantId={tenantId} mkey={m.key} initial={m.launch_url}
                                  onDone={() => { setEditing(null); reload(); }} />
@@ -239,11 +243,11 @@ function ModulesTab({ tenantId, tenantSlug, modules, reload }) {
                   </button>
                   <button className="dh-btn dh-btn-ghost" onClick={() => setEditing(m.key)}
                           data-testid={`config-${m.key}`} title="Configurar URL">
-                    <Settings2 size={13} strokeWidth={1.8} />
+                    <Settings2 size={14} strokeWidth={1.8} />
                   </button>
                 </div>
               )}
-              <div className="text-[11px] text-[var(--dh-muted)] font-mono truncate">
+              <div className="text-[11px] text-slate-400 font-mono truncate">
                 {m.launch_url || `https://pedidos.dacot.app/${tenantSlug}`}
               </div>
             </div>
@@ -266,9 +270,9 @@ function LaunchUrlEditor({ tenantId, mkey, initial, onDone }) {
     } finally { setBusy(false); }
   };
   return (
-    <div className="flex gap-2">
+    <div className="flex gap-2 flex-wrap">
       <input value={url} onChange={(e) => setUrl(e.target.value)}
-             className="dh-input" placeholder="https://pedidos.dacot.app/…"
+             className="dh-input flex-1 min-w-[180px]" placeholder="https://pedidos.dacot.app/…"
              data-testid={`launch-url-input-${mkey}`} />
       <button className="dh-btn dh-btn-primary" onClick={save} disabled={busy} data-testid={`launch-url-save-${mkey}`}>Salvar</button>
       <button className="dh-btn dh-btn-ghost" onClick={onDone}>Cancelar</button>
@@ -278,7 +282,7 @@ function LaunchUrlEditor({ tenantId, mkey, initial, onDone }) {
 
 function UsersTab({ users }) {
   return (
-    <div className="dh-card dh-fade-in" data-testid="users-tab">
+    <div className="dh-card overflow-hidden dh-fade-in" data-testid="users-tab">
       <div className="overflow-x-auto">
         <table className="dh-table">
           <thead>
@@ -288,14 +292,20 @@ function UsersTab({ users }) {
           </thead>
           <tbody>
             {users.length === 0 && (
-              <tr><td colSpan={4} className="text-center text-[var(--dh-muted)] py-10">
-                Nenhum usuário ainda. Usuários são criados pelos módulos operacionais.
+              <tr><td colSpan={4} className="py-14">
+                <div className="flex flex-col items-center justify-center text-center gap-3">
+                  <span className="dh-icon-tile-neutral w-12 h-12 rounded-xl">
+                    <UsersIcon size={20} strokeWidth={1.6} />
+                  </span>
+                  <div className="text-sm font-medium text-slate-700">Nenhum usuário ainda</div>
+                  <div className="text-[13px] text-slate-400">Usuários são criados pelos módulos operacionais.</div>
+                </div>
               </td></tr>
             )}
             {users.map((u) => (
               <tr key={u.id} data-testid={`user-row-${u.id}`}>
-                <td className="font-semibold">{u.name}</td>
-                <td className="text-[13px]">{u.email}</td>
+                <td className="font-semibold text-slate-900">{u.name}</td>
+                <td className="text-[13px] text-slate-600">{u.email}</td>
                 <td><span className="dh-chip dh-chip-neutral">{u.role}</span></td>
                 <td><StatusBadge status={u.status} /></td>
               </tr>
