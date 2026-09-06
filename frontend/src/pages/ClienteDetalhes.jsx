@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback } from "react";
 import { useParams, Link } from "react-router-dom";
 import { api } from "@/lib/api";
-import { ArrowLeft, ExternalLink, Mail, Phone, MapPin, Calendar, Settings2, Users as UsersIcon } from "lucide-react";
+import { ArrowLeft, ExternalLink, Mail, Phone, MapPin, Calendar, Settings2, Users as UsersIcon, UserPlus } from "lucide-react";
 import StatusBadge from "@/components/StatusBadge";
 import { toast } from "sonner";
 
@@ -132,7 +132,7 @@ export default function ClienteDetalhes() {
         <ModulesTab tenantId={id} tenantSlug={tenant.slug} modules={modules} reload={load} />
       )}
 
-      {tab === "users" && <UsersTab users={users} />}
+      {tab === "users" && <UsersTab tenantId={id} users={users} reload={load} />}
     </div>
   );
 }
@@ -280,39 +280,168 @@ function LaunchUrlEditor({ tenantId, mkey, initial, onDone }) {
   );
 }
 
-function UsersTab({ users }) {
+const ROLE_OPTS = [
+  { v: "admin", l: "Administrador" },
+  { v: "manager", l: "Gerente" },
+  { v: "waiter", l: "Garçom" },
+  { v: "kitchen", l: "Cozinha" },
+];
+
+function UsersTab({ tenantId, users, reload }) {
+  const [adding, setAdding] = useState(false);
+
   return (
-    <div className="dh-card overflow-hidden dh-fade-in" data-testid="users-tab">
-      <div className="overflow-x-auto">
-        <table className="dh-table">
-          <thead>
-            <tr>
-              <th>Nome</th><th>E-mail</th><th>Função</th><th>Status</th>
-            </tr>
-          </thead>
-          <tbody>
-            {users.length === 0 && (
-              <tr><td colSpan={4} className="py-14">
-                <div className="flex flex-col items-center justify-center text-center gap-3">
-                  <span className="dh-icon-tile-neutral w-12 h-12 rounded-xl">
-                    <UsersIcon size={20} strokeWidth={1.6} />
-                  </span>
-                  <div className="text-sm font-medium text-slate-700">Nenhum usuário ainda</div>
-                  <div className="text-[13px] text-slate-400">Usuários são criados pelos módulos operacionais.</div>
-                </div>
-              </td></tr>
-            )}
-            {users.map((u) => (
-              <tr key={u.id} data-testid={`user-row-${u.id}`}>
-                <td className="font-semibold text-slate-900">{u.name}</td>
-                <td className="text-[13px] text-slate-600">{u.email}</td>
-                <td><span className="dh-chip dh-chip-neutral">{u.role}</span></td>
-                <td><StatusBadge status={u.status} /></td>
+    <div className="space-y-4 dh-fade-in" data-testid="users-tab">
+      <div className="flex justify-end">
+        <button className="dh-btn dh-btn-primary" onClick={() => setAdding((v) => !v)}
+                data-testid="add-user-toggle">
+          <UserPlus size={14} strokeWidth={1.8} /> Adicionar usuário
+        </button>
+      </div>
+
+      {adding && (
+        <NewUserForm tenantId={tenantId}
+                     onDone={() => { setAdding(false); reload(); }}
+                     onCancel={() => setAdding(false)} />
+      )}
+
+      <div className="dh-card overflow-hidden">
+        <div className="overflow-x-auto">
+          <table className="dh-table">
+            <thead>
+              <tr>
+                <th>Nome</th><th>E-mail</th><th>Função</th><th>Status</th><th></th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {users.length === 0 && (
+                <tr><td colSpan={5} className="py-14">
+                  <div className="flex flex-col items-center justify-center text-center gap-3">
+                    <span className="dh-icon-tile-neutral w-12 h-12 rounded-xl">
+                      <UsersIcon size={20} strokeWidth={1.6} />
+                    </span>
+                    <div className="text-sm font-medium text-slate-700">Nenhum usuário ainda</div>
+                    <div className="text-[13px] text-slate-400">Adicione o primeiro usuário deste restaurante.</div>
+                  </div>
+                </td></tr>
+              )}
+              {users.map((u) => (
+                <UserRow key={u.id} tenantId={tenantId} user={u} reload={reload} />
+              ))}
+            </tbody>
+          </table>
+        </div>
       </div>
     </div>
+  );
+}
+
+function UserRow({ tenantId, user, reload }) {
+  const [editing, setEditing] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  const changeRole = async (role) => {
+    setBusy(true);
+    try {
+      await api.patch(`/hub/tenants/${tenantId}/users/${user.id}`, { role });
+      toast.success("Função atualizada");
+      reload();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Não foi possível atualizar a função.");
+    } finally { setBusy(false); }
+  };
+
+  const toggleStatus = async () => {
+    setBusy(true);
+    try {
+      const status = user.status === "active" ? "inactive" : "active";
+      await api.patch(`/hub/tenants/${tenantId}/users/${user.id}`, { status });
+      toast.success(status === "active" ? "Usuário ativado" : "Usuário desativado");
+      reload();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Não foi possível atualizar o status.");
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <tr data-testid={`user-row-${user.id}`}>
+      <td className="font-semibold text-slate-900">{user.name}</td>
+      <td className="text-[13px] text-slate-600">{user.email}</td>
+      <td>
+        {editing ? (
+          <select value={user.role} disabled={busy} onChange={(e) => changeRole(e.target.value)}
+                  className="dh-input w-auto py-1.5 pl-2 pr-7 text-[12px]"
+                  data-testid={`user-role-select-${user.id}`}>
+            {ROLE_OPTS.map((r) => <option key={r.v} value={r.v}>{r.l}</option>)}
+          </select>
+        ) : (
+          <span className="dh-chip dh-chip-neutral">{ROLE_OPTS.find((r) => r.v === user.role)?.l || user.role}</span>
+        )}
+      </td>
+      <td><StatusBadge status={user.status} /></td>
+      <td className="text-right">
+        <div className="flex items-center justify-end gap-2">
+          <button className="dh-btn dh-btn-ghost" onClick={() => setEditing((v) => !v)}
+                  data-testid={`user-edit-${user.id}`} title="Editar função">
+            <Settings2 size={14} strokeWidth={1.8} />
+          </button>
+          <button className="dh-btn dh-btn-outline" onClick={toggleStatus} disabled={busy}
+                  data-testid={`user-toggle-status-${user.id}`}>
+            {user.status === "active" ? "Desativar" : "Ativar"}
+          </button>
+        </div>
+      </td>
+    </tr>
+  );
+}
+
+function NewUserForm({ tenantId, onDone, onCancel }) {
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
+  const [role, setRole] = useState("waiter");
+  const [busy, setBusy] = useState(false);
+
+  const submit = async (e) => {
+    e.preventDefault();
+    setBusy(true);
+    try {
+      const { data } = await api.post(`/hub/tenants/${tenantId}/users`, { name, email, role });
+      if (data.temp_password) {
+        toast.success(`Usuário criado. Senha temporária: ${data.temp_password}`, { duration: 15000 });
+      } else {
+        toast.success("Usuário criado");
+      }
+      onDone();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Não foi possível criar o usuário.");
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <form onSubmit={submit} className="dh-card p-5 flex flex-wrap items-end gap-3" data-testid="new-user-form">
+      <div className="flex-1 min-w-[160px]">
+        <label className="text-[11px] uppercase tracking-wider font-semibold text-slate-400">Nome</label>
+        <input value={name} onChange={(e) => setName(e.target.value)} required
+               className="dh-input mt-1" data-testid="new-user-name" />
+      </div>
+      <div className="flex-1 min-w-[200px]">
+        <label className="text-[11px] uppercase tracking-wider font-semibold text-slate-400">E-mail</label>
+        <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required
+               className="dh-input mt-1" data-testid="new-user-email" />
+      </div>
+      <div className="min-w-[160px]">
+        <label className="text-[11px] uppercase tracking-wider font-semibold text-slate-400">Função</label>
+        <select value={role} onChange={(e) => setRole(e.target.value)}
+                className="dh-input mt-1" data-testid="new-user-role">
+          {ROLE_OPTS.map((r) => <option key={r.v} value={r.v}>{r.l}</option>)}
+        </select>
+      </div>
+      <div className="flex gap-2">
+        <button type="submit" className="dh-btn dh-btn-primary" disabled={busy} data-testid="new-user-submit">
+          Criar
+        </button>
+        <button type="button" className="dh-btn dh-btn-ghost" onClick={onCancel}>Cancelar</button>
+      </div>
+    </form>
   );
 }

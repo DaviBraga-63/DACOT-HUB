@@ -630,16 +630,97 @@ async def set_launch_url(tid: str, mkey: str, payload: LaunchUrlIn, _u: dict = D
 
 
 # ─── Tenant users ──────────────────────────────────────────────────────────────
+VALID_TENANT_USER_STATUS = {"active", "inactive"}
+
+
+def _tenant_user_out(d: dict) -> dict:
+    return {
+        "id": str(d["_id"]), "name": d.get("name", ""), "email": d.get("email", ""),
+        "role": d.get("role", ""), "status": d.get("status", "active"),
+        "created_at": d.get("created_at"),
+    }
+
+
+class TenantUserIn(BaseModel):
+    name: str
+    email: EmailStr
+    role: str
+    password: Optional[str] = Field(default=None, min_length=6)
+
+
+class TenantUserPatch(BaseModel):
+    name: Optional[str] = None
+    email: Optional[EmailStr] = None
+    role: Optional[str] = None
+    status: Optional[str] = None
+
+
 @api_router.get("/hub/tenants/{tid}/users")
 async def tenant_users(tid: str, _u: dict = Depends(get_staff_user)):
     if not ObjectId.is_valid(tid):
         raise HTTPException(404, "Cliente não encontrado")
     docs = await db.tenant_users.find({"tenant_id": tid}).sort("created_at", -1).to_list(500)
-    return [{
-        "id": str(d["_id"]), "name": d.get("name", ""), "email": d.get("email", ""),
-        "role": d.get("role", ""), "status": d.get("status", "active"),
-        "created_at": d.get("created_at"),
-    } for d in docs]
+    return [_tenant_user_out(d) for d in docs]
+
+
+@api_router.post("/hub/tenants/{tid}/users")
+async def create_tenant_user(tid: str, payload: TenantUserIn, user: dict = Depends(get_staff_write)):
+    if not ObjectId.is_valid(tid):
+        raise HTTPException(404, "Cliente não encontrado")
+    tenant = await db.tenants.find_one({"_id": ObjectId(tid)})
+    if not tenant:
+        raise HTTPException(404, "Cliente não encontrado")
+    if payload.role not in VALID_HANDOFF_ROLES:
+        raise HTTPException(400, "Papel inválido")
+    email = payload.email.lower()
+    if await db.tenant_users.find_one({"email": email}):
+        raise HTTPException(409, "Já existe um usuário com este e-mail")
+    generated_password = None if payload.password else secrets.token_urlsafe(9)
+    doc = {
+        "tenant_id": tid, "name": payload.name.strip(), "email": email,
+        "role": payload.role, "status": "active",
+        "password_hash": hash_password(payload.password or generated_password),
+        "user_type": "restaurant", "token_version": 0,
+        "created_at": now_utc().isoformat(),
+    }
+    res = await db.tenant_users.insert_one(doc)
+    doc["_id"] = res.inserted_id
+    await log_activity(actor_id=user["_id"], actor_name=user.get("name", user["email"]),
+                       action="tenant_user.created", target_type="tenant_user",
+                       target_id=str(res.inserted_id), tenant_id=tid,
+                       metadata={"email": email, "role": payload.role})
+    out = _tenant_user_out(doc)
+    out["temp_password"] = generated_password
+    return out
+
+
+@api_router.patch("/hub/tenants/{tid}/users/{uid}")
+async def patch_tenant_user(tid: str, uid: str, payload: TenantUserPatch,
+                            user: dict = Depends(get_staff_write)):
+    if not ObjectId.is_valid(tid) or not ObjectId.is_valid(uid):
+        raise HTTPException(404, "Usuário não encontrado")
+    existing = await db.tenant_users.find_one({"_id": ObjectId(uid), "tenant_id": tid})
+    if not existing:
+        raise HTTPException(404, "Usuário não encontrado")
+    update = {k: v for k, v in payload.model_dump(exclude_unset=True).items() if v is not None}
+    if "email" in update:
+        email = update["email"].lower()
+        dup = await db.tenant_users.find_one({"email": email, "_id": {"$ne": ObjectId(uid)}})
+        if dup:
+            raise HTTPException(409, "Já existe um usuário com este e-mail")
+        update["email"] = email
+    if "role" in update and update["role"] not in VALID_HANDOFF_ROLES:
+        raise HTTPException(400, "Papel inválido")
+    if "status" in update and update["status"] not in VALID_TENANT_USER_STATUS:
+        raise HTTPException(400, "Status inválido")
+    if update:
+        await db.tenant_users.update_one({"_id": ObjectId(uid)}, {"$set": update})
+    if "status" in update:
+        await log_activity(actor_id=user["_id"], actor_name=user.get("name", user["email"]),
+                           action="tenant_user.status_changed", target_type="tenant_user",
+                           target_id=uid, tenant_id=tid, metadata={"status": update["status"]})
+    d = await db.tenant_users.find_one({"_id": ObjectId(uid)})
+    return _tenant_user_out(d)
 
 
 # ─── Dashboard ─────────────────────────────────────────────────────────────────
