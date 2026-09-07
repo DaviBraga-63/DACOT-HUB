@@ -1042,22 +1042,35 @@ async def startup():
     await db.hub_users.update_many({"user_type": {"$exists": False}},
                                    {"$set": {"user_type": "staff"}})
 
-    # Seed extra staff users for RBAC (idempotent)
-    for staff_seed in [
-        {"email": "admin@dacot.com", "password": "Admin@2026", "name": "Admin DACOT", "role": "admin"},
-        {"email": "viewer@dacot.com", "password": "Viewer@2026", "name": "Viewer DACOT", "role": "viewer"},
-    ]:
-        ex = await db.hub_users.find_one({"email": staff_seed["email"]})
+    # Optional extra staff accounts (e.g. a dedicated "admin" or "viewer" role
+    # account for RBAC testing/ops) — seeded ONLY when both email and password
+    # are explicitly provided via environment. No hardcoded email, no hardcoded
+    # or default password: if the pair of variables is absent, the account is
+    # simply not created. This mirrors the ADMIN_EMAIL/ADMIN_PASSWORD bootstrap
+    # above rather than baking any credential into source.
+    OPTIONAL_STAFF_SEEDS = [
+        {"role": "admin", "email_var": "STAFF_ADMIN_EMAIL", "password_var": "STAFF_ADMIN_PASSWORD",
+         "name_var": "STAFF_ADMIN_NAME", "default_name": "Admin DACOT"},
+        {"role": "viewer", "email_var": "STAFF_VIEWER_EMAIL", "password_var": "STAFF_VIEWER_PASSWORD",
+         "name_var": "STAFF_VIEWER_NAME", "default_name": "Viewer DACOT"},
+    ]
+    for seed in OPTIONAL_STAFF_SEEDS:
+        seed_email = os.environ.get(seed["email_var"], "").strip().lower()
+        seed_pw = os.environ.get(seed["password_var"], "")
+        if not seed_email or not seed_pw:
+            continue
+        seed_name = os.environ.get(seed["name_var"]) or seed["default_name"]
+        ex = await db.hub_users.find_one({"email": seed_email})
         if not ex:
             await db.hub_users.insert_one({
-                "email": staff_seed["email"], "password_hash": hash_password(staff_seed["password"]),
-                "name": staff_seed["name"], "role": staff_seed["role"], "user_type": "staff",
+                "email": seed_email, "password_hash": hash_password(seed_pw),
+                "name": seed_name, "role": seed["role"], "user_type": "staff",
                 "active": True, "token_version": 0, "created_at": now_utc().isoformat(),
             })
-            logger.info("Seeded staff %s (%s)", staff_seed["email"], staff_seed["role"])
-        elif not verify_password(staff_seed["password"], ex["password_hash"]):
-            await db.hub_users.update_one({"email": staff_seed["email"]},
-                                          {"$set": {"password_hash": hash_password(staff_seed["password"])}})
+            logger.info("Seeded staff %s (%s)", seed_email, seed["role"])
+        elif not verify_password(seed_pw, ex["password_hash"]):
+            await db.hub_users.update_one({"email": seed_email},
+                                          {"$set": {"password_hash": hash_password(seed_pw)}})
 
     # Seed modules
     for m in DEFAULT_MODULES:

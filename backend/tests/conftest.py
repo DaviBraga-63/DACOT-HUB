@@ -87,15 +87,55 @@ def client(test_credentials):
     return s
 
 
+def _optional_staff_creds(role, email_var, password_var):
+    """Credentials for the optional STAFF_ADMIN_*/STAFF_VIEWER_* seed accounts
+    (see backend/server.py OPTIONAL_STAFF_SEEDS), read from the backend's own
+    .env — the single source of truth for whether those accounts even exist.
+    Falls back to a matching row in test_credentials.md (if present) for
+    environments that provision that role a different way. No credential is
+    ever hardcoded here."""
+    email = backend_env.get(email_var)
+    password = backend_env.get(password_var)
+    if email and password:
+        return {"email": email, "password": password, "role": role}
+    if role in STAFF_CREDS:
+        return STAFF_CREDS[role]
+    return None
+
+
 @pytest.fixture(scope="session")
-def staff_admin():
-    s, _ = _login(STAFF_CREDS["admin"])
+def staff_admin_creds():
+    """Credentials dict only (no login) — for tests that need their own
+    independent session, e.g. because they log it out or otherwise mutate
+    its state and must not disturb the shared `staff_admin` session."""
+    creds = _optional_staff_creds("admin", "STAFF_ADMIN_EMAIL", "STAFF_ADMIN_PASSWORD")
+    if not creds:
+        pytest.skip("no 'admin' staff credentials available — set STAFF_ADMIN_EMAIL/"
+                    "STAFF_ADMIN_PASSWORD in backend/.env or add an 'admin' row to "
+                    "test_credentials.md")
+    return creds
+
+
+@pytest.fixture(scope="session")
+def staff_admin(staff_admin_creds):
+    s, _ = _login(staff_admin_creds)
     return s
 
 
 @pytest.fixture(scope="session")
-def staff_viewer():
-    s, _ = _login(STAFF_CREDS["viewer"])
+def staff_viewer_creds():
+    """Credentials dict only (no login) — see staff_admin_creds."""
+    creds = _optional_staff_creds("viewer", "STAFF_VIEWER_EMAIL", "STAFF_VIEWER_PASSWORD")
+    if not creds:
+        pytest.skip("no 'viewer' staff credentials available — set STAFF_VIEWER_EMAIL/"
+                    "STAFF_VIEWER_PASSWORD in backend/.env or add a 'viewer' row to "
+                    "test_credentials.md")
+    return creds
+
+
+@pytest.fixture(scope="session")
+def staff_viewer(staff_viewer_creds):
+    s, _ = _login(staff_viewer_creds)
     return s
 
 

@@ -251,9 +251,9 @@ class TestRegression:
         assert s.post(f"{api}/auth/logout", timeout=30).status_code == 200
         assert s.get(f"{api}/auth/me", timeout=30).status_code == 401
 
-    def test_refresh_and_logout_staff(self, api):
-        from conftest import STAFF_CREDS, _login
-        s, _ = _login(STAFF_CREDS["viewer"])
+    def test_refresh_and_logout_staff(self, api, staff_viewer_creds):
+        from conftest import _login
+        s, _ = _login(staff_viewer_creds)
         assert s.post(f"{api}/auth/refresh", timeout=30).status_code == 200
         assert s.get(f"{api}/hub/tenants", timeout=30).status_code == 200
         assert s.post(f"{api}/auth/logout", timeout=30).status_code == 200
@@ -334,12 +334,11 @@ class TestAuthPlaybook:
                       json={"token": "invalido", "password": "Nova@2026"}, timeout=30)
         assert r.status_code == 400
 
-    def test_login_sets_httponly_cookies(self, api):
+    def test_login_sets_httponly_cookies(self, api, staff_viewer_creds):
         import requests
-        from conftest import STAFF_CREDS
         s = requests.Session()
-        r = s.post(f"{api}/auth/login", json={"email": STAFF_CREDS["viewer"]["email"],
-                                              "password": STAFF_CREDS["viewer"]["password"]},
+        r = s.post(f"{api}/auth/login", json={"email": staff_viewer_creds["email"],
+                                              "password": staff_viewer_creds["password"]},
                    timeout=30)
         assert r.status_code == 200
         raw = "; ".join(r.headers.get_all("set-cookie")) if hasattr(r.headers, "get_all") \
