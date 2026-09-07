@@ -61,17 +61,17 @@ export default function ClienteDetalhes() {
         <Link to="/clientes" className="text-[12px] font-medium text-slate-400 hover:text-slate-700 transition-colors inline-flex items-center gap-1.5">
           <ArrowLeft size={13} strokeWidth={1.8} /> Clientes
         </Link>
-        <div className="flex items-start justify-between mt-3 gap-6 flex-wrap">
+        <div className="flex items-start justify-between mt-4 gap-6 flex-wrap">
           <div>
             <div className="flex items-center gap-3 flex-wrap">
-              <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-slate-900" style={{fontFamily:"Cabinet Grotesk"}} data-testid="tenant-name">{tenant.name}</h1>
+              <h1 className="text-3xl sm:text-4xl font-bold tracking-tight text-slate-900" style={{fontFamily:"Cabinet Grotesk"}} data-testid="tenant-name">{tenant.name}</h1>
               <StatusBadge status={tenant.status} testid="tenant-status" />
             </div>
-            <div className="mt-1.5 text-[12px] text-slate-400 font-mono">tenant/{tenant.slug}</div>
+            <div className="mt-2 text-[12px] text-slate-400 font-mono">tenant/{tenant.slug}</div>
           </div>
           <select
             value={tenant.status} onChange={(e) => changeStatus(e.target.value)}
-            className="dh-input w-auto py-2 pl-3 pr-8 text-[13px] font-medium"
+            className="dh-input w-auto py-2 pl-3 pr-8 text-[13px] font-semibold"
             data-testid="change-status">
             {STATUS_OPTS.map((s) => <option key={s.v} value={s.v}>Status: {s.l}</option>)}
           </select>
@@ -199,16 +199,24 @@ function ModulesTab({ tenantId, tenantSlug, modules, reload }) {
   return (
     <div className="grid grid-cols-1 md:grid-cols-2 gap-5 dh-fade-in" data-testid="modules-tab">
       {modules.map((m) => (
-        <div key={m.key} className="dh-card p-6" data-testid={`module-card-${m.key}`}>
-          <div className="flex items-start justify-between gap-4 mb-3">
+        <div
+          key={m.key}
+          className="dh-card p-6 transition-all duration-200 relative"
+          data-testid={`module-card-${m.key}`}
+          style={{
+            borderLeft: m.active ? '4px solid var(--dh-accent)' : '4px solid transparent',
+            boxShadow: m.active ? 'var(--shadow-md)' : 'var(--shadow-xs)'
+          }}
+        >
+          <div className="flex items-start justify-between gap-4 mb-4">
             <div>
-              <div className="flex items-center gap-2.5 flex-wrap">
+              <div className="flex items-center gap-3 flex-wrap">
                 <div className="text-[17px] font-semibold tracking-tight text-slate-900" style={{fontFamily:"Cabinet Grotesk"}}>{m.name}</div>
                 {m.active
                   ? <span className="dh-chip dh-chip-success">Ativo</span>
                   : <StatusBadge status={m.status} />}
               </div>
-              <div className="text-[11px] text-slate-400 font-medium uppercase tracking-wider mt-1">{m.category || "Módulo"}</div>
+              <div className="text-[11px] text-slate-400 font-medium uppercase tracking-wider mt-1.5">{m.category || "Módulo"}</div>
             </div>
             <label className="inline-flex items-center cursor-pointer shrink-0">
               <input
@@ -225,10 +233,10 @@ function ModulesTab({ tenantId, tenantSlug, modules, reload }) {
             </label>
           </div>
 
-          <p className="text-[13px] text-slate-500 mb-4 leading-relaxed">{m.description}</p>
+          <p className="text-[13px] text-slate-600 mb-5 leading-relaxed">{m.description}</p>
 
           {m.active && (
-            <div className="pt-4 border-t border-slate-100 space-y-2.5">
+            <div className="pt-5 border-t border-slate-100 space-y-3">
               {editing === m.key ? (
                 <LaunchUrlEditor tenantId={tenantId} mkey={m.key} initial={m.launch_url}
                                  onDone={() => { setEditing(null); reload(); }} />
@@ -237,17 +245,17 @@ function ModulesTab({ tenantId, tenantSlug, modules, reload }) {
                   <button
                     type="button"
                     onClick={() => openModule(m)}
-                    className="dh-btn dh-btn-outline flex-1"
+                    className="dh-btn dh-btn-primary flex-1"
                     data-testid={`open-${m.key}`}>
-                    <ExternalLink size={13} strokeWidth={1.8} /> Abrir módulo
+                    <ExternalLink size={14} strokeWidth={2} /> Abrir módulo
                   </button>
-                  <button className="dh-btn dh-btn-ghost" onClick={() => setEditing(m.key)}
+                  <button className="dh-btn dh-btn-outline px-3" onClick={() => setEditing(m.key)}
                           data-testid={`config-${m.key}`} title="Configurar URL">
-                    <Settings2 size={14} strokeWidth={1.8} />
+                    <Settings2 size={16} strokeWidth={1.8} />
                   </button>
                 </div>
               )}
-              <div className="text-[11px] text-slate-400 font-mono truncate">
+              <div className="text-[12px] text-slate-400 font-mono truncate">
                 {m.launch_url || `https://pedidos.dacot.app/${tenantSlug}`}
               </div>
             </div>

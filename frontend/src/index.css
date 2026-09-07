@@ -3,29 +3,53 @@
 @tailwind components;
 @tailwind utilities;
 
+/* DESIGN TOKENS */
 :root {
-    --dh-bg: #F9F9F6;
+    /* Colors */
+    --dh-bg: #F7F6F2;
     --dh-surface: #FFFFFF;
-    --dh-border: #E2E8F0;
-    --dh-border-soft: #F1F5F9;
-    --dh-text: #0F172A;
-    --dh-muted: #64748B;
-    --dh-accent: #D95D39;
-    --dh-accent-hover: #C24B2B;
-    --dh-accent-soft: rgba(217, 93, 57, 0.10);
+    --dh-border: #E8E5DE;
+    --dh-border-soft: #F1F0ED;
+    --dh-text: #1a1a1a;
+    --dh-muted: #6B6B6B;
+    --dh-accent: #1B73B8;
+    --dh-accent-hover: #0D3867;
+    --dh-accent-light: #32A5DC;
+    --dh-accent-soft: rgba(27, 115, 184, 0.08);
+    --dh-accent-gradient: linear-gradient(135deg, #1B73B8 0%, #32A5DC 100%);
 
-    --dh-success-bg: #ECFDF5;
-    --dh-success-fg: #047857;
-    --dh-success-bd: #A7F3D0;
+    /* Status colors */
+    --dh-success-bg: #F0FDF4;
+    --dh-success-fg: #16A34A;
+    --dh-success-bd: #BBF7D0;
     --dh-warning-bg: #FFFBEB;
-    --dh-warning-fg: #B45309;
-    --dh-warning-bd: #FDE68A;
+    --dh-warning-fg: #D97706;
+    --dh-warning-bd: #FCD34D;
     --dh-error-bg: #FEF2F2;
-    --dh-error-fg: #B91C1C;
+    --dh-error-fg: #DC2626;
     --dh-error-bd: #FECACA;
-    --dh-neutral-bg: #F8FAFC;
-    --dh-neutral-fg: #475569;
-    --dh-neutral-bd: #E2E8F0;
+    --dh-neutral-bg: #F3F1ED;
+    --dh-neutral-fg: #6B6B6B;
+    --dh-neutral-bd: #E0DCD4;
+
+    /* Shadows */
+    --shadow-xs: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+    --shadow-sm: 0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px 0 rgba(0, 0, 0, 0.06);
+    --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+    --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+    --shadow-xl: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
+    --shadow-accent: 0 0 20px rgba(27, 115, 184, 0.15);
+
+    /* Transitions */
+    --transition-fast: 150ms cubic-bezier(0.4, 0, 0.2, 1);
+    --transition-base: 200ms cubic-bezier(0.4, 0, 0.2, 1);
+    --transition-slow: 300ms cubic-bezier(0.4, 0, 0.2, 1);
+
+    /* Border radius */
+    --radius-sm: 0.375rem;
+    --radius-md: 0.5rem;
+    --radius-lg: 0.75rem;
+    --radius-xl: 1rem;
 }
 
 @layer base {
@@ -42,13 +66,13 @@
         --secondary-foreground: 222 47% 11%;
         --muted: 210 40% 96%;
         --muted-foreground: 215 16% 47%;
-        --accent: 15 66% 54%;
+        --accent: 207 81% 41%;
         --accent-foreground: 0 0% 100%;
         --destructive: 0 72% 43%;
         --destructive-foreground: 0 0% 100%;
         --border: 214 32% 91%;
         --input: 214 32% 91%;
-        --ring: 15 66% 54%;
+        --ring: 207 81% 41%;
         --radius: 8px;
     }
 }
@@ -125,7 +149,7 @@
     cursor: pointer; user-select: none;
 }
 .dh-btn:active { transform: scale(0.98); }
-.dh-btn:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--dh-surface), 0 0 0 4px rgba(217,93,57,.5); }
+.dh-btn:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--dh-surface), 0 0 0 4px rgba(27,115,184,.5); }
 .dh-btn-primary { background: var(--dh-accent); color: #fff; box-shadow: 0 1px 2px 0 rgba(15,23,42,.08); }
 .dh-btn-primary:hover { background: var(--dh-accent-hover); }
 .dh-btn-primary:disabled { background: #CBD5E1; cursor: not-allowed; box-shadow: none; }
@@ -143,7 +167,7 @@
     transition: border-color .15s ease, box-shadow .15s ease;
 }
 .dh-input::placeholder { color: #94A3B8; }
-.dh-input:focus-visible { border-color: var(--dh-accent); box-shadow: 0 0 0 3px rgba(217,93,57,0.18); }
+.dh-input:focus-visible { border-color: var(--dh-accent); box-shadow: 0 0 0 3px rgba(27,115,184,0.18); }
 
 /* ── Tables ────────────────────────────────────────────────────────────── */
 .dh-table { width: 100%; border-collapse: collapse; font-size: 14px; }
@@ -215,7 +239,7 @@
     transition: background-color .18s ease, opacity .18s ease;
     border: 1px solid transparent;
 }
-.dh-toggle-on  { background: var(--dh-accent); }
+.dh-toggle-on  { background: var(--dh-accent); box-shadow: 0 0 0 2px rgba(27, 115, 184, 0.2); }
 .dh-toggle-off { background: #E2E8F0; }
 .dh-toggle-disabled { opacity: .45; }
 .dh-toggle-knob {
@@ -223,4 +247,30 @@
     background: #fff; border-radius: 9999px;
     box-shadow: 0 1px 2px rgba(15,23,42,.2);
     transition: transform .18s ease;
+}
+
+/* ── Animations ────────────────────────────────────────────────────────── */
+@keyframes dhSlideIn { from { opacity: 0; transform: translateX(-10px); } to { opacity: 1; transform: none; } }
+@keyframes dhGlow { 0%, 100% { box-shadow: 0 0 0 0 transparent; } 50% { box-shadow: 0 0 12px rgba(27, 115, 184, 0.4); } }
+@keyframes dhShimmer { 0% { background-position: -1000px 0; } 100% { background-position: 1000px 0; } }
+@keyframes dhCountUp { from { opacity: 0; transform: scale(0.8); } to { opacity: 1; transform: scale(1); } }
+
+.dh-slide-in { animation: dhSlideIn .3s ease-out; }
+.dh-glow { animation: dhGlow 2s ease-in-out infinite; }
+.dh-count-up { animation: dhCountUp .5s ease-out; }
+
+/* ── Grid geometric background for login ───────────────────────────────── */
+.dh-grid-bg {
+    background-image: 
+        linear-gradient(rgba(27, 115, 184, 0.08) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(27, 115, 184, 0.08) 1px, transparent 1px);
+    background-size: 60px 60px;
+    position: relative;
+}
+.dh-grid-bg::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(135deg, rgba(27, 115, 184, 0.1) 0%, rgba(50, 165, 220, 0.05) 100%);
+    pointer-events: none;
 }

@@ -46,6 +46,24 @@ class TestLaunchToken:
         # secret never leaked in response body
         assert secret not in r.text
 
+    def test_launch_token_url_uses_production_domain_and_slug(self, api, client, hamburgueria):
+        """launch_url deve ser montado a partir do template de produção + slug do tenant,
+        nunca de um domínio de preview/infra de terceiros."""
+        tid = hamburgueria["id"]
+
+        # Remove qualquer override de launch_url para este teste, forçando o uso do template
+        client.patch(f"{api}/hub/tenants/{tid}/modules/orders", json={"launch_url": ""}, timeout=30)
+
+        r = client.post(f"{api}/hub/tenants/{tid}/modules/orders/launch-token", json={}, timeout=30)
+        assert r.status_code == 200, r.text
+        launch_url = r.json()["launch_url"]
+        restaurant_slug = hamburgueria.get("slug", "")
+
+        assert "pedidos.dacot.app" in launch_url, f"Domínio de produção não encontrado em: {launch_url}"
+        assert restaurant_slug in launch_url, f"Slug {restaurant_slug} não encontrado em: {launch_url}"
+        expected_pattern = f"https://pedidos.dacot.app/{restaurant_slug}"
+        assert launch_url == expected_pattern, f"Esperado {expected_pattern}, obtido {launch_url}"
+
     def test_launch_token_rejects_invalid_signature(self, api, client, hamburgueria):
         r = client.post(f"{api}/hub/tenants/{hamburgueria['id']}/modules/orders/launch-token",
                         json={}, timeout=30)

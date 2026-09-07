@@ -12,11 +12,19 @@ const NAV = [
 
 function Brand() {
   return (
-    <div className="flex items-center gap-2.5">
-      <div className="w-8 h-8 bg-[var(--dh-accent)] rounded-lg flex items-center justify-center text-white font-bold text-sm shadow-sm" style={{fontFamily:"Cabinet Grotesk"}}>D</div>
-      <div className="leading-tight">
-        <div className="font-bold text-[15px] tracking-tight text-slate-900" style={{fontFamily:"Cabinet Grotesk"}}>DACOT</div>
-        <div className="text-[10px] text-slate-400 uppercase tracking-widest font-semibold">Hub</div>
+    <div className="flex items-center gap-3">
+      <div 
+        className="w-10 h-10 rounded-lg flex items-center justify-center text-white font-bold text-base shadow-md"
+        style={{
+          background: 'linear-gradient(135deg, #1B73B8 0%, #32A5DC 100%)',
+          fontFamily: 'Cabinet Grotesk'
+        }}
+      >
+        D
+      </div>
+      <div className="leading-tight hidden sm:block">
+        <div className="font-bold text-sm tracking-tight text-slate-900" style={{fontFamily:"Cabinet Grotesk"}}>DACOT</div>
+        <div className="text-[9px] text-slate-400 uppercase tracking-widest font-semibold">Hub</div>
       </div>
     </div>
   );
@@ -53,9 +61,10 @@ export default function AppLayout() {
   ));
 
   const bottomSection = (
-    <div className="border-t border-slate-100 pt-3 pb-4 px-3 space-y-1">
-      <div className="flex items-center gap-3 px-2 py-2">
-        <div className="w-9 h-9 bg-slate-100 rounded-full flex items-center justify-center text-[13px] font-semibold text-slate-700 shrink-0">
+    <div className="border-t border-slate-100 px-3 py-4 space-y-1">
+      <div className="flex items-center gap-3 px-3 py-2.5 rounded-lg">
+        <div className="w-10 h-10 rounded-full flex items-center justify-center text-[14px] font-bold text-white shrink-0" 
+             style={{ background: 'linear-gradient(135deg, #1B73B8 0%, #32A5DC 100%)' }}>
           {initials}
         </div>
         <div className="flex-1 min-w-0 leading-tight">
@@ -86,18 +95,18 @@ export default function AppLayout() {
     <div className="min-h-screen flex bg-[var(--dh-bg)]">
       {/* Sidebar — desktop */}
       <aside className="hidden lg:flex w-64 bg-white border-r border-slate-200 flex-col fixed inset-y-0 z-30" data-testid="sidebar">
-        <div className="px-5 py-5 border-b border-slate-100">
+        <div className="px-5 py-6 border-b border-slate-100">
           <Brand />
         </div>
-        <nav className="flex-1 py-4 overflow-y-auto">
-          <div className="px-6 pb-2 text-[10px] uppercase tracking-widest text-slate-400 font-semibold">Navegação</div>
+        <nav className="flex-1 py-5 overflow-y-auto">
+          <div className="px-6 pb-3 text-[10px] uppercase tracking-widest text-slate-400 font-semibold">Navegação</div>
           {navItems()}
         </nav>
         {bottomSection}
       </aside>
 
       {/* Topbar — mobile */}
-      <div className="lg:hidden fixed top-0 inset-x-0 z-40 h-14 bg-white/90 backdrop-blur-md border-b border-slate-200 flex items-center justify-between px-4">
+      <div className="lg:hidden fixed top-0 inset-x-0 z-40 h-16 bg-white/95 backdrop-blur-md border-b border-slate-200 flex items-center justify-between px-4">
         <Brand />
         <button onClick={() => setDrawer(true)} data-testid="mobile-menu-btn"
                 className="p-2 rounded-lg hover:bg-slate-100 transition-colors" aria-label="Abrir menu">
@@ -108,8 +117,11 @@ export default function AppLayout() {
       {/* Drawer — mobile */}
       {drawer && (
         <div className="lg:hidden fixed inset-0 z-50">
-          <div className="absolute inset-0 bg-slate-900/30" onClick={() => setDrawer(false)} />
-          <aside className="absolute inset-y-0 left-0 w-72 bg-white shadow-xl flex flex-col dh-fade-in" data-testid="mobile-drawer">
+          <div 
+            className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm" 
+            onClick={() => setDrawer(false)} 
+          />
+          <aside className="absolute inset-y-0 left-0 w-72 bg-white shadow-xl flex flex-col dh-slide-in" data-testid="mobile-drawer">
             <div className="px-5 py-5 border-b border-slate-100 flex items-center justify-between">
               <Brand />
               <button onClick={() => setDrawer(false)} className="p-2 rounded-lg hover:bg-slate-100 transition-colors" aria-label="Fechar menu">
@@ -126,7 +138,7 @@ export default function AppLayout() {
       )}
 
       {/* Main */}
-      <main className="flex-1 min-w-0 lg:pl-64 pt-14 lg:pt-0">
+      <main className="flex-1 min-w-0 lg:pl-64 pt-16 lg:pt-0">
         <div className="px-5 sm:px-8 lg:px-10 py-8 max-w-[1400px] dh-fade-in">
           <Outlet />
         </div>

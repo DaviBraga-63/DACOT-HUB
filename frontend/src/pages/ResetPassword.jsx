@@ -24,17 +24,28 @@ export default function ResetPassword() {
 
   return (
     <div className="min-h-screen flex items-center justify-center px-6 bg-[var(--dh-bg)]">
-      <div className="dh-card p-8 w-full max-w-md">
-        <div className="text-[11px] uppercase tracking-widest font-bold text-[var(--dh-accent)] mb-2">Nova senha</div>
-        <h1 className="text-3xl font-black mb-3" style={{fontFamily:"Cabinet Grotesk"}}>Escolha uma nova senha</h1>
-        <form onSubmit={submit} className="space-y-4">
-          <input type="password" minLength={6} required value={password} onChange={(e) => setPassword(e.target.value)}
-                 className="dh-input" placeholder="Mínimo 6 caracteres" data-testid="reset-password" />
+      <div className="dh-card p-8 w-full max-w-md dh-fade-in">
+        <div className="text-[11px] uppercase tracking-widest font-bold text-[var(--dh-accent)] mb-3">Nova Senha</div>
+        <h1 className="text-3xl font-bold mb-6" style={{fontFamily:"Cabinet Grotesk"}}>Escolha uma nova senha</h1>
+        <form onSubmit={submit} className="space-y-5">
+          <div>
+            <label className="block text-[13px] font-semibold text-slate-700 mb-2">Senha</label>
+            <input 
+              type="password" 
+              minLength={6} 
+              required 
+              value={password} 
+              onChange={(e) => setPassword(e.target.value)}
+              className="dh-input" 
+              placeholder="Mínimo 6 caracteres" 
+              data-testid="reset-password" 
+            />
+          </div>
           {err && <div className="dh-chip dh-chip-error">{err}</div>}
-          <button type="submit" className="dh-btn dh-btn-primary w-full" disabled={busy} data-testid="reset-submit">
+          <button type="submit" className="dh-btn dh-btn-primary w-full py-3 font-semibold" disabled={busy} data-testid="reset-submit">
             {busy ? "Salvando…" : "Redefinir senha"}
           </button>
-          <Link to="/login" className="block text-center text-[12px] uppercase tracking-widest font-bold text-[var(--dh-muted)] hover:text-[var(--dh-text)]">
+          <Link to="/login" className="block text-center text-[12px] uppercase tracking-widest font-bold text-slate-500 hover:text-slate-700 transition-colors">
             Voltar ao login
           </Link>
         </form>

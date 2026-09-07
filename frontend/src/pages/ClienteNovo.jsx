@@ -35,15 +35,15 @@ export default function ClienteNovo() {
   return (
     <div className="max-w-3xl space-y-6" data-testid="new-tenant-page">
       <div>
-        <Link to="/clientes" className="text-[12px] font-medium text-slate-400 hover:text-slate-700 transition-colors inline-flex items-center gap-1.5">
-          <ArrowLeft size={13} strokeWidth={1.8} /> Clientes
+        <Link to="/clientes" className="text-[12px] font-semibold text-slate-500 hover:text-slate-700 transition-colors inline-flex items-center gap-1.5">
+          <ArrowLeft size={14} strokeWidth={2} /> Voltar
         </Link>
-        <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-slate-900 mt-3" style={{fontFamily:"Cabinet Grotesk"}}>Novo cliente</h1>
-        <p className="text-sm text-slate-500 mt-1.5">Cadastre um restaurante na plataforma DACOT.</p>
+        <h1 className="text-3xl sm:text-4xl font-bold tracking-tight text-slate-900 mt-4 mb-2" style={{fontFamily:"Cabinet Grotesk"}}>Novo cliente</h1>
+        <p className="text-[15px] text-slate-500">Cadastre um restaurante na plataforma DACOT.</p>
       </div>
 
-      <form onSubmit={submit} className="dh-card p-6 sm:p-7 space-y-6">
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+      <form onSubmit={submit} className="dh-card p-6 sm:p-8 space-y-7">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           <Field label="Nome do restaurante" required>
             <input required className="dh-input" value={form.name} onChange={set("name")} data-testid="input-name" />
           </Field>
@@ -66,12 +66,12 @@ export default function ClienteNovo() {
           </Field>
         </div>
         <Field label="Observações">
-          <textarea rows={3} className="dh-input resize-none" value={form.notes} onChange={set("notes")} data-testid="input-notes" />
+          <textarea rows={4} className="dh-input resize-none" value={form.notes} onChange={set("notes")} data-testid="input-notes" />
         </Field>
 
         {err && <div className="dh-chip dh-chip-error">{err}</div>}
 
-        <div className="flex items-center justify-end gap-3 pt-5 border-t border-slate-100">
+        <div className="flex items-center justify-end gap-3 pt-6 border-t border-slate-100">
           <Link to="/clientes" className="dh-btn dh-btn-ghost">Cancelar</Link>
           <button type="submit" disabled={busy} className="dh-btn dh-btn-primary" data-testid="submit-tenant">
             {busy ? "Salvando…" : "Cadastrar cliente"}
