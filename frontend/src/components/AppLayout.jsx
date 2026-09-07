@@ -138,8 +138,8 @@ export default function AppLayout() {
       )}
 
       {/* Main */}
-      <main className="flex-1 min-w-0 lg:pl-64 pt-16 lg:pt-0">
-        <div className="px-5 sm:px-8 lg:px-10 py-8 max-w-[1400px] dh-fade-in">
+      <main className="flex-1 w-full min-w-0 lg:pl-64 pt-16 lg:pt-0">
+        <div className="px-5 sm:px-8 lg:px-10 py-8 w-full dh-fade-in">
           <Outlet />
         </div>
       </main>
