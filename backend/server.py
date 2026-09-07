@@ -155,9 +155,17 @@ async def get_staff_write(user: dict = Depends(get_staff_user)) -> dict:
 
 
 async def get_restaurant_user(user: dict = Depends(get_current_user)) -> dict:
-    """Restaurant client — tenant_id always comes from the authenticated identity."""
+    """Restaurant client — tenant_id always comes from the authenticated identity.
+    Also gates on the tenant being operational: a suspended/inactive tenant loses
+    all portal and handoff access immediately, even mid-session (this is checked
+    on every request here, not just at login). The resolved tenant is attached
+    so callers (portal_context, portal_launch_token) don't re-query it."""
     if user.get("user_type") != "restaurant" or not user.get("tenant_id"):
         raise HTTPException(403, "Acesso restrito a usuários de restaurante")
+    tenant = await db.tenants.find_one({"_id": ObjectId(user["tenant_id"])})
+    if not tenant or not _tenant_operational(tenant):
+        raise HTTPException(403, "Restaurante suspenso ou inativo")
+    user["tenant"] = tenant
     return user
 
 
@@ -251,6 +259,13 @@ async def login(payload: LoginIn, request: Request, response: Response):
         valid = False
     if valid and ut == "restaurant" and user.get("status", "active") != "active":
         valid = False
+    tenant = None
+    if valid and ut == "restaurant":
+        tenant = await db.tenants.find_one({"_id": ObjectId(user["tenant_id"])}) if user.get("tenant_id") else None
+        # A restaurant account tied to a suspended/inactive tenant is treated
+        # the same as an inactive user — no session is issued.
+        if not tenant or not _tenant_operational(tenant):
+            valid = False
     if not valid:
         await _record_attempt(ip, email, False)
         raise HTTPException(401, "E-mail ou senha inválidos")
@@ -271,7 +286,6 @@ async def login(payload: LoginIn, request: Request, response: Response):
            "user_type": ut}
     if ut == "restaurant":
         out["tenant_id"] = user.get("tenant_id")
-        tenant = await db.tenants.find_one({"_id": ObjectId(user["tenant_id"])}) if user.get("tenant_id") else None
         out["tenant_name"] = tenant["name"] if tenant else None
     return out
 
@@ -400,6 +414,15 @@ class TenantPatch(BaseModel):
 
 
 VALID_STATUS = {"active", "trial", "suspended", "inactive"}
+# A tenant is operational (can log in, use the portal, or receive a handoff
+# into an external module) only in "active"/"trial". "suspended"/"inactive"
+# keep all Hub administration working (staff can still view/edit/toggle
+# modules), but block anything that opens the tenant's own operational side.
+TENANT_OPERATIONAL_STATUSES = {"active", "trial"}
+
+
+def _tenant_operational(tenant: dict) -> bool:
+    return tenant.get("status", "trial") in TENANT_OPERATIONAL_STATUSES
 
 
 def _slug(name: str) -> str:
@@ -769,6 +792,11 @@ async def launch_token(tid: str, mkey: str,
     tenant = await db.tenants.find_one({"_id": ObjectId(tid)})
     if not tenant:
         raise HTTPException(404, "Cliente não encontrado")
+    # Staff can still administer (view/edit/toggle modules for) a suspended or
+    # inactive tenant via the Hub — they just can't hand off into the tenant's
+    # own operational side while it's not active/trial.
+    if not _tenant_operational(tenant):
+        raise HTTPException(400, "Restaurante suspenso ou inativo — não é possível gerar acesso ao módulo")
     module = await db.modules.find_one({"key": mkey})
     if not module:
         raise HTTPException(404, "Módulo não encontrado no catálogo")
@@ -854,9 +882,7 @@ async def public_module_status(tid: str, mkey: str, request: Request):
 @api_router.get("/portal/context")
 async def portal_context(user: dict = Depends(get_restaurant_user)):
     tid = user["tenant_id"]
-    tenant = await db.tenants.find_one({"_id": ObjectId(tid)})
-    if not tenant:
-        raise HTTPException(404, "Restaurante não encontrado")
+    tenant = user["tenant"]  # resolved + operational check already done by get_restaurant_user
     modules = await db.modules.find({}).to_list(200)
     activations = {a["module_key"]: a for a in await db.tenant_modules.find(
         {"tenant_id": tid, "active": True}).to_list(200)}
@@ -886,9 +912,7 @@ async def portal_launch_token(mkey: str, user: dict = Depends(get_restaurant_use
     if not HANDOFF_JWT_SECRET or len(HANDOFF_JWT_SECRET) < 32:
         raise HTTPException(500, "Segredo de handoff não configurado no servidor")
     tid = user["tenant_id"]
-    tenant = await db.tenants.find_one({"_id": ObjectId(tid)})
-    if not tenant:
-        raise HTTPException(404, "Restaurante não encontrado")
+    tenant = user["tenant"]  # resolved + operational check already done by get_restaurant_user
     module = await db.modules.find_one({"key": mkey})
     if not module:
         raise HTTPException(404, "Módulo não encontrado")
