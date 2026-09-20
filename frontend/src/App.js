@@ -1,7 +1,9 @@
 import "@/App.css";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { AuthProvider } from "@/context/AuthContext";
+import { ThemeProvider } from "@/context/ThemeContext";
 import { Toaster } from "@/components/ui/sonner";
+import { TooltipProvider } from "@/components/ui/tooltip";
 import ProtectedRoute from "@/components/ProtectedRoute";
 import AppLayout from "@/components/AppLayout";
 import Login from "@/pages/Login";
@@ -16,9 +18,11 @@ import Portal from "@/pages/Portal";
 
 export default function App() {
   return (
-    <div className="App">
-      <BrowserRouter>
-        <AuthProvider>
+    <ThemeProvider>
+      <div className="App">
+        <BrowserRouter>
+          <AuthProvider>
+          <TooltipProvider>
           <Routes>
             <Route path="/login" element={<Login />} />
             <Route path="/forgot-password" element={<ForgotPassword />} />
@@ -34,8 +38,10 @@ export default function App() {
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
           <Toaster position="top-right" />
-        </AuthProvider>
-      </BrowserRouter>
-    </div>
+          </TooltipProvider>
+          </AuthProvider>
+        </BrowserRouter>
+      </div>
+    </ThemeProvider>
   );
 }

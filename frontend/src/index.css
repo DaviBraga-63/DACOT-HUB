@@ -52,6 +52,33 @@
     --radius-xl: 1rem;
 }
 
+/* Theme tokens. The light values intentionally mirror the existing DACOT UI. */
+:root[data-theme="light"], :root:not([data-theme]) {
+    --dh-bg: #F7F6F2; --dh-surface: #FFFFFF; --dh-surface-secondary: #FAFAF8;
+    --dh-surface-hover: #F8FAFC; --dh-border: #E8E5DE; --dh-border-soft: #F1F0ED;
+    --dh-text: #1A1A1A; --dh-text-strong: #0F172A; --dh-muted: #6B6B6B;
+    --dh-muted-strong: #475569; --dh-input-border: #CBD5E1;
+    --dh-accent: #1B73B8; --dh-accent-hover: #0D3867; --dh-accent-light: #32A5DC;
+    --dh-accent-soft: rgba(27, 115, 184, 0.08);
+    --dh-success-bg: #F0FDF4; --dh-success-fg: #16A34A; --dh-success-bd: #BBF7D0;
+    --dh-warning-bg: #FFFBEB; --dh-warning-fg: #D97706; --dh-warning-bd: #FCD34D;
+    --dh-error-bg: #FEF2F2; --dh-error-fg: #DC2626; --dh-error-bd: #FECACA;
+    --dh-neutral-bg: #F3F1ED; --dh-neutral-fg: #6B6B6B; --dh-neutral-bd: #E0DCD4;
+}
+
+:root[data-theme="dark"] {
+    --dh-bg: #0D1117; --dh-surface: #161B22; --dh-surface-secondary: #1C2128;
+    --dh-surface-hover: #21262D; --dh-border: #30363D; --dh-border-soft: #21262D;
+    --dh-text: #F0F6FC; --dh-text-strong: #F0F6FC; --dh-muted: #8B949E;
+    --dh-muted-strong: #C9D1D9; --dh-input-border: #30363D;
+    --dh-accent: #D95D39; --dh-accent-hover: #E87958; --dh-accent-light: #F09A7E;
+    --dh-accent-soft: rgba(217, 93, 57, 0.16);
+    --dh-success-bg: rgba(46, 160, 67, 0.16); --dh-success-fg: #56D364; --dh-success-bd: rgba(63, 185, 80, 0.42);
+    --dh-warning-bg: rgba(187, 128, 9, 0.16); --dh-warning-fg: #E3B341; --dh-warning-bd: rgba(210, 153, 34, 0.45);
+    --dh-error-bg: rgba(248, 81, 73, 0.16); --dh-error-fg: #FF7B72; --dh-error-bd: rgba(248, 81, 73, 0.45);
+    --dh-neutral-bg: #21262D; --dh-neutral-fg: #C9D1D9; --dh-neutral-bd: #30363D;
+}
+
 @layer base {
     :root {
         --background: 60 20% 97%;
@@ -75,6 +102,17 @@
         --ring: 207 81% 41%;
         --radius: 8px;
     }
+    :root[data-theme="dark"] {
+        --background: 210 19% 10%; --foreground: 210 40% 96%;
+        --card: 210 18% 13%; --card-foreground: 210 40% 96%;
+        --popover: 210 18% 13%; --popover-foreground: 210 40% 96%;
+        --primary: 15 68% 54%; --primary-foreground: 0 0% 100%;
+        --secondary: 210 15% 16%; --secondary-foreground: 210 40% 96%;
+        --muted: 210 15% 16%; --muted-foreground: 214 12% 62%;
+        --accent: 15 68% 54%; --accent-foreground: 0 0% 100%;
+        --destructive: 0 72% 65%; --destructive-foreground: 210 40% 96%;
+        --border: 210 12% 24%; --input: 210 12% 24%; --ring: 15 68% 54%;
+    }
 }
 
 @layer base {
@@ -88,6 +126,7 @@
         -webkit-font-smoothing: antialiased;
         -moz-osx-font-smoothing: grayscale;
         font-feature-settings: "ss01" on, "cv11" on;
+        transition: background-color var(--transition-base), color var(--transition-base);
     }
     h1, h2, h3, h4 {
         font-family: 'Cabinet Grotesk', 'Satoshi', sans-serif;
@@ -101,7 +140,7 @@
     background: var(--dh-surface);
     border: 1px solid var(--dh-border);
     border-radius: 12px;
-    box-shadow: 0 1px 2px 0 rgba(15, 23, 42, 0.05);
+    box-shadow: var(--shadow-xs);
 }
 
 .dh-card-hover {
@@ -118,7 +157,7 @@
     background: var(--dh-surface);
     border-radius: 12px;
     overflow: hidden;
-    box-shadow: 0 1px 2px 0 rgba(15, 23, 42, 0.05);
+    box-shadow: var(--shadow-xs);
 }
 .dh-grid-cell { border-right: 1px solid var(--dh-border-soft); }
 .dh-grid-cell:last-child { border-right: 0; }
@@ -153,20 +192,20 @@
 .dh-btn-primary { background: var(--dh-accent); color: #fff; box-shadow: 0 1px 2px 0 rgba(15,23,42,.08); }
 .dh-btn-primary:hover { background: var(--dh-accent-hover); }
 .dh-btn-primary:disabled { background: #CBD5E1; cursor: not-allowed; box-shadow: none; }
-.dh-btn-outline { background: var(--dh-surface); color: #334155; border: 1px solid var(--dh-border); }
-.dh-btn-outline:hover { background: #F8FAFC; border-color: #CBD5E1; }
-.dh-btn-ghost { background: transparent; color: #334155; }
-.dh-btn-ghost:hover { background: #F1F5F9; }
+.dh-btn-outline { background: var(--dh-surface); color: var(--dh-muted-strong); border: 1px solid var(--dh-border); }
+.dh-btn-outline:hover { background: var(--dh-surface-hover); border-color: var(--dh-input-border); }
+.dh-btn-ghost { background: transparent; color: var(--dh-muted-strong); }
+.dh-btn-ghost:hover { background: var(--dh-surface-hover); }
 
 /* ── Inputs ────────────────────────────────────────────────────────────── */
 .dh-input {
     width: 100%; padding: 9px 12px; font-size: 14px;
     background: var(--dh-surface); color: var(--dh-text);
-    border: 1px solid #CBD5E1; border-radius: 8px;
+    border: 1px solid var(--dh-input-border); border-radius: 8px;
     outline: none;
     transition: border-color .15s ease, box-shadow .15s ease;
 }
-.dh-input::placeholder { color: #94A3B8; }
+.dh-input::placeholder { color: var(--dh-muted); }
 .dh-input:focus-visible { border-color: var(--dh-accent); box-shadow: 0 0 0 3px rgba(27,115,184,0.18); }
 
 /* ── Tables ────────────────────────────────────────────────────────────── */
@@ -174,12 +213,12 @@
 .dh-table th {
     text-align: left; padding: 12px 20px; font-size: 12px;
     font-weight: 600; letter-spacing: 0.02em;
-    color: var(--dh-muted); background: #FAFAF8;
+    color: var(--dh-muted); background: var(--dh-surface-secondary);
     border-bottom: 1px solid var(--dh-border);
 }
 .dh-table td { padding: 14px 20px; border-bottom: 1px solid var(--dh-border-soft); vertical-align: middle; }
 .dh-table tbody tr { transition: background-color .12s ease; cursor: pointer; }
-.dh-table tbody tr:hover { background: rgba(248, 250, 252, 0.7); }
+.dh-table tbody tr:hover { background: var(--dh-surface-hover); }
 .dh-table tbody tr:last-child td { border-bottom: 0; }
 
 /* ── Tabs ──────────────────────────────────────────────────────────────── */
@@ -195,12 +234,12 @@
 .dh-sidebar-link {
     display: flex; align-items: center; gap: 12px; padding: 9px 12px;
     margin: 1px 12px;
-    font-size: 14px; font-weight: 500; color: #475569;
+    font-size: 14px; font-weight: 500; color: var(--dh-muted-strong);
     border-radius: 8px;
     transition: background-color .12s ease, color .12s ease;
     text-decoration: none;
 }
-.dh-sidebar-link:hover { background: #F8FAFC; color: var(--dh-text); }
+.dh-sidebar-link:hover { background: var(--dh-surface-hover); color: var(--dh-text); }
 .dh-sidebar-link-active {
     color: var(--dh-accent); background: var(--dh-accent-soft); font-weight: 600;
 }
@@ -219,13 +258,13 @@
 }
 .dh-icon-tile-neutral {
     display: inline-flex; align-items: center; justify-content: center;
-    background: #F1F5F9; color: #475569;
+    background: var(--dh-surface-secondary); color: var(--dh-muted-strong);
     border-radius: 10px;
 }
 
 /* ── Loading / empty ───────────────────────────────────────────────────── */
 .dh-skeleton {
-    background: #E2E8F0; border-radius: 6px;
+    background: var(--dh-border); border-radius: 6px;
     animation: dhPulse 1.6s ease-in-out infinite;
 }
 @keyframes dhPulse { 0%, 100% { opacity: 1; } 50% { opacity: .45; } }
@@ -240,7 +279,7 @@
     border: 1px solid transparent;
 }
 .dh-toggle-on  { background: var(--dh-accent); box-shadow: 0 0 0 2px rgba(27, 115, 184, 0.2); }
-.dh-toggle-off { background: #E2E8F0; }
+.dh-toggle-off { background: var(--dh-border); }
 .dh-toggle-disabled { opacity: .45; }
 .dh-toggle-knob {
     position: absolute; top: 2px; height: 16px; width: 16px;
@@ -273,4 +312,58 @@
     inset: 0;
     background: linear-gradient(135deg, rgba(27, 115, 184, 0.1) 0%, rgba(50, 165, 220, 0.05) 100%);
     pointer-events: none;
+}
+
+.dh-mobile-topbar { background-color: rgba(255, 255, 255, .95); }
+:root[data-theme="dark"] .dh-mobile-topbar { background-color: rgba(22, 27, 34, .95); }
+
+/* Smooth theme transition for surfaces without animating layout. */
+:root[data-theme] body,
+:root[data-theme] .dh-card,
+:root[data-theme] .dh-grid,
+:root[data-theme] .dh-input,
+:root[data-theme] .dh-table th,
+:root[data-theme] .dh-table td,
+:root[data-theme] .dh-sidebar-link,
+:root[data-theme] input,
+:root[data-theme] select,
+:root[data-theme] textarea {
+    transition: background-color var(--transition-base), color var(--transition-base), border-color var(--transition-base);
+}
+
+/* Existing Tailwind utilities remapped to dark tokens, preserving page markup. */
+:root[data-theme="dark"] .bg-white { background-color: var(--dh-surface); }
+:root[data-theme="dark"] .bg-white\/95 { background-color: rgba(22, 27, 34, .95); }
+:root[data-theme="dark"] .bg-slate-50,
+:root[data-theme="dark"] .bg-slate-100 { background-color: var(--dh-surface-secondary); }
+:root[data-theme="dark"] .hover\:bg-slate-50:hover,
+:root[data-theme="dark"] .hover\:bg-slate-100:hover,
+:root[data-theme="dark"] .hover\:bg-slate-200:hover { background-color: var(--dh-surface-hover); }
+:root[data-theme="dark"] .border-slate-100,
+:root[data-theme="dark"] .border-slate-200 { border-color: var(--dh-border); }
+:root[data-theme="dark"] .divide-slate-100 > :not([hidden]) ~ :not([hidden]) { border-color: var(--dh-border); }
+:root[data-theme="dark"] .text-slate-900,
+:root[data-theme="dark"] .text-slate-800 { color: var(--dh-text-strong); }
+:root[data-theme="dark"] .text-slate-700,
+:root[data-theme="dark"] .text-slate-600 { color: var(--dh-muted-strong); }
+:root[data-theme="dark"] .text-slate-500,
+:root[data-theme="dark"] .text-slate-400 { color: var(--dh-muted); }
+:root[data-theme="dark"] .text-slate-300 { color: #6E7681; }
+:root[data-theme="dark"] .hover\:text-slate-700:hover { color: var(--dh-text); }
+:root[data-theme="dark"] .bg-slate-900\/40 { background-color: rgba(1, 4, 9, .65); }
+:root[data-theme="dark"] .dh-grid-bg {
+    background-image: linear-gradient(rgba(217, 93, 57, .12) 1px, transparent 1px), linear-gradient(90deg, rgba(217, 93, 57, .12) 1px, transparent 1px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+    :root[data-theme] body,
+    :root[data-theme] .dh-card,
+    :root[data-theme] .dh-grid,
+    :root[data-theme] .dh-input,
+    :root[data-theme] .dh-table th,
+    :root[data-theme] .dh-table td,
+    :root[data-theme] .dh-sidebar-link,
+    :root[data-theme] input,
+    :root[data-theme] select,
+    :root[data-theme] textarea { transition: none; }
 }

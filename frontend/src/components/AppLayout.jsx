@@ -1,8 +1,10 @@
 import { useState } from "react";
 import { NavLink, useNavigate, Outlet, Navigate } from "react-router-dom";
-import { LayoutDashboard, Building2, Blocks, LogOut, Settings, Menu, X } from "lucide-react";
+import { LayoutDashboard, Building2, Blocks, LogOut, Settings, Menu, Moon, Sun, X } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
+import { useTheme } from "@/context/ThemeContext";
 import { toast } from "sonner";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 
 const NAV = [
   { to: "/", label: "Dashboard", icon: LayoutDashboard, testid: "menu-dashboard", end: true },
@@ -32,6 +34,7 @@ function Brand() {
 
 export default function AppLayout() {
   const { user, logout } = useAuth();
+  const { theme, toggleTheme } = useTheme();
   const navigate = useNavigate();
   const [drawer, setDrawer] = useState(false);
 
@@ -80,6 +83,24 @@ export default function AppLayout() {
         <Settings size={17} strokeWidth={1.8} />
         <span>Configurações</span>
       </button>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <button
+            type="button"
+            onClick={toggleTheme}
+            data-testid="theme-toggle"
+            className="dh-sidebar-link w-full text-left"
+            aria-label={theme === "dark" ? "Alternar para tema claro" : "Alternar para tema escuro"}
+            aria-pressed={theme === "dark"}
+          >
+            {theme === "dark" ? <Sun size={17} strokeWidth={1.8} /> : <Moon size={17} strokeWidth={1.8} />}
+            <span>{theme === "dark" ? "Tema claro" : "Tema escuro"}</span>
+          </button>
+        </TooltipTrigger>
+        <TooltipContent side="right">
+          {theme === "dark" ? "Mudar para tema claro" : "Mudar para tema escuro"}
+        </TooltipContent>
+      </Tooltip>
       <button
         onClick={doLogout}
         data-testid="logout-btn"
@@ -94,7 +115,7 @@ export default function AppLayout() {
   return (
     <div className="min-h-screen flex bg-[var(--dh-bg)]">
       {/* Sidebar — desktop */}
-      <aside className="hidden lg:flex w-64 bg-white border-r border-slate-200 flex-col fixed inset-y-0 z-30" data-testid="sidebar">
+      <aside className="hidden lg:flex w-64 bg-[var(--dh-surface)] border-r border-[var(--dh-border)] flex-col fixed inset-y-0 z-30" data-testid="sidebar">
         <div className="px-5 py-6 border-b border-slate-100">
           <Brand />
         </div>
@@ -106,7 +127,7 @@ export default function AppLayout() {
       </aside>
 
       {/* Topbar — mobile */}
-      <div className="lg:hidden fixed top-0 inset-x-0 z-40 h-16 bg-white/95 backdrop-blur-md border-b border-slate-200 flex items-center justify-between px-4">
+      <div className="dh-mobile-topbar lg:hidden fixed top-0 inset-x-0 z-40 h-16 backdrop-blur-md border-b border-[var(--dh-border)] flex items-center justify-between px-4">
         <Brand />
         <button onClick={() => setDrawer(true)} data-testid="mobile-menu-btn"
                 className="p-2 rounded-lg hover:bg-slate-100 transition-colors" aria-label="Abrir menu">
@@ -121,7 +142,7 @@ export default function AppLayout() {
             className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm" 
             onClick={() => setDrawer(false)} 
           />
-          <aside className="absolute inset-y-0 left-0 w-72 bg-white shadow-xl flex flex-col dh-slide-in" data-testid="mobile-drawer">
+          <aside className="absolute inset-y-0 left-0 w-72 bg-[var(--dh-surface)] shadow-xl flex flex-col dh-slide-in" data-testid="mobile-drawer">
             <div className="px-5 py-5 border-b border-slate-100 flex items-center justify-between">
               <Brand />
               <button onClick={() => setDrawer(false)} className="p-2 rounded-lg hover:bg-slate-100 transition-colors" aria-label="Fechar menu">
