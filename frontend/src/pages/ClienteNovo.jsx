@@ -1,6 +1,7 @@
 import { useState } from "react";
-import { useNavigate, Link } from "react-router-dom";
+import { useNavigate, Link, Navigate } from "react-router-dom";
 import { api, formatApiErrorDetail } from "@/lib/api";
+import { useAuth } from "@/context/AuthContext";
 import { ArrowLeft } from "lucide-react";
 
 const STATUS = [
@@ -12,12 +13,17 @@ const STATUS = [
 
 export default function ClienteNovo() {
   const nav = useNavigate();
+  const { user } = useAuth();
   const [form, setForm] = useState({
     name: "", owner_name: "", email: "", phone: "",
     status: "trial", address: "", notes: "",
   });
   const [err, setErr] = useState(null);
   const [busy, setBusy] = useState(false);
+
+  // Backend already rejects this for viewer (get_staff_write) — redirect
+  // away instead of showing a form that can only ever fail.
+  if (user?.role === "viewer") return <Navigate to="/clientes" replace />;
 
   const submit = async (e) => {
     e.preventDefault();

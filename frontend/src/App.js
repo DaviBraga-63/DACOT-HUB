@@ -14,6 +14,7 @@ import Clientes from "@/pages/Clientes";
 import ClienteNovo from "@/pages/ClienteNovo";
 import ClienteDetalhes from "@/pages/ClienteDetalhes";
 import Modulos from "@/pages/Modulos";
+import Equipe from "@/pages/Equipe";
 import Portal from "@/pages/Portal";
 
 export default function App() {
@@ -33,6 +34,7 @@ export default function App() {
               <Route path="/clientes/novo" element={<ClienteNovo />} />
               <Route path="/clientes/:id" element={<ClienteDetalhes />} />
               <Route path="/modulos" element={<Modulos />} />
+              <Route path="/equipe" element={<Equipe />} />
             </Route>
             <Route path="/portal" element={<ProtectedRoute><Portal /></ProtectedRoute>} />
             <Route path="*" element={<Navigate to="/" replace />} />

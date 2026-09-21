@@ -13,6 +13,8 @@ from html import escape
 from typing import List, Optional, Annotated, Any
 from urllib.parse import urlparse
 
+from handoff_policy import validate_launch_url, orders_module_key
+
 import bcrypt
 import jwt
 import httpx
@@ -45,7 +47,7 @@ HANDOFF_VERSION = 1
 HANDOFF_MAX_TTL_SECONDS = 60
 HANDOFF_AUDIENCE = {"orders": "dacot-orders", "kitchen": "dacot-kitchen"}
 MODULE_ACCESS_KEYS = {
-    "orders": os.environ.get("ORDERS_MODULE_KEY", ""),
+    "orders": orders_module_key(),
     "kitchen": os.environ.get("KITCHEN_MODULE_KEY", ""),
 }
 VALID_HANDOFF_ROLES = {"admin", "manager", "waiter", "kitchen"}
@@ -83,6 +85,26 @@ def verify_password(pw: str, hashed: str) -> bool:
         return bcrypt.checkpw(pw.encode("utf-8"), hashed.encode("utf-8"))
     except Exception:
         return False
+
+
+async def _email_in_use(email: str, *, exclude_collection: Optional[str] = None,
+                        exclude_id: Optional[ObjectId] = None) -> bool:
+    """Cross-collection uniqueness: hub_users and tenant_users each already
+    enforce their own unique email index, but nothing stopped the same email
+    existing in both. Login resolves hub_users first, so such a collision
+    would silently shadow the tenant_user, making it permanently unreachable.
+    Called from every create/edit path in both collections."""
+    hub_query: dict = {"email": email}
+    tenant_query: dict = {"email": email}
+    if exclude_collection == "hub_users" and exclude_id is not None:
+        hub_query["_id"] = {"$ne": exclude_id}
+    if exclude_collection == "tenant_users" and exclude_id is not None:
+        tenant_query["_id"] = {"$ne": exclude_id}
+    if await db.hub_users.find_one(hub_query):
+        return True
+    if await db.tenant_users.find_one(tenant_query):
+        return True
+    return False
 
 
 def create_access_token(user_id: str, email: str, ver: int = 0, ut: str = "staff") -> str:
@@ -125,7 +147,7 @@ async def get_current_user(request: Request) -> dict:
             raise HTTPException(401, "Usuário não encontrado")
         if ut == "staff" and not user.get("active", True):
             raise HTTPException(401, "Usuário não encontrado")
-        if ut == "restaurant" and user.get("status", "active") != "active":
+        if ut == "restaurant" and (user.get("status", "active") != "active" or user.get("password_reset_required")):
             raise HTTPException(401, "Usuário não encontrado")
         if payload.get("ver", 0) != user.get("token_version", 0):
             raise HTTPException(401, "Sessão expirada")
@@ -257,7 +279,7 @@ async def login(payload: LoginIn, request: Request, response: Response):
     valid = bool(user) and bool(user.get("password_hash")) and verify_password(payload.password, user["password_hash"])
     if valid and ut == "staff" and not user.get("active", True):
         valid = False
-    if valid and ut == "restaurant" and user.get("status", "active") != "active":
+    if valid and ut == "restaurant" and (user.get("status", "active") != "active" or user.get("password_reset_required")):
         valid = False
     tenant = None
     if valid and ut == "restaurant":
@@ -323,6 +345,17 @@ async def refresh(request: Request, response: Response):
         user = await coll.find_one({"_id": ObjectId(payload["sub"])})
         if not user or payload.get("ver", 0) != user.get("token_version", 0):
             raise HTTPException(401, "Sessão expirada")
+        # Same revocation checks as get_current_user: a refresh must not
+        # resurrect a session for an account (or, for restaurants, a tenant)
+        # that became inactive/suspended after the refresh token was issued.
+        if ut == "staff" and not user.get("active", True):
+            raise HTTPException(401, "Sessão expirada")
+        if ut == "restaurant":
+            if user.get("status", "active") != "active" or user.get("password_reset_required"):
+                raise HTTPException(401, "Sessão expirada")
+            tenant = await db.tenants.find_one({"_id": ObjectId(user["tenant_id"])}) if user.get("tenant_id") else None
+            if not tenant or not _tenant_operational(tenant):
+                raise HTTPException(401, "Sessão expirada")
         access = create_access_token(str(user["_id"]), user["email"], user.get("token_version", 0), ut)
         response.set_cookie("access_token", access, httponly=True, secure=True,
                             samesite="none", max_age=3600, path="/")
@@ -374,7 +407,7 @@ async def reset(payload: ResetIn):
     coll = db.tenant_users if doc.get("user_type") == "restaurant" else db.hub_users
     await coll.update_one(
         {"_id": ObjectId(doc["user_id"])},
-        {"$set": {"password_hash": hash_password(payload.password)}, "$inc": {"token_version": 1}},
+        {"$set": {"password_hash": hash_password(payload.password), "password_reset_required": False}, "$inc": {"token_version": 1}},
     )
     await db.password_reset_tokens.delete_many({"user_id": doc["user_id"], "used": False})
     await db.login_attempts.delete_many({"email": email})
@@ -521,7 +554,10 @@ async def patch_tenant(tid: str, payload: TenantPatch, user: dict = Depends(get_
     if "name" in update:
         update["slug"] = _slug(update["name"])
     update["updated_at"] = now_utc().isoformat()
-    r = await db.tenants.update_one({"_id": ObjectId(tid)}, {"$set": update})
+    mutation = {"$set": update}
+    if "status" in update:
+        mutation["$inc"] = {"access_version": 1}
+    r = await db.tenants.update_one({"_id": ObjectId(tid)}, mutation)
     if r.matched_count == 0:
         raise HTTPException(404, "Cliente não encontrado")
     if "status" in update:
@@ -632,7 +668,8 @@ async def deactivate_module(tid: str, mkey: str, user: dict = Depends(get_staff_
         raise HTTPException(404, "Módulo não encontrado")
     await db.tenant_modules.update_one(
         {"tenant_id": tid, "module_key": mkey},
-        {"$set": {"active": False, "deactivated_at": now_utc().isoformat()}},
+        {"$set": {"active": False, "deactivated_at": now_utc().isoformat()},
+         "$inc": {"access_version": 1}},
     )
     await log_activity(actor_id=user["_id"], actor_name=user.get("name", user["email"]),
                        action="module.deactivated", target_type="module", target_id=mkey,
@@ -644,9 +681,12 @@ async def deactivate_module(tid: str, mkey: str, user: dict = Depends(get_staff_
 async def set_launch_url(tid: str, mkey: str, payload: LaunchUrlIn, _u: dict = Depends(get_staff_write)):
     if not ObjectId.is_valid(tid):
         raise HTTPException(404, "Cliente não encontrado")
+    if not await db.tenants.find_one({"_id": ObjectId(tid)}) or not await db.modules.find_one({"key": mkey}):
+        raise HTTPException(404, "Recurso não encontrado")
+    destination = validate_launch_url(payload.launch_url, mkey)
     await db.tenant_modules.update_one(
         {"tenant_id": tid, "module_key": mkey},
-        {"$set": {"launch_url": payload.launch_url.strip()}},
+        {"$set": {"launch_url": destination}},
         upsert=True,
     )
     return {"ok": True}
@@ -696,7 +736,7 @@ async def create_tenant_user(tid: str, payload: TenantUserIn, user: dict = Depen
     if payload.role not in VALID_HANDOFF_ROLES:
         raise HTTPException(400, "Papel inválido")
     email = payload.email.lower()
-    if await db.tenant_users.find_one({"email": email}):
+    if await _email_in_use(email):
         raise HTTPException(409, "Já existe um usuário com este e-mail")
     generated_password = None if payload.password else secrets.token_urlsafe(9)
     doc = {
@@ -728,8 +768,7 @@ async def patch_tenant_user(tid: str, uid: str, payload: TenantUserPatch,
     update = {k: v for k, v in payload.model_dump(exclude_unset=True).items() if v is not None}
     if "email" in update:
         email = update["email"].lower()
-        dup = await db.tenant_users.find_one({"email": email, "_id": {"$ne": ObjectId(uid)}})
-        if dup:
+        if await _email_in_use(email, exclude_collection="tenant_users", exclude_id=ObjectId(uid)):
             raise HTTPException(409, "Já existe um usuário com este e-mail")
         update["email"] = email
     if "role" in update and update["role"] not in VALID_HANDOFF_ROLES:
@@ -737,13 +776,120 @@ async def patch_tenant_user(tid: str, uid: str, payload: TenantUserPatch,
     if "status" in update and update["status"] not in VALID_TENANT_USER_STATUS:
         raise HTTPException(400, "Status inválido")
     if update:
-        await db.tenant_users.update_one({"_id": ObjectId(uid)}, {"$set": update})
+        mutation = {"$set": update}
+        if "status" in update or "role" in update:
+            mutation["$inc"] = {"token_version": 1}
+        await db.tenant_users.update_one({"_id": ObjectId(uid)}, mutation)
     if "status" in update:
         await log_activity(actor_id=user["_id"], actor_name=user.get("name", user["email"]),
                            action="tenant_user.status_changed", target_type="tenant_user",
                            target_id=uid, tenant_id=tid, metadata={"status": update["status"]})
     d = await db.tenant_users.find_one({"_id": ObjectId(uid)})
     return _tenant_user_out(d)
+
+
+# ─── Hub users (DACOT internal staff) ──────────────────────────────────────────
+VALID_HUB_ROLES = HUB_ADMIN_ROLES | {"viewer"}
+
+
+def _hub_user_out(d: dict) -> dict:
+    return {
+        "id": str(d["_id"]), "name": d.get("name", ""), "email": d.get("email", ""),
+        "role": d.get("role", "viewer"), "active": d.get("active", True),
+        "created_at": d.get("created_at"),
+    }
+
+
+class HubUserIn(BaseModel):
+    name: str
+    email: EmailStr
+    role: str
+    password: Optional[str] = Field(default=None, min_length=6)
+
+
+class HubUserPatch(BaseModel):
+    name: Optional[str] = None
+    email: Optional[EmailStr] = None
+    role: Optional[str] = None
+    active: Optional[bool] = None
+
+
+async def _active_admin_count(exclude_id: Optional[ObjectId] = None) -> int:
+    query: dict = {"active": True, "role": {"$in": list(HUB_ADMIN_ROLES)}}
+    if exclude_id is not None:
+        query["_id"] = {"$ne": exclude_id}
+    return await db.hub_users.count_documents(query)
+
+
+@api_router.get("/hub/users")
+async def list_hub_users(_u: dict = Depends(get_staff_user)):
+    docs = await db.hub_users.find({}).sort("created_at", -1).to_list(500)
+    return [_hub_user_out(d) for d in docs]
+
+
+@api_router.post("/hub/users")
+async def create_hub_user(payload: HubUserIn, user: dict = Depends(get_staff_write)):
+    if payload.role not in VALID_HUB_ROLES:
+        raise HTTPException(400, "Papel inválido")
+    email = payload.email.lower()
+    if await _email_in_use(email):
+        raise HTTPException(409, "Já existe um usuário com este e-mail")
+    generated_password = None if payload.password else secrets.token_urlsafe(9)
+    doc = {
+        "email": email, "name": payload.name.strip(), "role": payload.role,
+        "password_hash": hash_password(payload.password or generated_password),
+        "user_type": "staff", "active": True, "token_version": 0,
+        "created_at": now_utc().isoformat(),
+    }
+    res = await db.hub_users.insert_one(doc)
+    doc["_id"] = res.inserted_id
+    await log_activity(actor_id=user["_id"], actor_name=user.get("name", user["email"]),
+                       action="hub_user.created", target_type="hub_user",
+                       target_id=str(res.inserted_id), metadata={"email": email, "role": payload.role})
+    out = _hub_user_out(doc)
+    out["temp_password"] = generated_password
+    return out
+
+
+@api_router.patch("/hub/users/{uid}")
+async def patch_hub_user(uid: str, payload: HubUserPatch, user: dict = Depends(get_staff_write)):
+    if not ObjectId.is_valid(uid):
+        raise HTTPException(404, "Usuário não encontrado")
+    existing = await db.hub_users.find_one({"_id": ObjectId(uid)})
+    if not existing:
+        raise HTTPException(404, "Usuário não encontrado")
+    update = {k: v for k, v in payload.model_dump(exclude_unset=True).items() if v is not None}
+    is_self = uid == user["_id"]
+
+    if "email" in update:
+        email = update["email"].lower()
+        if await _email_in_use(email, exclude_collection="hub_users", exclude_id=ObjectId(uid)):
+            raise HTTPException(409, "Já existe um usuário com este e-mail")
+        update["email"] = email
+    if "role" in update and update["role"] not in VALID_HUB_ROLES:
+        raise HTTPException(400, "Papel inválido")
+
+    # Self-lockout / "last admin standing" guard: never let a change strip
+    # admin capability from a currently-active admin/super_admin when it
+    # would either be done to one's own account (always blocked — use
+    # another admin account) or would leave zero active admins anywhere.
+    was_admin = existing.get("active", True) and existing.get("role") in HUB_ADMIN_ROLES
+    will_deactivate = update.get("active") is False
+    will_demote = "role" in update and update["role"] not in HUB_ADMIN_ROLES
+    if was_admin and (will_deactivate or will_demote):
+        if is_self:
+            raise HTTPException(400, "Você não pode desativar sua própria conta nem remover sua própria permissão administrativa.")
+        if await _active_admin_count(exclude_id=ObjectId(uid)) == 0:
+            raise HTTPException(400, "Essa alteração deixaria o sistema sem nenhum administrador ativo.")
+
+    if update:
+        await db.hub_users.update_one({"_id": ObjectId(uid)}, {"$set": update})
+    if "active" in update or "role" in update:
+        await log_activity(actor_id=user["_id"], actor_name=user.get("name", user["email"]),
+                           action="hub_user.updated", target_type="hub_user", target_id=uid,
+                           metadata={k: update[k] for k in ("active", "role") if k in update})
+    d = await db.hub_users.find_one({"_id": ObjectId(uid)})
+    return _hub_user_out(d)
 
 
 # ─── Dashboard ─────────────────────────────────────────────────────────────────
@@ -785,95 +931,75 @@ async def dashboard_activity(limit: int = 15, _u: dict = Depends(get_staff_user)
 @api_router.post("/hub/tenants/{tid}/modules/{mkey}/launch-token")
 async def launch_token(tid: str, mkey: str,
                        user: dict = Depends(get_staff_write)):
-    if not HANDOFF_JWT_SECRET or len(HANDOFF_JWT_SECRET) < 32:
-        raise HTTPException(500, "Segredo de handoff não configurado no servidor")
-    if not ObjectId.is_valid(tid):
-        raise HTTPException(404, "Cliente não encontrado")
-    tenant = await db.tenants.find_one({"_id": ObjectId(tid)})
-    if not tenant:
-        raise HTTPException(404, "Cliente não encontrado")
-    # Staff can still administer (view/edit/toggle modules for) a suspended or
-    # inactive tenant via the Hub — they just can't hand off into the tenant's
-    # own operational side while it's not active/trial.
-    if not _tenant_operational(tenant):
-        raise HTTPException(400, "Restaurante suspenso ou inativo — não é possível gerar acesso ao módulo")
-    module = await db.modules.find_one({"key": mkey})
-    if not module:
-        raise HTTPException(404, "Módulo não encontrado no catálogo")
-    activation = await db.tenant_modules.find_one(
-        {"tenant_id": tid, "module_key": mkey, "active": True}
-    )
-    if not activation:
-        raise HTTPException(400, "Módulo não está ativo para este cliente")
-
-    # role/module/restaurant_id are NEVER taken from the frontend — always server-derived.
-    # The Hub-issued handoff represents an admin-initiated access.
-    role = "admin"
-
-    aud = HANDOFF_AUDIENCE.get(mkey, f"dacot-{mkey}")
-    now = now_utc()
-    exp = now + timedelta(seconds=HANDOFF_MAX_TTL_SECONDS)
-    jti = secrets.token_urlsafe(16)
-    claims = {
-        "iss": HANDOFF_ISSUER,
-        "aud": aud,
-        "sub": f"hub_user:{user['_id']}",
-        "restaurant_id": str(tenant["_id"]),        # canonical, server-signed
-        "restaurant_slug": tenant.get("slug", ""),
-        "role": role,
-        "module": mkey,                              # server-signed
-        "jti": jti,
-        "iat": int(now.timestamp()),
-        "nbf": int(now.timestamp()) - 5,
-        "exp": int(exp.timestamp()),
-        "handoff_version": HANDOFF_VERSION,
-    }
-    token = jwt.encode(claims, HANDOFF_JWT_SECRET, algorithm="HS256")
-
-    launch_url = (activation.get("launch_url") or "").strip()
-    if not launch_url and module.get("launch_url_template"):
-        launch_url = module["launch_url_template"].replace("{slug}", tenant.get("slug", ""))
-
-    await log_activity(
-        actor_id=user["_id"], actor_name=user.get("name", user["email"]),
-        action="module.launch_token_issued", target_type="module",
-        target_id=mkey, tenant_id=tid,
-        metadata={"module": module["name"], "jti": jti, "aud": aud, "role": role},
-    )
-    return {
-        "handoff": token,
-        "launch_url": launch_url,
-        "expires_in": HANDOFF_MAX_TTL_SECONDS,
-        "expires_at": exp.isoformat(),
-        "jti": jti,
-    }
+    raise HTTPException(403, "Acesso operacional exige usuário do próprio restaurante; suporte DACOT não faz parte do V1.")
 
 
 # ─── Public module status (module-to-module) ───────────────────────────────────
-@api_router.get("/public/tenants/{tid}/modules/{mkey}/status")
-async def public_module_status(tid: str, mkey: str, request: Request):
-    if not ObjectId.is_valid(tid):
-        raise HTTPException(404, "Recurso não encontrado")
-    tenant = await db.tenants.find_one({"_id": ObjectId(tid)})
-    if not tenant:
-        raise HTTPException(404, "Recurso não encontrado")
-    module = await db.modules.find_one({"key": mkey})
-    if not module:
-        raise HTTPException(404, "Recurso não encontrado")
+def require_module_key(mkey: str, request: Request):
     provided = request.headers.get("X-Module-Key", "")
     expected = MODULE_ACCESS_KEYS.get(mkey, "")
     if not expected or not provided or not secrets.compare_digest(provided, expected):
         raise HTTPException(401, "Chave de módulo inválida")
+
+
+@api_router.get("/public/tenants/{tid}/modules/{mkey}/status")
+async def public_module_status(tid: str, mkey: str, request: Request):
+    require_module_key(mkey, request)
+    if not ObjectId.is_valid(tid):
+        raise HTTPException(404, "Recurso não encontrado")
+    tenant = await db.tenants.find_one({"_id": ObjectId(tid)})
+    if not tenant:
+        raise HTTPException(404, "Recurso não encontrado")
+    module = await db.modules.find_one({"key": mkey})
+    if not module:
+        raise HTTPException(404, "Recurso não encontrado")
     act = await db.tenant_modules.find_one(
         {"tenant_id": tid, "module_key": mkey, "active": True}
     )
-    if not act:
+    if not act or not _tenant_operational(tenant) or module.get("status") != "available":
         return {"active": False, "module": mkey}
     return {
         "active": True,
         "module": mkey,
         "activated_at": act.get("activated_at"),
     }
+
+
+class AccessVersions(BaseModel):
+    user: int = Field(ge=0, strict=True)
+    tenant: int = Field(ge=0, strict=True)
+    module: int = Field(ge=0, strict=True)
+
+
+class ModuleAccessIn(BaseModel):
+    subject: str
+    role: str
+    hub_access: AccessVersions
+
+
+@api_router.post("/public/tenants/{tid}/modules/{mkey}/access")
+async def module_access(tid: str, mkey: str, payload: ModuleAccessIn, request: Request, response: Response):
+    """Authoritative, uncached check. Caller caches only a bounded positive lease."""
+    require_module_key(mkey, request)
+    response.headers["Cache-Control"] = "no-store"
+    denied = {"active": False}
+    if mkey != "orders" or not ObjectId.is_valid(tid) or not payload.subject.startswith("tenant_user:"):
+        return denied
+    uid = payload.subject.removeprefix("tenant_user:")
+    if not ObjectId.is_valid(uid):
+        return denied
+    tenant = await db.tenants.find_one({"_id": ObjectId(tid)})
+    module = await db.modules.find_one({"key": mkey})
+    activation = await db.tenant_modules.find_one({"tenant_id": tid, "module_key": mkey, "active": True})
+    user = await db.tenant_users.find_one({"_id": ObjectId(uid), "tenant_id": tid})
+    if (not tenant or not _tenant_operational(tenant) or not module or module.get("status") != "available"
+            or not activation or not user or user.get("status") != "active"
+            or user.get("password_reset_required") or not user.get("password_hash")
+            or user.get("role") not in VALID_HANDOFF_ROLES or user.get("role") != payload.role):
+        return denied
+    current = {"user": user.get("token_version", 0), "tenant": tenant.get("access_version", 0),
+               "module": activation.get("access_version", 0)}
+    return {"active": current == payload.hub_access.model_dump()}
 
 
 # ─── Portal do Cliente (restaurant users) ─────────────────────────────────────
@@ -919,9 +1045,15 @@ async def portal_launch_token(mkey: str, user: dict = Depends(get_restaurant_use
     activation = await db.tenant_modules.find_one(
         {"tenant_id": tid, "module_key": mkey, "active": True}
     )
-    if not activation:
+    if not activation or module.get("status") != "available":
         raise HTTPException(400, "Módulo não está ativo para o seu restaurante")
-    role = user.get("role") if user.get("role") in VALID_HANDOFF_ROLES else "waiter"
+    if user.get("role") not in VALID_HANDOFF_ROLES:
+        raise HTTPException(403, "Papel operacional inválido")
+    role = user["role"]
+    launch_url = (activation.get("launch_url") or "").strip()
+    if not launch_url and module.get("launch_url_template"):
+        launch_url = module["launch_url_template"].replace("{slug}", tenant.get("slug", ""))
+    launch_url = validate_launch_url(launch_url, mkey)
 
     aud = HANDOFF_AUDIENCE.get(mkey, f"dacot-{mkey}")
     now = now_utc()
@@ -931,6 +1063,9 @@ async def portal_launch_token(mkey: str, user: dict = Depends(get_restaurant_use
         "iss": HANDOFF_ISSUER,
         "aud": aud,
         "sub": f"tenant_user:{user['_id']}",
+        "hub_access": {"user": user.get("token_version", 0),
+                       "tenant": tenant.get("access_version", 0),
+                       "module": activation.get("access_version", 0)},
         "restaurant_id": tid,                        # own tenant, server-signed
         "restaurant_slug": tenant.get("slug", ""),
         "role": role,                                # operational role from DB
@@ -942,9 +1077,6 @@ async def portal_launch_token(mkey: str, user: dict = Depends(get_restaurant_use
         "handoff_version": HANDOFF_VERSION,
     }
     token = jwt.encode(claims, HANDOFF_JWT_SECRET, algorithm="HS256")
-    launch_url = (activation.get("launch_url") or "").strip()
-    if not launch_url and module.get("launch_url_template"):
-        launch_url = module["launch_url_template"].replace("{slug}", tenant.get("slug", ""))
     await log_activity(
         actor_id=user["_id"], actor_name=user.get("name", user["email"]),
         action="module.launch_token_issued", target_type="module",
@@ -995,40 +1127,6 @@ DEFAULT_MODULES = [
      "launch_url_template": ""},
 ]
 
-SEED_TENANTS = [
-    {"name": "Hamburgueria Exemplo", "owner_name": "João Silva", "email": "contato@hamburgueriaexemplo.com",
-     "phone": "(11) 99999-0001", "status": "active", "address": "Rua das Flores, 123 — São Paulo/SP",
-     "notes": "Cliente âncora — participa do programa beta.",
-     "modules": ["orders", "kitchen"],
-     "users": [
-         {"name": "João Silva", "email": "joao@hamburgueriaexemplo.com", "role": "Proprietário", "status": "active"},
-         {"name": "Marina Costa", "email": "marina@hamburgueriaexemplo.com", "role": "Gerente", "status": "active"},
-         {"name": "Pedro Alves", "email": "pedro@hamburgueriaexemplo.com", "role": "Caixa", "status": "active"},
-     ]},
-    {"name": "Cantina Bella Napoli", "owner_name": "Giulia Rossi", "email": "giulia@bellanapoli.com.br",
-     "phone": "(11) 98888-2222", "status": "active", "address": "Av. Paulista, 900 — São Paulo/SP",
-     "notes": "Restaurante italiano tradicional.",
-     "modules": ["orders", "kitchen"],
-     "users": [
-         {"name": "Giulia Rossi", "email": "giulia@bellanapoli.com.br", "role": "Proprietária", "status": "active"},
-         {"name": "Marco Bianchi", "email": "marco@bellanapoli.com.br", "role": "Chef", "status": "active"},
-     ]},
-    {"name": "Sushi Zen", "owner_name": "Haruki Tanaka", "email": "haruki@sushizen.com.br",
-     "phone": "(21) 97777-3333", "status": "trial", "address": "Rua Barata Ribeiro, 45 — Rio de Janeiro/RJ",
-     "notes": "Teste iniciado em fev/2026. Interessados em Pedidos + Delivery futuramente.",
-     "modules": ["orders"],
-     "users": [
-         {"name": "Haruki Tanaka", "email": "haruki@sushizen.com.br", "role": "Proprietário", "status": "active"},
-     ]},
-    {"name": "Padaria Grão Dourado", "owner_name": "Ana Ferreira", "email": "ana@graodourado.com.br",
-     "phone": "(31) 96666-4444", "status": "trial", "address": "Rua da Bahia, 210 — Belo Horizonte/MG",
-     "notes": "Onboarding em andamento.", "modules": [], "users": []},
-    {"name": "Boteco do Zé", "owner_name": "José Pereira", "email": "ze@botecodoze.com",
-     "phone": "(11) 95555-5555", "status": "suspended", "address": "Rua Aurora, 88 — São Paulo/SP",
-     "notes": "Suspenso por inadimplência (dez/2025).", "modules": [], "users": []},
-]
-
-
 @app.on_event("startup")
 async def startup():
     await db.hub_users.create_index("email", unique=True)
@@ -1048,9 +1146,11 @@ async def startup():
 
     # Seed admin
     admin_email = os.environ["ADMIN_EMAIL"].lower()
-    admin_pw = os.environ["ADMIN_PASSWORD"]
     existing = await db.hub_users.find_one({"email": admin_email})
     if not existing:
+        admin_pw = os.environ["ADMIN_PASSWORD"]
+        if await _email_in_use(admin_email):
+            raise RuntimeError("Bootstrap admin e-mail already in use")
         await db.hub_users.insert_one({
             "email": admin_email, "password_hash": hash_password(admin_pw),
             "name": "Davi Braga", "role": "super_admin",
@@ -1058,10 +1158,6 @@ async def startup():
             "created_at": now_utc().isoformat(),
         })
         logger.info("Seeded admin %s", admin_email)
-    elif not verify_password(admin_pw, existing["password_hash"]):
-        await db.hub_users.update_one({"email": admin_email},
-                                      {"$set": {"password_hash": hash_password(admin_pw)}})
-
     # Backfill user_type on existing staff users (non-destructive migration)
     await db.hub_users.update_many({"user_type": {"$exists": False}},
                                    {"$set": {"user_type": "staff"}})
@@ -1086,67 +1182,26 @@ async def startup():
         seed_name = os.environ.get(seed["name_var"]) or seed["default_name"]
         ex = await db.hub_users.find_one({"email": seed_email})
         if not ex:
+            if await _email_in_use(seed_email):
+                raise RuntimeError("Bootstrap staff e-mail already in use")
             await db.hub_users.insert_one({
                 "email": seed_email, "password_hash": hash_password(seed_pw),
                 "name": seed_name, "role": seed["role"], "user_type": "staff",
                 "active": True, "token_version": 0, "created_at": now_utc().isoformat(),
             })
             logger.info("Seeded staff %s (%s)", seed_email, seed["role"])
-        elif not verify_password(seed_pw, ex["password_hash"]):
-            await db.hub_users.update_one({"email": seed_email},
-                                          {"$set": {"password_hash": hash_password(seed_pw)}})
-
     # Seed modules
     for m in DEFAULT_MODULES:
         await db.modules.update_one({"key": m["key"]}, {"$setOnInsert": m}, upsert=True)
 
-    # Seed tenants (only if none exists)
-    tenants_count = await db.tenants.count_documents({})
-    if tenants_count == 0:
-        admin = await db.hub_users.find_one({"email": admin_email})
-        admin_id = str(admin["_id"]) if admin else "system"
-        admin_name = admin.get("name") if admin else "system"
-        for t in SEED_TENANTS:
-            doc = {
-                "name": t["name"], "slug": _slug(t["name"]),
-                "owner_name": t["owner_name"], "email": t["email"].lower(),
-                "phone": t["phone"], "status": t["status"],
-                "address": t["address"], "notes": t["notes"],
-                "created_at": now_utc().isoformat(), "updated_at": now_utc().isoformat(),
-            }
-            r = await db.tenants.insert_one(doc)
-            tid = str(r.inserted_id)
-            for mkey in t["modules"]:
-                m = await db.modules.find_one({"key": mkey})
-                if m:
-                    await db.tenant_modules.insert_one({
-                        "tenant_id": tid, "module_key": mkey, "module_id": str(m["_id"]),
-                        "active": True, "activated_at": now_utc().isoformat(),
-                        "activated_by": admin_id,
-                    })
-            for u in t["users"]:
-                await db.tenant_users.insert_one({
-                    "tenant_id": tid, "name": u["name"], "email": u["email"],
-                    "role": u["role"], "status": u["status"],
-                    "created_at": now_utc().isoformat(),
-                })
-            await log_activity(actor_id=admin_id, actor_name=admin_name,
-                               action="tenant.created", target_type="tenant",
-                               target_id=tid, tenant_id=tid,
-                               metadata={"name": t["name"], "seed": True})
-        logger.info("Seeded %d tenants", len(SEED_TENANTS))
-
     # Non-destructive migration: tenant_users become login-capable restaurant users.
-    # Maps legacy display roles to operational roles and backfills credentials.
+    # Maps legacy roles/metadata only. Never invent or overwrite credentials.
     ROLE_MAP = {"Proprietário": "admin", "Proprietária": "admin",
                 "Gerente": "manager", "Caixa": "waiter", "Chef": "kitchen"}
-    RESTAURANT_SEED_PASSWORD = "Cliente@2026"
     async for tu in db.tenant_users.find({}):
         updates: dict = {}
         if tu.get("role") in ROLE_MAP:
             updates["role"] = ROLE_MAP[tu["role"]]
-        if not tu.get("password_hash"):
-            updates["password_hash"] = hash_password(RESTAURANT_SEED_PASSWORD)
         if "user_type" not in tu:
             updates["user_type"] = "restaurant"
         if "token_version" not in tu:

@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback } from "react";
 import { useParams, Link } from "react-router-dom";
 import { api } from "@/lib/api";
+import { useAuth } from "@/context/AuthContext";
 import { ArrowLeft, ExternalLink, Mail, Phone, MapPin, Calendar, Settings2, Users as UsersIcon, UserPlus } from "lucide-react";
 import StatusBadge from "@/components/StatusBadge";
 import { toast } from "sonner";
@@ -20,6 +21,8 @@ const STATUS_OPTS = [
 
 export default function ClienteDetalhes() {
   const { id } = useParams();
+  const { user } = useAuth();
+  const canWrite = user?.role !== "viewer";
   const [tab, setTab] = useState("overview");
   const [tenant, setTenant] = useState(null);
   const [modules, setModules] = useState([]);
@@ -69,12 +72,14 @@ export default function ClienteDetalhes() {
             </div>
             <div className="mt-2 text-[12px] text-slate-400 font-mono">tenant/{tenant.slug}</div>
           </div>
-          <select
-            value={tenant.status} onChange={(e) => changeStatus(e.target.value)}
-            className="dh-input w-auto py-2 pl-3 pr-8 text-[13px] font-semibold"
-            data-testid="change-status">
-            {STATUS_OPTS.map((s) => <option key={s.v} value={s.v}>Status: {s.l}</option>)}
-          </select>
+          {canWrite && (
+            <select
+              value={tenant.status} onChange={(e) => changeStatus(e.target.value)}
+              className="dh-input w-auto py-2 pl-3 pr-8 text-[13px] font-semibold"
+              data-testid="change-status">
+              {STATUS_OPTS.map((s) => <option key={s.v} value={s.v}>Status: {s.l}</option>)}
+            </select>
+          )}
         </div>
       </div>
 
@@ -129,10 +134,10 @@ export default function ClienteDetalhes() {
       )}
 
       {tab === "modules" && (
-        <ModulesTab tenantId={id} tenantSlug={tenant.slug} modules={modules} reload={load} />
+        <ModulesTab tenantId={id} tenantSlug={tenant.slug} modules={modules} reload={load} canWrite={canWrite} />
       )}
 
-      {tab === "users" && <UsersTab tenantId={id} users={users} reload={load} />}
+      {tab === "users" && <UsersTab tenantId={id} users={users} reload={load} canWrite={canWrite} />}
     </div>
   );
 }
@@ -160,7 +165,7 @@ function MetricSmall({ label, value, textual }) {
   );
 }
 
-function ModulesTab({ tenantId, tenantSlug, modules, reload }) {
+function ModulesTab({ tenantId, tenantSlug, modules, reload, canWrite }) {
   const [editing, setEditing] = useState(null);
 
   const toggle = async (m) => {
@@ -178,23 +183,6 @@ function ModulesTab({ tenantId, tenantSlug, modules, reload }) {
     reload();
   };
 
-  const openModule = async (m) => {
-    try {
-      const { data } = await api.post(
-        `/hub/tenants/${tenantId}/modules/${m.key}/launch-token`,
-      );
-      if (!data?.handoff || !data?.launch_url) {
-        toast.info("Configure a URL de acesso do módulo antes de abrir.");
-        return;
-      }
-      const sep = data.launch_url.includes("?") ? "&" : "?";
-      const url = `${data.launch_url}${sep}handoff=${encodeURIComponent(data.handoff)}`;
-      window.open(url, "_blank", "noopener,noreferrer");
-    } catch (e) {
-      const detail = e.response?.data?.detail;
-      toast.error(typeof detail === "string" ? detail : "Não foi possível gerar o token de acesso.");
-    }
-  };
 
   return (
     <div className="grid grid-cols-1 md:grid-cols-2 gap-5 dh-fade-in" data-testid="modules-tab">
@@ -218,24 +206,26 @@ function ModulesTab({ tenantId, tenantSlug, modules, reload }) {
               </div>
               <div className="text-[11px] text-slate-400 font-medium uppercase tracking-wider mt-1.5">{m.category || "Módulo"}</div>
             </div>
-            <label className="inline-flex items-center cursor-pointer shrink-0">
-              <input
-                type="checkbox"
-                checked={m.active}
-                disabled={!m.active && !m.can_activate}
-                onChange={() => toggle(m)}
-                className="sr-only peer"
-                data-testid={`toggle-${m.key}`}
-              />
-              <span className={`dh-toggle ${m.active ? "dh-toggle-on" : "dh-toggle-off"} ${!m.active && !m.can_activate ? "dh-toggle-disabled" : ""}`}>
-                <span className={`dh-toggle-knob ${m.active ? "translate-x-[20px]" : "translate-x-[2px]"}`}></span>
-              </span>
-            </label>
+            {canWrite && (
+              <label className="inline-flex items-center cursor-pointer shrink-0">
+                <input
+                  type="checkbox"
+                  checked={m.active}
+                  disabled={!m.active && !m.can_activate}
+                  onChange={() => toggle(m)}
+                  className="sr-only peer"
+                  data-testid={`toggle-${m.key}`}
+                />
+                <span className={`dh-toggle ${m.active ? "dh-toggle-on" : "dh-toggle-off"} ${!m.active && !m.can_activate ? "dh-toggle-disabled" : ""}`}>
+                  <span className={`dh-toggle-knob ${m.active ? "translate-x-[20px]" : "translate-x-[2px]"}`}></span>
+                </span>
+              </label>
+            )}
           </div>
 
           <p className="text-[13px] text-slate-600 mb-5 leading-relaxed">{m.description}</p>
 
-          {m.active && (
+          {m.active && canWrite && (
             <div className="pt-5 border-t border-slate-100 space-y-3">
               {editing === m.key ? (
                 <LaunchUrlEditor tenantId={tenantId} mkey={m.key} initial={m.launch_url}
@@ -244,10 +234,11 @@ function ModulesTab({ tenantId, tenantSlug, modules, reload }) {
                 <div className="flex items-center gap-2">
                   <button
                     type="button"
-                    onClick={() => openModule(m)}
+                    disabled
+                    title="A operação é acessada pelo portal do restaurante"
                     className="dh-btn dh-btn-primary flex-1"
                     data-testid={`open-${m.key}`}>
-                    <ExternalLink size={14} strokeWidth={2} /> Abrir módulo
+                    <ExternalLink size={14} strokeWidth={2} /> Acesso pelo portal
                   </button>
                   <button className="dh-btn dh-btn-outline px-3" onClick={() => setEditing(m.key)}
                           data-testid={`config-${m.key}`} title="Configurar URL">
@@ -295,19 +286,21 @@ const ROLE_OPTS = [
   { v: "kitchen", l: "Cozinha" },
 ];
 
-function UsersTab({ tenantId, users, reload }) {
+function UsersTab({ tenantId, users, reload, canWrite }) {
   const [adding, setAdding] = useState(false);
 
   return (
     <div className="space-y-4 dh-fade-in" data-testid="users-tab">
-      <div className="flex justify-end">
-        <button className="dh-btn dh-btn-primary" onClick={() => setAdding((v) => !v)}
-                data-testid="add-user-toggle">
-          <UserPlus size={14} strokeWidth={1.8} /> Adicionar usuário
-        </button>
-      </div>
+      {canWrite && (
+        <div className="flex justify-end">
+          <button className="dh-btn dh-btn-primary" onClick={() => setAdding((v) => !v)}
+                  data-testid="add-user-toggle">
+            <UserPlus size={14} strokeWidth={1.8} /> Adicionar usuário
+          </button>
+        </div>
+      )}
 
-      {adding && (
+      {adding && canWrite && (
         <NewUserForm tenantId={tenantId}
                      onDone={() => { setAdding(false); reload(); }}
                      onCancel={() => setAdding(false)} />
@@ -318,7 +311,7 @@ function UsersTab({ tenantId, users, reload }) {
           <table className="dh-table">
             <thead>
               <tr>
-                <th>Nome</th><th>E-mail</th><th>Função</th><th>Status</th><th></th>
+                <th>Nome</th><th>E-mail</th><th>Função</th><th>Status</th>{canWrite && <th></th>}
               </tr>
             </thead>
             <tbody>
@@ -334,7 +327,7 @@ function UsersTab({ tenantId, users, reload }) {
                 </td></tr>
               )}
               {users.map((u) => (
-                <UserRow key={u.id} tenantId={tenantId} user={u} reload={reload} />
+                <UserRow key={u.id} tenantId={tenantId} user={u} reload={reload} canWrite={canWrite} />
               ))}
             </tbody>
           </table>
@@ -344,7 +337,7 @@ function UsersTab({ tenantId, users, reload }) {
   );
 }
 
-function UserRow({ tenantId, user, reload }) {
+function UserRow({ tenantId, user, reload, canWrite }) {
   const [editing, setEditing] = useState(false);
   const [busy, setBusy] = useState(false);
 
@@ -376,7 +369,7 @@ function UserRow({ tenantId, user, reload }) {
       <td className="font-semibold text-slate-900">{user.name}</td>
       <td className="text-[13px] text-slate-600">{user.email}</td>
       <td>
-        {editing ? (
+        {editing && canWrite ? (
           <select value={user.role} disabled={busy} onChange={(e) => changeRole(e.target.value)}
                   className="dh-input w-auto py-1.5 pl-2 pr-7 text-[12px]"
                   data-testid={`user-role-select-${user.id}`}>
@@ -387,18 +380,20 @@ function UserRow({ tenantId, user, reload }) {
         )}
       </td>
       <td><StatusBadge status={user.status} /></td>
-      <td className="text-right">
-        <div className="flex items-center justify-end gap-2">
-          <button className="dh-btn dh-btn-ghost" onClick={() => setEditing((v) => !v)}
-                  data-testid={`user-edit-${user.id}`} title="Editar função">
-            <Settings2 size={14} strokeWidth={1.8} />
-          </button>
-          <button className="dh-btn dh-btn-outline" onClick={toggleStatus} disabled={busy}
-                  data-testid={`user-toggle-status-${user.id}`}>
-            {user.status === "active" ? "Desativar" : "Ativar"}
-          </button>
-        </div>
-      </td>
+      {canWrite && (
+        <td className="text-right">
+          <div className="flex items-center justify-end gap-2">
+            <button className="dh-btn dh-btn-ghost" onClick={() => setEditing((v) => !v)}
+                    data-testid={`user-edit-${user.id}`} title="Editar função">
+              <Settings2 size={14} strokeWidth={1.8} />
+            </button>
+            <button className="dh-btn dh-btn-outline" onClick={toggleStatus} disabled={busy}
+                    data-testid={`user-toggle-status-${user.id}`}>
+              {user.status === "active" ? "Desativar" : "Ativar"}
+            </button>
+          </div>
+        </td>
+      )}
     </tr>
   );
 }

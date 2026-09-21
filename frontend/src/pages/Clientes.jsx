@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { api } from "@/lib/api";
+import { useAuth } from "@/context/AuthContext";
 import { Plus, Search, Building2, ChevronRight } from "lucide-react";
 import StatusBadge from "@/components/StatusBadge";
 
@@ -13,6 +14,8 @@ const FILTERS = [
 ];
 
 export default function Clientes() {
+  const { user } = useAuth();
+  const canWrite = user?.role !== "viewer";
   const [rows, setRows] = useState([]);
   const [status, setStatus] = useState("all");
   const [q, setQ] = useState("");
@@ -42,9 +45,11 @@ export default function Clientes() {
           <h1 className="text-3xl sm:text-4xl font-bold tracking-tight text-slate-900" style={{fontFamily:"Cabinet Grotesk"}}>Clientes</h1>
           <p className="text-[15px] text-slate-500 mt-2">Restaurantes cadastrados na plataforma DACOT.</p>
         </div>
-        <Link to="/clientes/novo" className="dh-btn dh-btn-primary" data-testid="new-tenant-btn">
-          <Plus size={16} strokeWidth={2} /> Novo cliente
-        </Link>
+        {canWrite && (
+          <Link to="/clientes/novo" className="dh-btn dh-btn-primary" data-testid="new-tenant-btn">
+            <Plus size={16} strokeWidth={2} /> Novo cliente
+          </Link>
+        )}
       </div>
 
       <div className="dh-card overflow-hidden">
@@ -112,7 +117,7 @@ export default function Clientes() {
                       </span>
                       <div className="text-[15px] font-semibold text-slate-700">Nenhum cliente encontrado</div>
                       <div className="text-[13px] text-slate-500">Ajuste os filtros ou cadastre um novo restaurante.</div>
-                      <Link to="/clientes/novo" className="dh-btn dh-btn-outline mt-2">Novo cliente</Link>
+                      {canWrite && <Link to="/clientes/novo" className="dh-btn dh-btn-outline mt-2">Novo cliente</Link>}
                     </div>
                   </td>
                 </tr>

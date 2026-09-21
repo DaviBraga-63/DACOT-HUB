@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { NavLink, useNavigate, Outlet, Navigate } from "react-router-dom";
-import { LayoutDashboard, Building2, Blocks, LogOut, Settings, Menu, Moon, Sun, X } from "lucide-react";
+import { LayoutDashboard, Building2, Blocks, Users, LogOut, Settings, Menu, Moon, Sun, X } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 import { useTheme } from "@/context/ThemeContext";
 import { toast } from "sonner";
@@ -10,6 +10,7 @@ const NAV = [
   { to: "/", label: "Dashboard", icon: LayoutDashboard, testid: "menu-dashboard", end: true },
   { to: "/clientes", label: "Clientes", icon: Building2, testid: "menu-clientes" },
   { to: "/modulos", label: "Módulos", icon: Blocks, testid: "menu-modulos" },
+  { to: "/equipe", label: "Equipe", icon: Users, testid: "menu-equipe" },
 ];
 
 function Brand() {

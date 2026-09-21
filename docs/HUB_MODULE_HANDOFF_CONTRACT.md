@@ -1,5 +1,10 @@
 # Hub → Módulo de Pedidos: Contrato de Handoff
 
+> Atualização P0: [P0_HOMOLOGACAO.md](P0_HOMOLOGACAO.md) substitui os exemplos
+> históricos abaixo de acesso administrativo, nomes de chaves e sessões sem
+> revalidação. `hub_user:` não é aceito no V1; `hub_access` é obrigatório no
+> Pedidos atualizado. O lote P0 ainda requer implantação/homologação.
+
 **Versão**: 1.0  
 **Data**: 2026-09-01  
 **Status**: Ativo em produção  
