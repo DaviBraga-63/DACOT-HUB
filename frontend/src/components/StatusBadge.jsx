@@ -11,7 +11,7 @@ const MAP = {
 export default function StatusBadge({ status, testid }) {
   const info = MAP[status] || { cls: "dh-chip-neutral", label: status };
   return (
-    <span className={`dh-chip ${info.cls}`} data-testid={testid}>
+    <span className={`dh-chip dh-chip-dot ${info.cls}`} data-testid={testid}>
       {info.label}
     </span>
   );
