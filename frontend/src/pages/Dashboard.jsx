@@ -1,51 +1,13 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { api } from "@/lib/api";
-import { Activity, Building2, FlaskConical, Blocks, LayoutGrid, ArrowRight } from "lucide-react";
-
-const ACTION_LABEL = {
-  "hub_user.login": "Fez login no Hub",
-  "restaurant_user.login": "acessou o portal",
-  "tenant.created": "criou o cliente",
-  "tenant.status_changed": "alterou o status de",
-  "tenant.deleted": "removeu o cliente",
-  "module.activated": "ativou o módulo",
-  "module.deactivated": "desativou o módulo",
-  "module.launch_token_issued": "abriu o módulo",
-};
-
-function ActionLabel({ item }) {
-  const label = ACTION_LABEL[item.action] || item.action.replace(/_/g, " ");
-  const target = item.metadata?.name || item.metadata?.tenant_name || "";
-  const mod = item.metadata?.module ? ` — ${item.metadata.module}` : "";
-  return (
-    <span className="text-[13px] text-slate-700 leading-snug">
-      <span className="font-semibold text-slate-900">{item.actor_name}</span>{" "}
-      <span className="text-slate-500">{label}</span>{" "}
-      <span className="font-semibold text-slate-900">{target}{mod}</span>
-    </span>
-  );
-}
-
-function timeAgo(iso) {
-  if (!iso) return "";
-  const d = new Date(iso);
-  const s = Math.floor((Date.now() - d.getTime()) / 1000);
-  if (s < 60) return `há ${s}s`;
-  const m = Math.floor(s / 60);
-  if (m < 60) return `há ${m}min`;
-  const h = Math.floor(m / 60);
-  if (h < 24) return `há ${h}h`;
-  return d.toLocaleDateString("pt-BR");
-}
+import { Building2, FlaskConical, Blocks, LayoutGrid, ArrowRight } from "lucide-react";
 
 export default function Dashboard() {
   const [stats, setStats] = useState(null);
-  const [activity, setActivity] = useState(null);
 
   useEffect(() => {
     api.get("/hub/dashboard/stats").then((r) => setStats(r.data));
-    api.get("/hub/dashboard/activity", { params: { limit: 12 } }).then((r) => setActivity(r.data));
   }, []);
 
   const kpis = [
@@ -93,9 +55,9 @@ export default function Dashboard() {
         ))}
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
+      <div>
         {/* Utilização por módulo */}
-        <div className="dh-card lg:col-span-2 p-6 sm:p-7">
+        <div className="dh-card p-6 sm:p-7">
           <div className="flex items-center justify-between mb-6">
             <div>
               <h2 className="text-lg font-semibold text-slate-900" style={{fontFamily:"Cabinet Grotesk"}}>Utilização por módulo</h2>
@@ -145,32 +107,6 @@ export default function Dashboard() {
           </div>
         </div>
 
-        {/* Atividade recente */}
-        <div className="dh-card p-6 sm:p-7" data-testid="activity-feed">
-          <div className="flex items-center gap-2.5 mb-5">
-            <div className="dh-icon-tile w-9 h-9">
-              <Activity size={16} strokeWidth={1.8} />
-            </div>
-            <h2 className="text-lg font-semibold text-slate-900" style={{fontFamily:"Cabinet Grotesk"}}>Atividade</h2>
-          </div>
-          <ul className="space-y-4">
-            {activity === null && [0,1,2,3].map((i) => (
-              <li key={i} className="space-y-2">
-                <div className="dh-skeleton h-4 w-full" />
-                <div className="dh-skeleton h-3 w-20" />
-              </li>
-            ))}
-            {activity?.length === 0 && (
-              <li className="text-[13px] text-slate-500 text-center py-8">Sem atividade</li>
-            )}
-            {activity?.map((it) => (
-              <li key={it.id} className="pb-4 border-b border-slate-100 last:border-b-0 last:pb-0">
-                <ActionLabel item={it} />
-                <div className="text-[11px] text-slate-400 mt-1.5">{timeAgo(it.created_at)}</div>
-              </li>
-            ))}
-          </ul>
-        </div>
       </div>
     </div>
   );
