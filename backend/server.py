@@ -5,6 +5,7 @@ ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / ".env")
 
 import os
+import asyncio
 import logging
 import secrets
 import hashlib
@@ -22,6 +23,8 @@ from bson import ObjectId
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, Response, BackgroundTasks
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
+from pymongo import ReturnDocument
+from pymongo.errors import DuplicateKeyError
 from pydantic import BaseModel, Field, EmailStr, BeforeValidator, ConfigDict
 
 # ─── Setup ─────────────────────────────────────────────────────────────────────
@@ -188,6 +191,13 @@ async def get_restaurant_user(user: dict = Depends(get_current_user)) -> dict:
     if not tenant or not _tenant_operational(tenant):
         raise HTTPException(403, "Restaurante suspenso ou inativo")
     user["tenant"] = tenant
+    return user
+
+
+async def get_restaurant_admin(user: dict = Depends(get_restaurant_user)) -> dict:
+    """Tenant-scoped administration; never grants access to DACOT staff APIs."""
+    if user.get("role") != "admin":
+        raise HTTPException(403, "Permissão restrita ao administrador do restaurante")
     return user
 
 
@@ -705,14 +715,14 @@ def _tenant_user_out(d: dict) -> dict:
 
 
 class TenantUserIn(BaseModel):
-    name: str
+    name: str = Field(min_length=1, max_length=120)
     email: EmailStr
     role: str
     password: Optional[str] = Field(default=None, min_length=6)
 
 
 class TenantUserPatch(BaseModel):
-    name: Optional[str] = None
+    name: Optional[str] = Field(default=None, min_length=1, max_length=120)
     email: Optional[EmailStr] = None
     role: Optional[str] = None
     status: Optional[str] = None
@@ -726,29 +736,32 @@ async def tenant_users(tid: str, _u: dict = Depends(get_staff_user)):
     return [_tenant_user_out(d) for d in docs]
 
 
-@api_router.post("/hub/tenants/{tid}/users")
-async def create_tenant_user(tid: str, payload: TenantUserIn, user: dict = Depends(get_staff_write)):
-    if not ObjectId.is_valid(tid):
-        raise HTTPException(404, "Cliente não encontrado")
+async def _create_tenant_user(tid: str, payload: TenantUserIn, actor: dict) -> dict:
     tenant = await db.tenants.find_one({"_id": ObjectId(tid)})
     if not tenant:
         raise HTTPException(404, "Cliente não encontrado")
     if payload.role not in VALID_HANDOFF_ROLES:
         raise HTTPException(400, "Papel inválido")
+    name = payload.name.strip()
+    if not name:
+        raise HTTPException(400, "Nome é obrigatório")
     email = payload.email.lower()
     if await _email_in_use(email):
         raise HTTPException(409, "Já existe um usuário com este e-mail")
     generated_password = None if payload.password else secrets.token_urlsafe(9)
     doc = {
-        "tenant_id": tid, "name": payload.name.strip(), "email": email,
+        "tenant_id": tid, "name": name, "email": email,
         "role": payload.role, "status": "active",
         "password_hash": hash_password(payload.password or generated_password),
         "user_type": "restaurant", "token_version": 0,
         "created_at": now_utc().isoformat(),
     }
-    res = await db.tenant_users.insert_one(doc)
+    try:
+        res = await db.tenant_users.insert_one(doc)
+    except DuplicateKeyError:
+        raise HTTPException(409, "Já existe um usuário com este e-mail")
     doc["_id"] = res.inserted_id
-    await log_activity(actor_id=user["_id"], actor_name=user.get("name", user["email"]),
+    await log_activity(actor_id=actor["_id"], actor_name=actor.get("name", actor["email"]),
                        action="tenant_user.created", target_type="tenant_user",
                        target_id=str(res.inserted_id), tenant_id=tid,
                        metadata={"email": email, "role": payload.role})
@@ -757,35 +770,134 @@ async def create_tenant_user(tid: str, payload: TenantUserIn, user: dict = Depen
     return out
 
 
-@api_router.patch("/hub/tenants/{tid}/users/{uid}")
-async def patch_tenant_user(tid: str, uid: str, payload: TenantUserPatch,
-                            user: dict = Depends(get_staff_write)):
+@api_router.post("/hub/tenants/{tid}/users")
+async def create_tenant_user(tid: str, payload: TenantUserIn, user: dict = Depends(get_staff_write)):
+    if not ObjectId.is_valid(tid):
+        raise HTTPException(404, "Cliente não encontrado")
+    return await _create_tenant_user(tid, payload, user)
+
+
+async def _acquire_tenant_admin_lock(tid: str) -> str:
+    """Short Mongo-backed lease serializes last-admin checks across app workers."""
+    owner = secrets.token_urlsafe(16)
+    for _ in range(50):
+        now = now_utc()
+        tenant = await db.tenants.find_one_and_update(
+            {"_id": ObjectId(tid), "$or": [
+                {"tenant_user_lock_expires_at": {"$lte": now}},
+                {"tenant_user_lock_expires_at": {"$exists": False}},
+            ]},
+            {"$set": {"tenant_user_lock_owner": owner,
+                      "tenant_user_lock_expires_at": now + timedelta(seconds=10)}},
+            return_document=ReturnDocument.AFTER,
+        )
+        if tenant:
+            return owner
+        await asyncio.sleep(0.1)
+    raise HTTPException(409, "Outra alteração de administradores está em andamento. Tente novamente.")
+
+
+async def _release_tenant_admin_lock(tid: str, owner: str) -> None:
+    await db.tenants.update_one(
+        {"_id": ObjectId(tid), "tenant_user_lock_owner": owner},
+        {"$unset": {"tenant_user_lock_owner": "", "tenant_user_lock_expires_at": ""}},
+    )
+
+
+async def _apply_tenant_user_patch(tid: str, uid: str, payload: TenantUserPatch,
+                                   actor: dict) -> dict:
     if not ObjectId.is_valid(tid) or not ObjectId.is_valid(uid):
         raise HTTPException(404, "Usuário não encontrado")
-    existing = await db.tenant_users.find_one({"_id": ObjectId(uid), "tenant_id": tid})
+    oid = ObjectId(uid)
+    existing = await db.tenant_users.find_one({"_id": oid, "tenant_id": tid})
     if not existing:
         raise HTTPException(404, "Usuário não encontrado")
     update = {k: v for k, v in payload.model_dump(exclude_unset=True).items() if v is not None}
+    if "name" in update:
+        update["name"] = update["name"].strip()
+        if not update["name"]:
+            raise HTTPException(400, "Nome é obrigatório")
     if "email" in update:
         email = update["email"].lower()
-        if await _email_in_use(email, exclude_collection="tenant_users", exclude_id=ObjectId(uid)):
+        if await _email_in_use(email, exclude_collection="tenant_users", exclude_id=oid):
             raise HTTPException(409, "Já existe um usuário com este e-mail")
         update["email"] = email
     if "role" in update and update["role"] not in VALID_HANDOFF_ROLES:
         raise HTTPException(400, "Papel inválido")
     if "status" in update and update["status"] not in VALID_TENANT_USER_STATUS:
         raise HTTPException(400, "Status inválido")
+    if (actor.get("user_type") == "restaurant" and actor["_id"] == uid
+            and ("role" in update or update.get("status") == "inactive")):
+        raise HTTPException(400, "Você não pode alterar seu próprio papel nem desativar sua própria conta")
+
+    lock_owner = None
+    try:
+        removes_admin = (existing.get("status", "active") == "active"
+                         and existing.get("role") == "admin"
+                         and (update.get("status", existing.get("status", "active")) != "active"
+                              or update.get("role", existing.get("role")) != "admin"))
+        if removes_admin:
+            lock_owner = await _acquire_tenant_admin_lock(tid)
+            existing = await db.tenant_users.find_one({"_id": oid, "tenant_id": tid})
+            still_removes_admin = (existing and existing.get("status", "active") == "active"
+                                   and existing.get("role") == "admin"
+                                   and (update.get("status", existing.get("status", "active")) != "active"
+                                        or update.get("role", existing.get("role")) != "admin"))
+            if still_removes_admin:
+                active_admins = await db.tenant_users.count_documents(
+                    {"tenant_id": tid, "status": "active", "role": "admin"})
+                if active_admins <= 1:
+                    raise HTTPException(400, "O restaurante precisa manter pelo menos um administrador ativo")
+
+        if update:
+            mutation = {"$set": update}
+            if "status" in update or "role" in update:
+                mutation["$inc"] = {"token_version": 1}
+            try:
+                await db.tenant_users.update_one({"_id": oid, "tenant_id": tid}, mutation)
+            except DuplicateKeyError:
+                raise HTTPException(409, "Já existe um usuário com este e-mail")
+    finally:
+        if lock_owner:
+            await _release_tenant_admin_lock(tid, lock_owner)
+
     if update:
-        mutation = {"$set": update}
-        if "status" in update or "role" in update:
-            mutation["$inc"] = {"token_version": 1}
-        await db.tenant_users.update_one({"_id": ObjectId(uid)}, mutation)
-    if "status" in update:
-        await log_activity(actor_id=user["_id"], actor_name=user.get("name", user["email"]),
-                           action="tenant_user.status_changed", target_type="tenant_user",
-                           target_id=uid, tenant_id=tid, metadata={"status": update["status"]})
-    d = await db.tenant_users.find_one({"_id": ObjectId(uid)})
-    return _tenant_user_out(d)
+        await log_activity(actor_id=actor["_id"], actor_name=actor.get("name", actor["email"]),
+                           action="tenant_user.updated", target_type="tenant_user",
+                           target_id=uid, tenant_id=tid,
+                           metadata={k: update[k] for k in ("name", "email", "role", "status") if k in update})
+    return _tenant_user_out(await db.tenant_users.find_one({"_id": oid, "tenant_id": tid}))
+
+
+async def _reset_tenant_user_password(tid: str, uid: str, actor: dict) -> dict:
+    if not ObjectId.is_valid(tid) or not ObjectId.is_valid(uid):
+        raise HTTPException(404, "Usuário não encontrado")
+    if actor.get("user_type") == "restaurant" and actor["_id"] == uid:
+        raise HTTPException(400, "Use a recuperação de senha para alterar sua própria senha")
+    generated_password = secrets.token_urlsafe(12)
+    result = await db.tenant_users.update_one(
+        {"_id": ObjectId(uid), "tenant_id": tid},
+        {"$set": {"password_hash": hash_password(generated_password),
+                  "password_reset_required": False},
+         "$inc": {"token_version": 1}},
+    )
+    if result.matched_count != 1:
+        raise HTTPException(404, "Usuário não encontrado")
+    await log_activity(actor_id=actor["_id"], actor_name=actor.get("name", actor["email"]),
+                       action="tenant_user.password_reset", target_type="tenant_user",
+                       target_id=uid, tenant_id=tid)
+    return {"temp_password": generated_password}
+
+
+@api_router.patch("/hub/tenants/{tid}/users/{uid}")
+async def patch_tenant_user(tid: str, uid: str, payload: TenantUserPatch,
+                            user: dict = Depends(get_staff_write)):
+    return await _apply_tenant_user_patch(tid, uid, payload, user)
+
+
+@api_router.post("/hub/tenants/{tid}/users/{uid}/reset-password")
+async def reset_tenant_user_password(tid: str, uid: str, user: dict = Depends(get_staff_write)):
+    return await _reset_tenant_user_password(tid, uid, user)
 
 
 # ─── Hub users (DACOT internal staff) ──────────────────────────────────────────
@@ -1029,6 +1141,29 @@ async def portal_context(user: dict = Depends(get_restaurant_user)):
                    "status": tenant.get("status", "trial")},
         "modules": out,
     }
+
+
+@api_router.get("/portal/users")
+async def portal_users(user: dict = Depends(get_restaurant_admin)):
+    docs = await db.tenant_users.find({"tenant_id": user["tenant_id"]}).sort("created_at", -1).to_list(500)
+    return [_tenant_user_out(d) for d in docs]
+
+
+@api_router.post("/portal/users")
+async def create_portal_user(payload: TenantUserIn, user: dict = Depends(get_restaurant_admin)):
+    # tenant_id is deliberately derived from the authenticated database identity.
+    return await _create_tenant_user(user["tenant_id"], payload, user)
+
+
+@api_router.patch("/portal/users/{uid}")
+async def patch_portal_user(uid: str, payload: TenantUserPatch,
+                            user: dict = Depends(get_restaurant_admin)):
+    return await _apply_tenant_user_patch(user["tenant_id"], uid, payload, user)
+
+
+@api_router.post("/portal/users/{uid}/reset-password")
+async def reset_portal_user_password(uid: str, user: dict = Depends(get_restaurant_admin)):
+    return await _reset_tenant_user_password(user["tenant_id"], uid, user)
 
 
 @api_router.post("/portal/modules/{mkey}/launch-token")

@@ -1,9 +1,9 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useNavigate, Navigate } from "react-router-dom";
 import { api, formatApiErrorDetail } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
 import { toast } from "sonner";
-import { LogOut, ArrowUpRight, ClipboardList, ChefHat, Users, Boxes, Landmark, Bike, Package } from "lucide-react";
+import { LogOut, ArrowUpRight, ClipboardList, ChefHat, Users, UserPlus, Pencil, KeyRound, Boxes, Landmark, Bike, Package } from "lucide-react";
 
 const ICONS = {
   "clipboard-list": ClipboardList, "chef-hat": ChefHat, "users": Users,
@@ -23,6 +23,9 @@ export default function Portal() {
   const navigate = useNavigate();
   const [ctx, setCtx] = useState(null);
   const [err, setErr] = useState(null);
+  const [tenantUsers, setTenantUsers] = useState([]);
+  const [usersLoading, setUsersLoading] = useState(false);
+  const [addingUser, setAddingUser] = useState(false);
 
   useEffect(() => {
     if (user?.user_type === "staff") return;
@@ -30,6 +33,22 @@ export default function Portal() {
       .then((r) => setCtx(r.data))
       .catch((e) => setErr(formatApiErrorDetail(e.response?.data?.detail)));
   }, [user?.user_type]);
+
+  const loadUsers = useCallback(async () => {
+    setUsersLoading(true);
+    try {
+      const { data } = await api.get("/portal/users");
+      setTenantUsers(data);
+    } catch (e) {
+      toast.error(formatApiErrorDetail(e.response?.data?.detail));
+    } finally {
+      setUsersLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (user?.user_type === "restaurant" && user?.role === "admin") loadUsers();
+  }, [user?.user_type, user?.role, loadUsers]);
 
   if (user?.user_type === "staff") return <Navigate to="/" replace />;
 
@@ -141,6 +160,42 @@ export default function Portal() {
               </div>
             </section>
 
+            {ctx.user.role === "admin" && (
+              <section data-testid="portal-users-section">
+                <div className="flex items-center justify-between gap-4 mb-4">
+                  <h2 className="text-[12px] uppercase tracking-widest font-bold text-slate-400">Equipe</h2>
+                  <button className="dh-btn dh-btn-primary text-[13px]" onClick={() => setAddingUser((v) => !v)}
+                          data-testid="portal-add-user-toggle">
+                    <UserPlus size={15} strokeWidth={1.8} /> Adicionar usuário
+                  </button>
+                </div>
+
+                {addingUser && (
+                  <PortalUserForm
+                    onCancel={() => setAddingUser(false)}
+                    onCreated={() => { setAddingUser(false); loadUsers(); }}
+                  />
+                )}
+
+                <div className="dh-card overflow-hidden mt-4">
+                  <div className="overflow-x-auto">
+                    <table className="dh-table" data-testid="portal-users-table">
+                      <thead><tr><th>Nome</th><th>E-mail</th><th>Função</th><th>Status</th><th></th></tr></thead>
+                      <tbody>
+                        {usersLoading && (
+                          <tr><td colSpan={5} className="text-center py-8 text-slate-400">Carregando equipe...</td></tr>
+                        )}
+                        {!usersLoading && tenantUsers.map((tenantUser) => (
+                          <PortalUserRow key={tenantUser.id} tenantUser={tenantUser}
+                                         currentUserId={ctx.user.id} reload={loadUsers} />
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </section>
+            )}
+
             <p className="text-[13px] text-slate-500 text-center">
               Precisa de um módulo inativo? Fale com a equipe DACOT para solicitar a ativação.
             </p>
@@ -148,5 +203,166 @@ export default function Portal() {
         )}
       </main>
     </div>
+  );
+}
+
+function PortalUserRow({ tenantUser, currentUserId, reload }) {
+  const [editing, setEditing] = useState(false);
+  const [name, setName] = useState(tenantUser.name);
+  const [email, setEmail] = useState(tenantUser.email);
+  const [role, setRole] = useState(tenantUser.role);
+  const [busy, setBusy] = useState(false);
+  const isSelf = tenantUser.id === currentUserId;
+
+  const save = async () => {
+    setBusy(true);
+    try {
+      const payload = { name, email };
+      if (!isSelf) payload.role = role;
+      await api.patch(`/portal/users/${tenantUser.id}`, payload);
+      toast.success("Usuário atualizado");
+      setEditing(false);
+      await reload();
+    } catch (e) {
+      toast.error(formatApiErrorDetail(e.response?.data?.detail));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const toggleStatus = async () => {
+    const nextStatus = tenantUser.status === "active" ? "inactive" : "active";
+    if (nextStatus === "inactive" && !window.confirm(`Desativar ${tenantUser.name}? O acesso será revogado.`)) return;
+    setBusy(true);
+    try {
+      await api.patch(`/portal/users/${tenantUser.id}`, { status: nextStatus });
+      toast.success(nextStatus === "active" ? "Usuário reativado" : "Usuário desativado");
+      await reload();
+    } catch (e) {
+      toast.error(formatApiErrorDetail(e.response?.data?.detail));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const resetPassword = async () => {
+    if (!window.confirm(`Gerar uma nova senha para ${tenantUser.name}? As sessões atuais serão revogadas.`)) return;
+    setBusy(true);
+    try {
+      const { data } = await api.post(`/portal/users/${tenantUser.id}/reset-password`);
+      toast.success(`Nova senha temporária: ${data.temp_password}`, { duration: 15000 });
+    } catch (e) {
+      toast.error(formatApiErrorDetail(e.response?.data?.detail));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (editing) {
+    return (
+      <tr data-testid={`portal-user-${tenantUser.id}`}>
+        <td><input className="dh-input min-w-[150px]" value={name} onChange={(e) => setName(e.target.value)}
+                   required maxLength={120} data-testid={`portal-user-name-${tenantUser.id}`} /></td>
+        <td><input className="dh-input min-w-[210px]" type="email" value={email}
+                   onChange={(e) => setEmail(e.target.value)} required data-testid={`portal-user-email-${tenantUser.id}`} /></td>
+        <td>
+          <select className="dh-input min-w-[145px]" value={role} onChange={(e) => setRole(e.target.value)}
+                  disabled={isSelf} data-testid={`portal-user-role-${tenantUser.id}`}>
+            <option value="admin">Administrador</option>
+            <option value="manager">Gerente</option>
+            <option value="waiter">Garçom</option>
+            <option value="kitchen">Cozinha</option>
+          </select>
+        </td>
+        <td><span className={`dh-chip ${tenantUser.status === "active" ? "dh-chip-success" : "dh-chip-neutral"}`}>
+          {tenantUser.status === "active" ? "Ativo" : "Inativo"}
+        </span></td>
+        <td className="text-right whitespace-nowrap">
+          <button className="dh-btn dh-btn-primary mr-2" onClick={save} disabled={busy}>Salvar</button>
+          <button className="dh-btn dh-btn-ghost" onClick={() => setEditing(false)} disabled={busy}>Cancelar</button>
+        </td>
+      </tr>
+    );
+  }
+
+  return (
+    <tr data-testid={`portal-user-${tenantUser.id}`}>
+      <td className="font-semibold text-slate-900">{tenantUser.name}{isSelf && <span className="text-slate-400 font-normal"> (você)</span>}</td>
+      <td className="text-[13px] text-slate-600">{tenantUser.email}</td>
+      <td><span className="dh-chip dh-chip-neutral">{ROLE_LABEL[tenantUser.role] || tenantUser.role}</span></td>
+      <td><span className={`dh-chip ${tenantUser.status === "active" ? "dh-chip-success" : "dh-chip-neutral"}`}>
+        {tenantUser.status === "active" ? "Ativo" : "Inativo"}
+      </span></td>
+      <td className="text-right whitespace-nowrap">
+        <button className="dh-btn dh-btn-ghost mr-1" onClick={() => setEditing(true)} disabled={busy}
+                title="Editar usuário" data-testid={`portal-user-edit-${tenantUser.id}`}>
+          <Pencil size={14} strokeWidth={1.8} />
+        </button>
+        {!isSelf && (
+          <>
+            <button className="dh-btn dh-btn-ghost mr-1" onClick={resetPassword} disabled={busy}
+                    title="Gerar nova senha" data-testid={`portal-user-password-${tenantUser.id}`}>
+              <KeyRound size={14} strokeWidth={1.8} />
+            </button>
+            <button className="dh-btn dh-btn-outline" onClick={toggleStatus} disabled={busy}
+                    data-testid={`portal-user-status-${tenantUser.id}`}>
+              {tenantUser.status === "active" ? "Desativar" : "Reativar"}
+            </button>
+          </>
+        )}
+      </td>
+    </tr>
+  );
+}
+
+function PortalUserForm({ onCancel, onCreated }) {
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
+  const [role, setRole] = useState("waiter");
+  const [busy, setBusy] = useState(false);
+
+  const submit = async (event) => {
+    event.preventDefault();
+    setBusy(true);
+    try {
+      const { data } = await api.post("/portal/users", { name, email, role });
+      toast.success(`Usuário criado. Senha temporária: ${data.temp_password}`, { duration: 15000 });
+      onCreated();
+    } catch (e) {
+      toast.error(formatApiErrorDetail(e.response?.data?.detail));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <form onSubmit={submit} className="dh-card p-5 flex flex-wrap items-end gap-3" data-testid="portal-new-user-form">
+      <div className="flex-1 min-w-[160px]">
+        <label className="text-[11px] uppercase tracking-wider font-semibold text-slate-400">Nome</label>
+        <input value={name} onChange={(e) => setName(e.target.value)} required maxLength={120}
+               className="dh-input mt-1" data-testid="portal-new-user-name" />
+      </div>
+      <div className="flex-1 min-w-[200px]">
+        <label className="text-[11px] uppercase tracking-wider font-semibold text-slate-400">E-mail</label>
+        <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required
+               className="dh-input mt-1" data-testid="portal-new-user-email" />
+      </div>
+      <div className="min-w-[160px]">
+        <label className="text-[11px] uppercase tracking-wider font-semibold text-slate-400">Função</label>
+        <select value={role} onChange={(e) => setRole(e.target.value)} className="dh-input mt-1"
+                data-testid="portal-new-user-role">
+          <option value="admin">Administrador</option>
+          <option value="manager">Gerente</option>
+          <option value="waiter">Garçom</option>
+          <option value="kitchen">Cozinha</option>
+        </select>
+      </div>
+      <div className="flex gap-2">
+        <button type="submit" className="dh-btn dh-btn-primary" disabled={busy} data-testid="portal-new-user-submit">
+          Criar
+        </button>
+        <button type="button" className="dh-btn dh-btn-ghost" onClick={onCancel} disabled={busy}>Cancelar</button>
+      </div>
+    </form>
   );
 }
