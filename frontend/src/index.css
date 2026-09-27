@@ -5,6 +5,11 @@
 
 /* DESIGN TOKENS */
 :root {
+    /* DACOT brand palette */
+    --dacot-blue-light: #32A5DC;
+    --dacot-blue: #1B73B8;
+    --dacot-blue-dark: #0D3867;
+
     /* Colors */
     --dh-bg: #F7F6F2;
     --dh-surface: #FFFFFF;
@@ -12,11 +17,13 @@
     --dh-border-soft: #F1F0ED;
     --dh-text: #1a1a1a;
     --dh-muted: #6B6B6B;
-    --dh-accent: #1B73B8;
-    --dh-accent-hover: #0D3867;
-    --dh-accent-light: #32A5DC;
+    --dh-accent: var(--dacot-blue);
+    --dh-accent-hover: var(--dacot-blue-dark);
+    --dh-accent-light: var(--dacot-blue-light);
     --dh-accent-soft: rgba(27, 115, 184, 0.08);
-    --dh-accent-gradient: linear-gradient(135deg, #1B73B8 0%, #32A5DC 100%);
+    --dh-accent-gradient: linear-gradient(135deg, var(--dacot-blue) 0%, var(--dacot-blue-light) 100%);
+    --dh-disabled-bg: #CBD5E1;
+    --dh-disabled-fg: #64748B;
 
     /* Status colors */
     --dh-success-bg: #F0FDF4;
@@ -58,8 +65,11 @@
     --dh-surface-hover: #F8FAFC; --dh-border: #E8E5DE; --dh-border-soft: #F1F0ED;
     --dh-text: #1A1A1A; --dh-text-strong: #0F172A; --dh-muted: #6B6B6B;
     --dh-muted-strong: #475569; --dh-input-border: #CBD5E1;
-    --dh-accent: #1B73B8; --dh-accent-hover: #0D3867; --dh-accent-light: #32A5DC;
+    --dh-accent: var(--dacot-blue); --dh-accent-hover: var(--dacot-blue-dark); --dh-accent-light: var(--dacot-blue-light);
     --dh-accent-soft: rgba(27, 115, 184, 0.08);
+    --dh-accent-gradient: linear-gradient(135deg, var(--dacot-blue) 0%, var(--dacot-blue-light) 100%);
+    --dh-accent-focus: rgba(27, 115, 184, 0.18);
+    --dh-disabled-bg: #CBD5E1; --dh-disabled-fg: #64748B;
     --dh-success-bg: #F0FDF4; --dh-success-fg: #16A34A; --dh-success-bd: #BBF7D0;
     --dh-warning-bg: #FFFBEB; --dh-warning-fg: #D97706; --dh-warning-bd: #FCD34D;
     --dh-error-bg: #FEF2F2; --dh-error-fg: #DC2626; --dh-error-bd: #FECACA;
@@ -71,8 +81,11 @@
     --dh-surface-hover: #21262D; --dh-border: #30363D; --dh-border-soft: #21262D;
     --dh-text: #F0F6FC; --dh-text-strong: #F0F6FC; --dh-muted: #8B949E;
     --dh-muted-strong: #C9D1D9; --dh-input-border: #30363D;
-    --dh-accent: #D95D39; --dh-accent-hover: #E87958; --dh-accent-light: #F09A7E;
-    --dh-accent-soft: rgba(217, 93, 57, 0.16);
+    --dh-accent: var(--dacot-blue); --dh-accent-hover: var(--dacot-blue-dark); --dh-accent-light: var(--dacot-blue-light);
+    --dh-accent-soft: rgba(27, 115, 184, 0.22);
+    --dh-accent-gradient: linear-gradient(135deg, var(--dacot-blue-dark) 0%, var(--dacot-blue) 52%, var(--dacot-blue-light) 100%);
+    --dh-accent-focus: rgba(50, 165, 220, 0.34);
+    --dh-disabled-bg: #30363D; --dh-disabled-fg: #8B949E;
     --dh-success-bg: rgba(46, 160, 67, 0.16); --dh-success-fg: #56D364; --dh-success-bd: rgba(63, 185, 80, 0.42);
     --dh-warning-bg: rgba(187, 128, 9, 0.16); --dh-warning-fg: #E3B341; --dh-warning-bd: rgba(210, 153, 34, 0.45);
     --dh-error-bg: rgba(248, 81, 73, 0.16); --dh-error-fg: #FF7B72; --dh-error-bd: rgba(248, 81, 73, 0.45);
@@ -106,12 +119,12 @@
         --background: 210 19% 10%; --foreground: 210 40% 96%;
         --card: 210 18% 13%; --card-foreground: 210 40% 96%;
         --popover: 210 18% 13%; --popover-foreground: 210 40% 96%;
-        --primary: 15 68% 54%; --primary-foreground: 0 0% 100%;
+        --primary: 207 74% 41%; --primary-foreground: 0 0% 100%;
         --secondary: 210 15% 16%; --secondary-foreground: 210 40% 96%;
         --muted: 210 15% 16%; --muted-foreground: 214 12% 62%;
-        --accent: 15 68% 54%; --accent-foreground: 0 0% 100%;
+        --accent: 207 74% 41%; --accent-foreground: 0 0% 100%;
         --destructive: 0 72% 65%; --destructive-foreground: 210 40% 96%;
-        --border: 210 12% 24%; --input: 210 12% 24%; --ring: 15 68% 54%;
+        --border: 210 12% 24%; --input: 210 12% 24%; --ring: 199 70% 53%;
     }
 }
 
@@ -188,10 +201,10 @@
     cursor: pointer; user-select: none;
 }
 .dh-btn:active { transform: scale(0.98); }
-.dh-btn:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--dh-surface), 0 0 0 4px rgba(27,115,184,.5); }
+.dh-btn:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--dh-surface), 0 0 0 4px var(--dh-accent-focus); }
 .dh-btn-primary { background: var(--dh-accent); color: #fff; box-shadow: 0 1px 2px 0 rgba(15,23,42,.08); }
 .dh-btn-primary:hover { background: var(--dh-accent-hover); }
-.dh-btn-primary:disabled { background: #CBD5E1; cursor: not-allowed; box-shadow: none; }
+.dh-btn-primary:disabled { background: var(--dh-disabled-bg); color: var(--dh-disabled-fg); cursor: not-allowed; box-shadow: none; }
 .dh-btn-outline { background: var(--dh-surface); color: var(--dh-muted-strong); border: 1px solid var(--dh-border); }
 .dh-btn-outline:hover { background: var(--dh-surface-hover); border-color: var(--dh-input-border); }
 .dh-btn-ghost { background: transparent; color: var(--dh-muted-strong); }
@@ -206,7 +219,7 @@
     transition: border-color .15s ease, box-shadow .15s ease;
 }
 .dh-input::placeholder { color: var(--dh-muted); }
-.dh-input:focus-visible { border-color: var(--dh-accent); box-shadow: 0 0 0 3px rgba(27,115,184,0.18); }
+.dh-input:focus-visible { border-color: var(--dh-accent); box-shadow: 0 0 0 3px var(--dh-accent-focus); }
 
 /* ── Tables ────────────────────────────────────────────────────────────── */
 .dh-table { width: 100%; border-collapse: collapse; font-size: 14px; }
@@ -278,7 +291,7 @@
     transition: background-color .18s ease, opacity .18s ease;
     border: 1px solid transparent;
 }
-.dh-toggle-on  { background: var(--dh-accent); box-shadow: 0 0 0 2px rgba(27, 115, 184, 0.2); }
+.dh-toggle-on  { background: var(--dh-accent); box-shadow: 0 0 0 2px var(--dh-accent-focus); }
 .dh-toggle-off { background: var(--dh-border); }
 .dh-toggle-disabled { opacity: .45; }
 .dh-toggle-knob {
@@ -290,7 +303,7 @@
 
 /* ── Animations ────────────────────────────────────────────────────────── */
 @keyframes dhSlideIn { from { opacity: 0; transform: translateX(-10px); } to { opacity: 1; transform: none; } }
-@keyframes dhGlow { 0%, 100% { box-shadow: 0 0 0 0 transparent; } 50% { box-shadow: 0 0 12px rgba(27, 115, 184, 0.4); } }
+@keyframes dhGlow { 0%, 100% { box-shadow: 0 0 0 0 transparent; } 50% { box-shadow: 0 0 12px var(--dh-accent-focus); } }
 @keyframes dhShimmer { 0% { background-position: -1000px 0; } 100% { background-position: 1000px 0; } }
 @keyframes dhCountUp { from { opacity: 0; transform: scale(0.8); } to { opacity: 1; transform: scale(1); } }
 
@@ -352,7 +365,7 @@
 :root[data-theme="dark"] .hover\:text-slate-700:hover { color: var(--dh-text); }
 :root[data-theme="dark"] .bg-slate-900\/40 { background-color: rgba(1, 4, 9, .65); }
 :root[data-theme="dark"] .dh-grid-bg {
-    background-image: linear-gradient(rgba(217, 93, 57, .12) 1px, transparent 1px), linear-gradient(90deg, rgba(217, 93, 57, .12) 1px, transparent 1px);
+    background-image: linear-gradient(rgba(50, 165, 220, .14) 1px, transparent 1px), linear-gradient(90deg, rgba(50, 165, 220, .14) 1px, transparent 1px);
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -390,12 +403,12 @@
     --dh-bg-subtle: #161B22;
     --dh-surface-raised: #1C2128;
     --dh-text-secondary: #C9D1D9;
-    --dh-accent-glow: rgba(217, 93, 57, 0.20);
+    --dh-accent-glow: rgba(50, 165, 220, 0.20);
     --dh-shadow-xs: 0 1px 2px rgba(1, 4, 9, 0.45);
     --dh-shadow-sm: 0 2px 8px rgba(1, 4, 9, 0.38);
     --dh-shadow-md: 0 8px 22px rgba(1, 4, 9, 0.35);
     --dh-shadow-lg: 0 20px 48px rgba(1, 4, 9, 0.45);
-    --dh-shadow-accent: 0 0 22px rgba(217, 93, 57, 0.24);
+    --dh-shadow-accent: 0 0 22px rgba(50, 165, 220, 0.24);
 }
 
 .dh-font-display { font-family: 'Cabinet Grotesk', 'Satoshi', sans-serif; }
@@ -411,6 +424,7 @@
     border-radius: 10px;
     color: #fff; font-weight: 800; font-size: 15px;
     font-family: 'Cabinet Grotesk', sans-serif;
+    text-shadow: 0 1px 2px rgba(13, 56, 103, .65);
     box-shadow: var(--dh-shadow-accent);
     flex-shrink: 0;
 }
@@ -512,12 +526,12 @@
 .dh-login-hero { position: relative; overflow: hidden; background: linear-gradient(145deg, #0C1222 0%, #1A2332 50%, #0F1729 100%); }
 .dh-login-hero::before {
     content: ''; position: absolute; inset: 0;
-    background-image: linear-gradient(rgba(217,93,57,.08) 1px, transparent 1px), linear-gradient(90deg, rgba(217,93,57,.08) 1px, transparent 1px);
+    background-image: linear-gradient(rgba(50,165,220,.10) 1px, transparent 1px), linear-gradient(90deg, rgba(50,165,220,.10) 1px, transparent 1px);
     background-size: 48px 48px; opacity: .5;
 }
 .dh-login-hero-glow {
     position: absolute; width: 400px; height: 400px; border-radius: 50%;
-    background: radial-gradient(circle, rgba(217,93,57,.25) 0%, transparent 70%);
+    background: radial-gradient(circle, rgba(50,165,220,.25) 0%, transparent 70%);
     bottom: -100px; right: -100px; pointer-events: none;
 }
 

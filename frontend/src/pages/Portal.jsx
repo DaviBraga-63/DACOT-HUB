@@ -76,7 +76,7 @@ export default function Portal() {
           <div className="flex items-center gap-3">
             <div 
               className="w-9 h-9 rounded-lg flex items-center justify-center text-white font-bold text-[13px]"
-              style={{background: 'linear-gradient(135deg, #1B73B8 0%, #32A5DC 100%)', fontFamily:"Cabinet Grotesk"}}
+              style={{background: 'var(--dh-accent-gradient)', fontFamily:"Cabinet Grotesk"}}
             >
               D
             </div>

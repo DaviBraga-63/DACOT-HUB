@@ -24,7 +24,7 @@ export default function Login() {
         <div className="flex items-center gap-3">
           <div 
             className="w-10 h-10 rounded-lg flex items-center justify-center text-white font-bold shadow-md"
-            style={{background: 'linear-gradient(135deg, #1B73B8 0%, #32A5DC 100%)', fontFamily:"Cabinet Grotesk"}}
+            style={{background: 'var(--dh-accent-gradient)', fontFamily:"Cabinet Grotesk"}}
           >
             D
           </div>

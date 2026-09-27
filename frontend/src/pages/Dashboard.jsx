@@ -87,7 +87,7 @@ export default function Dashboard() {
                         className="h-full rounded-full transition-[width] duration-700 ease-out"
                         style={{
                           width: `${pct}%`,
-                          background: 'linear-gradient(135deg, #1B73B8 0%, #32A5DC 100%)'
+                          background: 'var(--dh-accent-gradient)'
                         }}
                       />
                     </div>
