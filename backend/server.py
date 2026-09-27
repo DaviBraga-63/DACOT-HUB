@@ -1,7 +1,9 @@
 from dotenv import load_dotenv
 from pathlib import Path
 
-ROOT_DIR = Path(__file__).parent
+ROOT_DIR = Path(__file__).resolve().parent
+PROJECT_DIR = ROOT_DIR.parent
+FRONTEND_BUILD_DIR = PROJECT_DIR / "frontend" / "build"
 load_dotenv(ROOT_DIR / ".env")
 
 import os
@@ -21,6 +23,8 @@ import jwt
 import httpx
 from bson import ObjectId
 from fastapi import FastAPI, APIRouter, HTTPException, Depends, Request, Response, BackgroundTasks
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 from pymongo import ReturnDocument
@@ -1346,6 +1350,59 @@ async def startup():
 
 
 app.include_router(api_router)
+
+
+# API routes are registered before these frontend routes. This keeps the API
+# authoritative for every /api request, including unknown paths, and prevents
+# the React SPA fallback from ever masking an API error as index.html.
+@app.api_route("/api", methods=["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"], include_in_schema=False)
+@app.api_route("/api/{api_path:path}", methods=["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"], include_in_schema=False)
+async def api_not_found(api_path: str = ""):
+    raise HTTPException(status_code=404, detail="Not Found")
+
+
+# CRA writes hashed JavaScript and CSS under /static. Mounting that directory
+# before the SPA fallback lets real files retain their normal content type and
+# cache headers.
+if (FRONTEND_BUILD_DIR / "static").is_dir():
+    app.mount("/static", StaticFiles(directory=FRONTEND_BUILD_DIR / "static"), name="frontend-static")
+
+
+def frontend_file_or_index(requested_path: str) -> FileResponse:
+    """Serve a build artifact when it exists, otherwise hand navigation to React.
+
+    This only runs for GET/HEAD frontend routes. It deliberately rejects API
+    paths so API failures remain JSON 404 responses.
+    """
+    if requested_path == "api" or requested_path.startswith("api/"):
+        raise HTTPException(status_code=404, detail="Not Found")
+
+    index_file = FRONTEND_BUILD_DIR / "index.html"
+    if not index_file.is_file():
+        raise HTTPException(status_code=404, detail="Frontend build not found")
+
+    candidate = (FRONTEND_BUILD_DIR / requested_path).resolve()
+    try:
+        candidate.relative_to(FRONTEND_BUILD_DIR.resolve())
+    except ValueError:
+        # A traversal attempt must never escape the generated frontend build.
+        pass
+    else:
+        if candidate.is_file():
+            return FileResponse(candidate)
+    return FileResponse(index_file)
+
+
+@app.api_route("/", methods=["GET", "HEAD"], include_in_schema=False)
+async def serve_frontend_root():
+    return frontend_file_or_index("")
+
+
+@app.api_route("/{frontend_path:path}", methods=["GET", "HEAD"], include_in_schema=False)
+async def serve_frontend(frontend_path: str):
+    return frontend_file_or_index(frontend_path)
+
+
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,

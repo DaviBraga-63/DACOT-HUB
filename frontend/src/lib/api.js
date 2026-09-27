@@ -1,7 +1,11 @@
 import axios from "axios";
 
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
-export const API_BASE = `${BACKEND_URL}/api`;
+const configuredBackendUrl = process.env.REACT_APP_BACKEND_URL?.trim().replace(/\/+$/, "");
+
+// In the combined production deployment, requests stay on the current origin.
+// A configured URL remains available for the existing separate local frontend
+// and backend workflow.
+export const API_BASE = configuredBackendUrl ? `${configuredBackendUrl}/api` : "/api";
 
 export const api = axios.create({
   baseURL: API_BASE,
