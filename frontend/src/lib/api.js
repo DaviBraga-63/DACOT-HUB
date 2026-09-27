@@ -19,6 +19,15 @@ const AUTH_PATHS = [
 
 let refreshPromise = null;
 
+function navigateToLogin() {
+  if (typeof window === "undefined" || window.location.pathname === "/login") return;
+
+  // Keep this redirect inside the SPA. A full-page navigation to /login makes
+  // the hosting server resolve that path and can produce its own 404 response.
+  window.history.replaceState(window.history.state, "", "/login");
+  window.dispatchEvent(new PopStateEvent("popstate"));
+}
+
 api.interceptors.response.use(
   (response) => response,
   async (error) => {
@@ -42,10 +51,9 @@ api.interceptors.response.use(
       await refreshPromise;
       return api(original);
     } catch (refreshError) {
-      // sessão não recuperável: navegação full-page limpa todo o estado React
-      if (typeof window !== "undefined" && !window.location.pathname.startsWith("/login")) {
-        window.location.href = "/login";
-      }
+      // Sessão não recuperável: navegue sem recarregar a página para manter a
+      // resolução da rota no React Router, e não no servidor de hospedagem.
+      navigateToLogin();
       return Promise.reject(refreshError);
     }
   }
