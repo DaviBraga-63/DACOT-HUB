@@ -247,7 +247,7 @@ function ModulesTab({ tenantId, tenantSlug, modules, reload, canWrite }) {
                 </div>
               )}
               <div className="text-[12px] text-slate-400 font-mono truncate">
-                {m.launch_url || `https://pedidos.dacot.app/${tenantSlug}`}
+                {m.launch_url || `https://dacot-pedidos-frontend.onrender.com/${tenantSlug}`}
               </div>
             </div>
           )}
@@ -271,7 +271,7 @@ function LaunchUrlEditor({ tenantId, mkey, initial, onDone }) {
   return (
     <div className="flex gap-2 flex-wrap">
       <input value={url} onChange={(e) => setUrl(e.target.value)}
-             className="dh-input flex-1 min-w-[180px]" placeholder="https://pedidos.dacot.app/…"
+             className="dh-input flex-1 min-w-[180px]" placeholder="https://dacot-pedidos-frontend.onrender.com/…"
              data-testid={`launch-url-input-${mkey}`} />
       <button className="dh-btn dh-btn-primary" onClick={save} disabled={busy} data-testid={`launch-url-save-${mkey}`}>Salvar</button>
       <button className="dh-btn dh-btn-ghost" onClick={onDone}>Cancelar</button>

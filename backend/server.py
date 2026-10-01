@@ -17,6 +17,7 @@ from typing import List, Optional, Annotated, Any
 from urllib.parse import urlparse
 
 from handoff_policy import validate_handoff_configuration, validate_launch_url, orders_module_key
+from orders_launch_urls import ORDERS_LAUNCH_URL_TEMPLATE, migrate_legacy_orders_launch_urls
 
 import bcrypt
 import jwt
@@ -1243,7 +1244,7 @@ DEFAULT_MODULES = [
     {"key": "orders", "name": "Pedidos", "status": "available", "icon": "clipboard-list",
      "category": "Operacional",
      "description": "Sistema para criação, acompanhamento e gerenciamento de pedidos do restaurante.",
-     "launch_url_template": "https://pedidos.dacot.app/{slug}"},
+     "launch_url_template": ORDERS_LAUNCH_URL_TEMPLATE},
     {"key": "kitchen", "name": "Cozinha", "status": "available", "icon": "chef-hat",
      "category": "Operacional",
      "description": "Área operacional para acompanhamento e atualização dos pedidos pela cozinha.",
@@ -1339,6 +1340,7 @@ async def startup():
     # Seed modules
     for m in DEFAULT_MODULES:
         await db.modules.update_one({"key": m["key"]}, {"$setOnInsert": m}, upsert=True)
+    await migrate_legacy_orders_launch_urls(db)
 
     # Non-destructive migration: tenant_users become login-capable restaurant users.
     # Maps legacy roles/metadata only. Never invent or overwrite credentials.

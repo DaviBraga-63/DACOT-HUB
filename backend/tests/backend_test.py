@@ -59,9 +59,9 @@ class TestLaunchToken:
         launch_url = r.json()["launch_url"]
         restaurant_slug = hamburgueria.get("slug", "")
 
-        assert "pedidos.dacot.app" in launch_url, f"Domínio de produção não encontrado em: {launch_url}"
+        assert "dacot-pedidos-frontend.onrender.com" in launch_url, f"Domínio de produção não encontrado em: {launch_url}"
         assert restaurant_slug in launch_url, f"Slug {restaurant_slug} não encontrado em: {launch_url}"
-        expected_pattern = f"https://pedidos.dacot.app/{restaurant_slug}"
+        expected_pattern = f"https://dacot-pedidos-frontend.onrender.com/{restaurant_slug}"
         assert launch_url == expected_pattern, f"Esperado {expected_pattern}, obtido {launch_url}"
 
     def test_launch_token_rejects_invalid_signature(self, api, client, hamburgueria):
