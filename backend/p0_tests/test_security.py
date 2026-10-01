@@ -93,6 +93,25 @@ def test_local_requires_explicit_development_and_allowlist(monkeypatch):
         policy.validate_launch_url("http://127.0.0.1:3000/r", "orders")
 
 
+def test_production_handoff_configuration_fails_closed(monkeypatch):
+    policy = load("policy_config", BACKEND / "handoff_policy.py")
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("HANDOFF_ALLOWED_ORIGINS_JSON", '{"orders":["https://orders.example.test"]}')
+    policy.validate_handoff_configuration(
+        "s" * 32, "dacot-hub", {"orders": "dacot-orders"}, 1, {"orders": "k" * 32},
+    )
+
+    monkeypatch.setenv("HANDOFF_ALLOWED_ORIGINS_JSON", '{"orders":["http://orders.example.test"]}')
+    with pytest.raises(RuntimeError) as error:
+        policy.validate_handoff_configuration(
+            "short", "", {"orders": ""}, 2, {"orders": "short"},
+        )
+    message = str(error.value)
+    assert "HANDOFF_JWT_SECRET" in message
+    assert "MODULE_API_KEY" in message
+    assert "short" not in message
+
+
 def test_legitimate_handoff_replay_expiration_and_staff(services):
     s, identity = services, services.restaurant()
     token = s.handoff(identity)

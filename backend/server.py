@@ -16,7 +16,7 @@ from html import escape
 from typing import List, Optional, Annotated, Any
 from urllib.parse import urlparse
 
-from handoff_policy import validate_launch_url, orders_module_key
+from handoff_policy import validate_handoff_configuration, validate_launch_url, orders_module_key
 
 import bcrypt
 import jwt
@@ -1268,6 +1268,13 @@ DEFAULT_MODULES = [
 
 @app.on_event("startup")
 async def startup():
+    validate_handoff_configuration(
+        HANDOFF_JWT_SECRET, HANDOFF_ISSUER, HANDOFF_AUDIENCE,
+        HANDOFF_VERSION, MODULE_ACCESS_KEYS,
+    )
+    if os.environ.get("APP_ENV", "production").strip().lower() == "production":
+        orders_template = next(m["launch_url_template"] for m in DEFAULT_MODULES if m["key"] == "orders")
+        validate_launch_url(orders_template.replace("{slug}", "startup-check"), "orders")
     await db.hub_users.create_index("email", unique=True)
     await db.tenants.create_index("email")
     await db.tenants.create_index("slug", unique=True)
