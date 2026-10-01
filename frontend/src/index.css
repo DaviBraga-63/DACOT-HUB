@@ -258,6 +258,35 @@
 }
 .dh-sidebar-link-active:hover { background: var(--dh-accent-soft); color: var(--dh-accent); }
 
+/* ── Desktop top navigation ────────────────────────────────────────────── */
+.dh-topnav {
+    background: color-mix(in srgb, var(--dh-surface) 94%, transparent);
+    border-bottom: 1px solid var(--dh-border);
+    box-shadow: var(--dh-shadow-xs);
+    backdrop-filter: blur(14px);
+}
+.dh-topnav-link {
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 8px 10px; font-size: 13px; font-weight: 500;
+    color: var(--dh-muted-strong); border-radius: var(--dh-radius-sm);
+    text-decoration: none;
+    transition: background-color .12s ease, color .12s ease;
+}
+.dh-topnav-link:hover { background: var(--dh-surface-hover); color: var(--dh-text); }
+.dh-topnav-link-active { color: var(--dh-accent); background: var(--dh-accent-soft); font-weight: 600; }
+.dh-topnav-link-active:hover { color: var(--dh-accent); background: var(--dh-accent-soft); }
+.dh-topnav-user { border-left: 1px solid var(--dh-border-soft); }
+.dh-topnav .dh-user-avatar-sm { width: 28px; height: 28px; font-size: 10px; }
+.dh-topnav-action {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 34px; height: 34px; color: var(--dh-muted-strong);
+    border-radius: var(--dh-radius-sm);
+    transition: background-color .12s ease, color .12s ease;
+}
+.dh-topnav-action:hover { background: var(--dh-surface-hover); color: var(--dh-text); }
+.dh-topnav-action:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--dh-accent-focus); }
+.dh-topnav-logout:hover { color: var(--dh-error-fg); background: var(--dh-error-bg); }
+
 /* ── KPI ───────────────────────────────────────────────────────────────── */
 .dh-kpi-label { font-size: 12px; font-weight: 600; color: var(--dh-muted); }
 .dh-kpi-value { font-family: 'Cabinet Grotesk', sans-serif; font-size: 34px;
@@ -338,6 +367,9 @@
 :root[data-theme] .dh-table th,
 :root[data-theme] .dh-table td,
 :root[data-theme] .dh-sidebar-link,
+:root[data-theme] .dh-topnav,
+:root[data-theme] .dh-topnav-link,
+:root[data-theme] .dh-topnav-action,
 :root[data-theme] input,
 :root[data-theme] select,
 :root[data-theme] textarea {
@@ -376,6 +408,9 @@
     :root[data-theme] .dh-table th,
     :root[data-theme] .dh-table td,
     :root[data-theme] .dh-sidebar-link,
+    :root[data-theme] .dh-topnav,
+    :root[data-theme] .dh-topnav-link,
+    :root[data-theme] .dh-topnav-action,
     :root[data-theme] input,
     :root[data-theme] select,
     :root[data-theme] textarea { transition: none; }
