@@ -6,6 +6,14 @@ import time
 import requests
 
 
+def grant_orders_access(services, tenant_id, user_id):
+    response = services.call(
+        "PUT", f"/hub/tenants/{tenant_id}/modules/orders/users/{user_id}/access",
+        json={"active": True},
+    )
+    assert response.status_code == 200, response.text
+
+
 def test_tenant_admin_creates_login_capable_user_with_correct_scope_and_role(services):
     s, owner, other = services, services.restaurant(), services.restaurant()
     email = "new-tenant-user@example.com"
@@ -25,6 +33,7 @@ def test_tenant_admin_creates_login_capable_user_with_correct_scope_and_role(ser
     assert stored["password_hash"] != password
     assert bcrypt.checkpw(password.encode(), stored["password_hash"].encode())
 
+    grant_orders_access(s, owner["tid"], created.json()["id"])
     identity = {"tid": owner["tid"], "uid": created.json()["id"], "headers": s.login(email, password)}
     context = s.call("GET", "/portal/context", headers=identity["headers"])
     assert context.status_code == 200
@@ -79,6 +88,7 @@ def test_complete_user_lifecycle_revokes_old_sessions_and_supports_new_password(
     created.raise_for_status()
     uid = created.json()["id"]
     original_password = created.json()["temp_password"]
+    grant_orders_access(s, owner["tid"], uid)
     user_headers = s.login(email, original_password)
 
     edited = s.call("PATCH", f"/portal/users/{uid}", headers=owner["headers"], json={
