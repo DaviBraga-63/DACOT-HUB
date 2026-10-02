@@ -129,7 +129,7 @@ export default function ModuloPedidos() {
   }
 
   return (
-    <div className="w-full max-w-6xl mx-auto space-y-6" data-testid="orders-module-page">
+    <div className="w-[90%] max-w-none mx-auto space-y-6" data-testid="orders-module-page">
       <div>
         <Link to="/modulos" className="inline-flex items-center gap-1.5 text-[12px] font-semibold text-[var(--dh-muted)] hover:text-[var(--dh-accent)] transition-colors" data-testid="orders-back-link">
           <ArrowLeft size={14} strokeWidth={2} /> Módulos
