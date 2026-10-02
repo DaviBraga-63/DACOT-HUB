@@ -1,10 +1,13 @@
-import { useState } from "react";
-import { NavLink, useNavigate, Outlet, Navigate } from "react-router-dom";
-import { LayoutDashboard, Building2, Blocks, Users, LogOut, Settings, Menu, Moon, Sun, X } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { NavLink, useLocation, useNavigate, Outlet, Navigate } from "react-router-dom";
+import { LayoutDashboard, Building2, Blocks, Users, LogOut, Settings, Menu, Moon, Sun, X, ChevronDown } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 import { useTheme } from "@/context/ThemeContext";
+import { api } from "@/lib/api";
+import { getModuleIcon } from "@/lib/moduleIcons";
 import { toast } from "sonner";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import StatusBadge from "@/components/StatusBadge";
 
 const NAV = [
   { to: "/", label: "Dashboard", icon: LayoutDashboard, testid: "menu-dashboard", end: true },
@@ -32,30 +35,136 @@ export default function AppLayout() {
   const { user, logout } = useAuth();
   const { theme, toggleTheme } = useTheme();
   const navigate = useNavigate();
+  const location = useLocation();
   const [drawer, setDrawer] = useState(false);
-
-  if (user?.user_type === "restaurant") {
-    return <Navigate to="/portal" replace />;
-  }
+  const [modulesOpen, setModulesOpen] = useState(false);
+  const [modules, setModules] = useState(null);
+  const [modulesError, setModulesError] = useState(false);
+  const modulesMenuRef = useRef(null);
 
   const initials = (user?.name || user?.email || "?")
     .split(/\s+/).slice(0, 2).map((s) => s[0]).join("").toUpperCase();
 
   const doLogout = async () => { await logout(); navigate("/login"); };
 
-  const navItems = (variant, onNavigate) => NAV.map(({ to, label, icon: Icon, testid, end }) => (
-    <NavLink
-      key={to}
-      to={to}
-      end={end}
-      data-testid={testid}
-      onClick={onNavigate}
-      className={({ isActive }) => `${variant === "desktop" ? "dh-topnav-link" : "dh-sidebar-link"} ${isActive ? `${variant === "desktop" ? "dh-topnav-link-active" : "dh-sidebar-link-active"}` : ""}`}
-    >
-      <Icon size={18} strokeWidth={1.75} />
-      <span>{label}</span>
-    </NavLink>
-  ));
+  useEffect(() => {
+    if (user?.user_type === "restaurant") return undefined;
+    let mounted = true;
+    api.get("/hub/modules")
+      .then((response) => { if (mounted) setModules(response.data); })
+      .catch(() => { if (mounted) setModulesError(true); });
+    return () => { mounted = false; };
+  }, [user?.user_type]);
+
+  useEffect(() => {
+    setModulesOpen(false);
+  }, [location.pathname]);
+
+  useEffect(() => {
+    if (!modulesOpen) return undefined;
+    const closeWhenOutside = (event) => {
+      if (!modulesMenuRef.current?.contains(event.target)) setModulesOpen(false);
+    };
+    const closeWithEscape = (event) => {
+      if (event.key === "Escape") setModulesOpen(false);
+    };
+    document.addEventListener("mousedown", closeWhenOutside);
+    document.addEventListener("keydown", closeWithEscape);
+    return () => {
+      document.removeEventListener("mousedown", closeWhenOutside);
+      document.removeEventListener("keydown", closeWithEscape);
+    };
+  }, [modulesOpen]);
+
+  if (user?.user_type === "restaurant") {
+    return <Navigate to="/portal" replace />;
+  }
+
+  const selectModule = (module) => {
+    setModulesOpen(false);
+    if (module.status === "available") {
+      toast.info(`Selecione um restaurante para acessar ${module.name}.`);
+      navigate("/clientes");
+      return;
+    }
+    navigate("/modulos");
+  };
+
+  const desktopModulesMenu = (
+    <div key="/modulos" className="dh-modules-menu-wrap" ref={modulesMenuRef}>
+      <button
+        type="button"
+        className={`dh-topnav-link ${location.pathname === "/modulos" ? "dh-topnav-link-active" : ""}`}
+        data-testid="menu-modulos"
+        onClick={() => setModulesOpen((isOpen) => !isOpen)}
+        aria-haspopup="menu"
+        aria-expanded={modulesOpen}
+        aria-controls="desktop-modules-menu"
+      >
+        <Blocks size={18} strokeWidth={1.75} />
+        <span>Módulos</span>
+        <ChevronDown className={`dh-modules-menu-chevron ${modulesOpen ? "dh-modules-menu-chevron-open" : ""}`} size={15} strokeWidth={2} />
+      </button>
+      {modulesOpen && (
+        <div id="desktop-modules-menu" className="dh-modules-menu" role="menu" aria-label="Módulos DACOT">
+          {modules === null && !modulesError && (
+            <div className="dh-modules-menu-message" role="status">Carregando módulos…</div>
+          )}
+          {modulesError && (
+            <div className="dh-modules-menu-message">Não foi possível carregar os módulos.</div>
+          )}
+          {modules?.length === 0 && (
+            <div className="dh-modules-menu-message">Nenhum módulo disponível.</div>
+          )}
+          {modules?.map((module) => {
+            const Icon = getModuleIcon(module.icon);
+            return (
+              <button
+                key={module.key}
+                type="button"
+                role="menuitem"
+                className="dh-modules-menu-item"
+                onClick={() => selectModule(module)}
+                data-testid={`menu-module-${module.key}`}
+              >
+                <span className="dh-icon-tile-neutral dh-modules-menu-icon"><Icon size={16} strokeWidth={1.75} /></span>
+                <span className="min-w-0 flex-1 text-left truncate">{module.name}</span>
+                <StatusBadge status={module.status} />
+              </button>
+            );
+          })}
+          <div className="dh-modules-menu-divider" />
+          <button
+            type="button"
+            role="menuitem"
+            className="dh-modules-menu-manage"
+            onClick={() => { setModulesOpen(false); navigate("/modulos"); }}
+            data-testid="menu-manage-modules"
+          >
+            <Blocks size={16} strokeWidth={1.75} />
+            Gerenciar módulos
+          </button>
+        </div>
+      )}
+    </div>
+  );
+
+  const navItems = (variant, onNavigate) => NAV.map(({ to, label, icon: Icon, testid, end }) => {
+    if (variant === "desktop" && to === "/modulos") return desktopModulesMenu;
+    return (
+      <NavLink
+        key={to}
+        to={to}
+        end={end}
+        data-testid={testid}
+        onClick={onNavigate}
+        className={({ isActive }) => `${variant === "desktop" ? "dh-topnav-link" : "dh-sidebar-link"} ${isActive ? `${variant === "desktop" ? "dh-topnav-link-active" : "dh-sidebar-link-active"}` : ""}`}
+      >
+        <Icon size={18} strokeWidth={1.75} />
+        <span>{label}</span>
+      </NavLink>
+    );
+  });
 
   const mobileBottomSection = (
     <div className="dh-sidebar-footer pt-4 pb-5 px-3 space-y-1">

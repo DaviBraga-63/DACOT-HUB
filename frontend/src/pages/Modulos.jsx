@@ -1,12 +1,7 @@
 import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
+import { getModuleIcon } from "@/lib/moduleIcons";
 import StatusBadge from "@/components/StatusBadge";
-import { ClipboardList, ChefHat, Users, Boxes, Landmark, Bike, Package } from "lucide-react";
-
-const ICONS = {
-  "clipboard-list": ClipboardList, "chef-hat": ChefHat, "users": Users,
-  "boxes": Boxes, "landmark": Landmark, "bike": Bike,
-};
 
 export default function Modulos() {
   const [mods, setMods] = useState(null);
@@ -35,7 +30,7 @@ export default function Modulos() {
           </div>
         ))}
         {mods?.map((m, idx) => {
-          const Icon = ICONS[m.icon] || Package;
+          const Icon = getModuleIcon(m.icon);
           return (
             <div 
               key={m.key} 

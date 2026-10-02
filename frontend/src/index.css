@@ -275,6 +275,35 @@
 .dh-topnav-link:hover { background: var(--dh-surface-hover); color: var(--dh-text); }
 .dh-topnav-link-active { color: var(--dh-accent); background: var(--dh-accent-soft); font-weight: 600; }
 .dh-topnav-link-active:hover { color: var(--dh-accent); background: var(--dh-accent-soft); }
+.dh-modules-menu-wrap { position: relative; }
+.dh-modules-menu-wrap .dh-topnav-link { border: 0; background: transparent; font-family: inherit; cursor: pointer; }
+.dh-modules-menu-chevron { transition: transform .16s ease-out; }
+.dh-modules-menu-chevron-open { transform: rotate(180deg); }
+.dh-modules-menu {
+    position: absolute; top: calc(100% + 8px); left: 0; z-index: 60;
+    width: min(310px, calc(100vw - 32px)); padding: 6px;
+    background: var(--dh-surface); border: 1px solid var(--dh-border);
+    border-radius: var(--dh-radius-md); box-shadow: var(--dh-shadow-lg);
+    animation: dhFadeIn .14s ease-out;
+}
+.dh-modules-menu-item,
+.dh-modules-menu-manage {
+    width: 100%; display: flex; align-items: center; gap: 10px;
+    border: 0; border-radius: var(--dh-radius-sm); background: transparent;
+    color: var(--dh-text); font: inherit; font-size: 13px; font-weight: 500;
+    text-decoration: none; text-align: left; cursor: pointer;
+    transition: background-color .12s ease, color .12s ease;
+}
+.dh-modules-menu-item { min-height: 44px; padding: 6px 8px; }
+.dh-modules-menu-item:hover,
+.dh-modules-menu-manage:hover { background: var(--dh-surface-hover); color: var(--dh-accent); }
+.dh-modules-menu-item:focus-visible,
+.dh-modules-menu-manage:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--dh-accent-focus); }
+.dh-modules-menu-icon { width: 30px; height: 30px; flex-shrink: 0; border-radius: var(--dh-radius-sm); }
+.dh-modules-menu-item .dh-chip { flex-shrink: 0; font-size: 10px; }
+.dh-modules-menu-message { padding: 12px 10px; color: var(--dh-muted); font-size: 12px; }
+.dh-modules-menu-divider { height: 1px; margin: 6px 2px; background: var(--dh-border-soft); }
+.dh-modules-menu-manage { min-height: 38px; padding: 8px 9px; color: var(--dh-muted-strong); }
 .dh-topnav-user { border-left: 1px solid var(--dh-border-soft); }
 .dh-topnav .dh-user-avatar-sm { width: 28px; height: 28px; font-size: 10px; }
 .dh-topnav-action {
