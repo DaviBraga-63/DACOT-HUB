@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { api } from "@/lib/api";
-import { Building2, FlaskConical, Blocks, LayoutGrid, ArrowRight } from "lucide-react";
+import { ArrowRight } from "lucide-react";
 
 export default function Dashboard() {
   const [stats, setStats] = useState(null);
@@ -11,10 +11,10 @@ export default function Dashboard() {
   }, []);
 
   const kpis = [
-    { key: "active", label: "Restaurantes ativos", value: stats?.active, icon: Building2, testid: "kpi-active" },
-    { key: "trial", label: "Em teste", value: stats?.trial, icon: FlaskConical, testid: "kpi-trial" },
-    { key: "total", label: "Restaurantes cadastrados", value: stats?.total_tenants, icon: LayoutGrid, testid: "kpi-total" },
-    { key: "mods", label: "Módulos ativos", value: stats?.active_modules, icon: Blocks, testid: "kpi-modules" },
+    { key: "active", label: "Restaurantes ativos", value: stats?.active, testid: "kpi-active" },
+    { key: "trial", label: "Em teste", value: stats?.trial, testid: "kpi-trial" },
+    { key: "total", label: "Restaurantes cadastrados", value: stats?.total_tenants, testid: "kpi-total" },
+    { key: "mods", label: "Módulos ativos", value: stats?.active_modules, testid: "kpi-modules" },
   ];
 
   return (
@@ -30,7 +30,7 @@ export default function Dashboard() {
 
       {/* KPIs — Premium card grid */}
       <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-5">
-        {kpis.map(({ key, label, value, icon: Icon, testid }) => (
+        {kpis.map(({ key, label, value, testid }) => (
           <div
             key={key}
             className="dh-card p-6 group hover:shadow-lg transition-all duration-200 relative"
@@ -42,9 +42,6 @@ export default function Dashboard() {
                 {value === undefined || value === null
                   ? <div className="dh-skeleton h-10 w-20" />
                   : <div className="dh-kpi-value dh-count-up">{value}</div>}
-              </div>
-              <div className="dh-icon-tile w-12 h-12 shrink-0">
-                <Icon size={18} strokeWidth={1.8} />
               </div>
             </div>
             <div

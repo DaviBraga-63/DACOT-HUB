@@ -16,10 +16,13 @@ const NAV = [
 function Brand({ compact }) {
   return (
     <div className="flex items-center gap-3">
-      <div className={`dh-brand-mark ${compact ? "dh-brand-mark-sm" : ""}`}>D</div>
-      <div className={`leading-tight ${compact ? "" : "hidden sm:block"}`}>
+      <img
+        src="/dacot-logo.png"
+        alt="DACOT"
+        className={`dh-brand-logo ${compact ? "dh-brand-logo-sm" : ""}`}
+      />
+      <div className={`flex items-center ${compact ? "" : "hidden sm:flex"}`}>
         <div className="dh-font-display font-bold text-[15px] tracking-tight text-[var(--dh-text)]">DACOT</div>
-        <div className="text-[10px] text-[var(--dh-muted)] uppercase tracking-[0.14em] font-semibold">Hub</div>
       </div>
     </div>
   );

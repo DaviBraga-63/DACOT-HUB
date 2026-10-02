@@ -452,18 +452,12 @@
     text-transform: uppercase; color: var(--dh-muted);
 }
 
-.dh-brand-mark {
-    display: flex; align-items: center; justify-content: center;
-    width: 36px; height: 36px;
-    background: var(--dh-accent-gradient, linear-gradient(135deg, var(--dh-accent) 0%, var(--dh-accent-light) 100%));
-    border-radius: 10px;
-    color: #fff; font-weight: 800; font-size: 15px;
-    font-family: 'Cabinet Grotesk', sans-serif;
-    text-shadow: 0 1px 2px rgba(13, 56, 103, .65);
-    box-shadow: var(--dh-shadow-accent);
+.dh-brand-logo {
+    width: 40px; height: 40px;
+    object-fit: contain;
     flex-shrink: 0;
 }
-.dh-brand-mark-sm { width: 32px; height: 32px; font-size: 13px; border-radius: 9px; }
+.dh-brand-logo-sm { width: 32px; height: 32px; }
 
 .dh-kpi-card,
 .dh-module-card {
