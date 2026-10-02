@@ -5,6 +5,16 @@ import { api, formatApiErrorDetail } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
 import { getModuleIcon } from "@/lib/moduleIcons";
 import StatusBadge from "@/components/StatusBadge";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { toast } from "sonner";
 
 const ROLE_LABEL = { admin: "Administrador", manager: "Gerente", waiter: "Atendente", kitchen: "Cozinha" };
@@ -24,6 +34,8 @@ export default function ModuloPedidos() {
   const [tenantLoading, setTenantLoading] = useState(false);
   const [savingTemplate, setSavingTemplate] = useState(false);
   const [changingUserId, setChangingUserId] = useState(null);
+  const [savingTenantModule, setSavingTenantModule] = useState(false);
+  const [confirmingDeactivation, setConfirmingDeactivation] = useState(false);
   const tenantRequestRef = useRef(0);
 
   useEffect(() => {
@@ -71,6 +83,9 @@ export default function ModuloPedidos() {
       return;
     }
     let cancelled = false;
+    setTenantUsers([]);
+    setGrants([]);
+    setTenantModule(null);
     loadTenantAccess(selectedTenantId).catch((error) => {
       if (cancelled) return;
       toast.error(formatApiErrorDetail(error.response?.data?.detail));
@@ -118,7 +133,33 @@ export default function ModuloPedidos() {
     }
   };
 
+  const setTenantModuleActive = async (active) => {
+    if (!canWrite || !selectedTenantId || !tenantModule || savingTenantModule) return;
+    setSavingTenantModule(true);
+    try {
+      await api.post(`/hub/tenants/${selectedTenantId}/modules/orders/${active ? "activate" : "deactivate"}`);
+      await loadTenantAccess(selectedTenantId);
+      toast.success(active ? "Pedidos ativado para o restaurante" : "Pedidos desativado para o restaurante");
+    } catch (error) {
+      toast.error(formatApiErrorDetail(error.response?.data?.detail));
+      await loadTenantAccess(selectedTenantId).catch(() => {});
+    } finally {
+      setSavingTenantModule(false);
+    }
+  };
+
+  const requestTenantModuleToggle = (active) => {
+    if (!canWrite || !selectedTenantId || !tenantModule || savingTenantModule) return;
+    if (!active) {
+      setConfirmingDeactivation(true);
+      return;
+    }
+    setTenantModuleActive(true);
+  };
+
   const ModuleIcon = getModuleIcon(module?.icon);
+  const selectedTenantName = tenants.find((tenant) => tenant.id === selectedTenantId)?.name || "este restaurante";
+  const tenantModuleToggleDisabled = !canWrite || !selectedTenantId || !tenantModule || tenantLoading || savingTenantModule;
 
   if (loading) {
     return <div className="space-y-6"><div className="dh-skeleton h-5 w-24" /><div className="dh-skeleton h-10 w-64" /><div className="dh-card p-7"><div className="dh-skeleton h-48 w-full" /></div></div>;
@@ -161,26 +202,42 @@ export default function ModuloPedidos() {
 
       <section className="order-1 dh-card p-6 sm:p-7" data-testid="orders-access-section">
         <div className="flex items-start gap-3 mb-6"><span className="dh-icon-tile-neutral w-10 h-10 rounded-lg"><Users size={19} strokeWidth={1.7} /></span><div><h2 className="text-lg font-semibold text-[var(--dh-text)]">Acesso de usuários</h2><p className="text-[13px] text-[var(--dh-muted)] mt-1">Configure acessos por restaurante, sem misturar usuários de tenants diferentes.</p></div></div>
-        <label className="text-[11px] uppercase tracking-wider font-semibold text-[var(--dh-muted)]">Restaurante</label>
-        <div className="mt-2 max-w-lg"><select value={selectedTenantId} onChange={(event) => setSelectedTenantId(event.target.value)} className="dh-input" data-testid="orders-tenant-select"><option value="">Selecionar restaurante</option>{tenants.map((tenant) => <option key={tenant.id} value={tenant.id}>{tenant.name}</option>)}</select></div>
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+          <div className="w-full max-w-lg"><label className="text-[11px] uppercase tracking-wider font-semibold text-[var(--dh-muted)]">Restaurante</label><div className="mt-2"><select value={selectedTenantId} onChange={(event) => setSelectedTenantId(event.target.value)} className="dh-input" data-testid="orders-tenant-select"><option value="">Selecionar restaurante</option>{tenants.map((tenant) => <option key={tenant.id} value={tenant.id}>{tenant.name}</option>)}</select></div></div>
+          <div className="flex items-center justify-between gap-3 sm:justify-end"><div className="text-right"><div className="text-[11px] uppercase tracking-wider font-semibold text-[var(--dh-muted)]">Acesso ao Pedidos</div><div className="text-[12px] text-[var(--dh-muted)] mt-1">{savingTenantModule ? "Salvando…" : tenantLoading ? "Carregando…" : tenantModule?.active ? "Módulo ativo" : "Módulo desativado"}</div></div><label className={`inline-flex items-center ${tenantModuleToggleDisabled ? "cursor-not-allowed opacity-60" : "cursor-pointer"}`}><input type="checkbox" className="sr-only peer" checked={Boolean(tenantModule?.active)} disabled={tenantModuleToggleDisabled} onChange={(event) => requestTenantModuleToggle(event.target.checked)} data-testid="orders-tenant-module-toggle" /><span className={`dh-toggle ${tenantModule?.active ? "dh-toggle-on" : "dh-toggle-off"}`}><span className={`dh-toggle-knob ${tenantModule?.active ? "translate-x-[20px]" : "translate-x-[2px]"}`} /></span></label></div>
+        </div>
 
         {!selectedTenantId && <p className="text-[13px] text-[var(--dh-muted)] py-10 text-center">Selecione um restaurante para visualizar os usuários e seus acessos.</p>}
         {selectedTenantId && tenantLoading && <div className="mt-6 space-y-3"><div className="dh-skeleton h-12 w-full" /><div className="dh-skeleton h-12 w-full" /></div>}
-        {selectedTenantId && !tenantLoading && !tenantModule?.active && <p className="mt-5 dh-chip dh-chip-warning">Pedidos não está ativo para este restaurante.</p>}
-        {selectedTenantId && !tenantLoading && tenantModule?.active && (
-          <div className="mt-6 divide-y divide-[var(--dh-border-soft)] border-y border-[var(--dh-border-soft)]">
+        {selectedTenantId && !tenantLoading && tenantModule && (
+          <>
+            {!tenantModule.active && <p className="mt-5 dh-chip dh-chip-warning">Pedidos está desativado para este restaurante. Ative o módulo para editar os acessos individuais.</p>}
+            <div className="mt-6 divide-y divide-[var(--dh-border-soft)] border-y border-[var(--dh-border-soft)]">
             {tenantUsers.length === 0 && <p className="py-8 text-center text-[13px] text-[var(--dh-muted)]">Nenhum usuário cadastrado neste restaurante.</p>}
             {tenantUsers.map((tenantUser) => {
               const active = grantsByUserId.get(tenantUser.id) === true;
-              const disabled = !canWrite || changingUserId === tenantUser.id || tenantUser.status !== "active";
+              const disabled = !canWrite || !tenantModule.active || changingUserId === tenantUser.id || tenantUser.status !== "active";
               return <div className="flex items-center justify-between gap-4 py-4" key={tenantUser.id} data-testid={`orders-user-access-${tenantUser.id}`}>
                 <button type="button" className="min-w-0 text-left group" onClick={() => navigate(`/clientes/${selectedTenantId}`)} data-testid={`orders-user-link-${tenantUser.id}`}><div className="font-semibold text-[var(--dh-text)] group-hover:text-[var(--dh-accent)] transition-colors truncate">{tenantUser.name}</div><div className="text-[12px] text-[var(--dh-muted)]">{ROLE_LABEL[tenantUser.role] || tenantUser.role}</div></button>
                 <label className={`inline-flex items-center gap-2 ${disabled ? "cursor-not-allowed opacity-60" : "cursor-pointer"}`}><span className="text-[12px] text-[var(--dh-muted)]">{active ? "ON" : "OFF"}</span><input type="checkbox" className="sr-only peer" checked={active} disabled={disabled} onChange={(event) => setUserAccess(tenantUser, event.target.checked)} data-testid={`orders-user-toggle-${tenantUser.id}`} /><span className={`dh-toggle ${active ? "dh-toggle-on" : "dh-toggle-off"}`}><span className={`dh-toggle-knob ${active ? "translate-x-[20px]" : "translate-x-[2px]"}`} /></span></label>
               </div>;
             })}
-          </div>
+            </div>
+          </>
         )}
       </section>
+      <AlertDialog open={confirmingDeactivation} onOpenChange={setConfirmingDeactivation}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Desativar Pedidos para {selectedTenantName}?</AlertDialogTitle>
+            <AlertDialogDescription>Todos os usuários deste restaurante perderão o acesso ao módulo enquanto ele estiver desativado. As permissões individuais serão preservadas.</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={savingTenantModule}>Cancelar</AlertDialogCancel>
+            <AlertDialogAction disabled={savingTenantModule} onClick={() => { setConfirmingDeactivation(false); setTenantModuleActive(false); }}>Desativar módulo</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
       </div>
     </div>
   );
