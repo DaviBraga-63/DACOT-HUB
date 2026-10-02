@@ -118,6 +118,9 @@ class Services:
         r = self.call("POST", f"/hub/tenants/{tid}/users", json={"name": "Test", "email": f"u{tag}@example.com", "role": "admin", "password": self.password})
         r.raise_for_status()
         uid = r.json()["id"]
+        # Users created after the one-time grants migration require an explicit,
+        # audited grant before they may launch Pedidos.
+        self.call("PUT", f"/hub/tenants/{tid}/modules/orders/users/{uid}/access", json={"active": True}).raise_for_status()
         return {"tid": tid, "uid": uid, "headers": self.login(f"u{tag}@example.com", self.password)}
 
     def handoff(self, identity):

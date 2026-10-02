@@ -18,6 +18,7 @@ from urllib.parse import urlparse
 
 from handoff_policy import validate_handoff_configuration, validate_launch_url, orders_module_key
 from orders_launch_urls import ORDERS_LAUNCH_URL_TEMPLATE, migrate_legacy_orders_launch_urls
+from orders_user_grants import ORDERS_MODULE_KEY, bootstrap_orders_user_grants
 
 import bcrypt
 import jwt
@@ -615,9 +616,45 @@ async def list_modules(_u: dict = Depends(get_staff_user)):
     return [_module_out(m) for m in docs]
 
 
+class LaunchUrlTemplateIn(BaseModel):
+    launch_url_template: str = Field(min_length=1, max_length=500)
+
+
+def _validate_orders_launch_url_template(value: str) -> str:
+    template = value.strip()
+    if template.count("{slug}") != 1:
+        raise HTTPException(400, "A URL do módulo Pedidos deve conter exatamente um placeholder {slug}")
+    destination = template.replace("{slug}", "startup-check")
+    if "{" in destination or "}" in destination:
+        raise HTTPException(400, "A URL do módulo contém placeholders inválidos")
+    validate_launch_url(destination, ORDERS_MODULE_KEY)
+    return template
+
+
+@api_router.patch("/hub/modules/orders/launch-url-template")
+async def set_orders_launch_url_template(payload: LaunchUrlTemplateIn, user: dict = Depends(get_staff_write)):
+    module = await db.modules.find_one({"key": ORDERS_MODULE_KEY})
+    if not module:
+        raise HTTPException(404, "Módulo Pedidos não encontrado")
+    template = _validate_orders_launch_url_template(payload.launch_url_template)
+    previous = module.get("launch_url_template", "")
+    await db.modules.update_one({"_id": module["_id"]}, {"$set": {"launch_url_template": template}})
+    await log_activity(
+        actor_id=user["_id"], actor_name=user.get("name", user["email"]),
+        action="module.launch_url_template_updated", target_type="module", target_id=ORDERS_MODULE_KEY,
+        metadata={"previous_template": previous, "new_template": template},
+    )
+    module["launch_url_template"] = template
+    return _module_out(module)
+
+
 # ─── Tenant modules (activation) ───────────────────────────────────────────────
 class LaunchUrlIn(BaseModel):
     launch_url: str
+
+
+class ModuleUserGrantIn(BaseModel):
+    active: bool
 
 
 @api_router.get("/hub/tenants/{tid}/modules")
@@ -705,6 +742,55 @@ async def set_launch_url(tid: str, mkey: str, payload: LaunchUrlIn, _u: dict = D
         upsert=True,
     )
     return {"ok": True}
+
+
+async def _orders_tenant_module(tid: str) -> tuple[dict, dict]:
+    if not ObjectId.is_valid(tid):
+        raise HTTPException(404, "Restaurante não encontrado")
+    tenant = await db.tenants.find_one({"_id": ObjectId(tid)})
+    module = await db.modules.find_one({"key": ORDERS_MODULE_KEY})
+    if not tenant or not module:
+        raise HTTPException(404, "Recurso não encontrado")
+    return tenant, module
+
+
+@api_router.get("/hub/tenants/{tid}/modules/orders/access-grants")
+async def list_orders_access_grants(tid: str, _u: dict = Depends(get_staff_user)):
+    await _orders_tenant_module(tid)
+    docs = await db.module_user_grants.find({"tenant_id": tid, "module_key": ORDERS_MODULE_KEY}).to_list(500)
+    return [{"user_id": d["user_id"], "active": bool(d.get("active")), "updated_at": d.get("updated_at")} for d in docs]
+
+
+@api_router.put("/hub/tenants/{tid}/modules/orders/users/{uid}/access")
+async def set_orders_user_access(tid: str, uid: str, payload: ModuleUserGrantIn,
+                                 user: dict = Depends(get_staff_write)):
+    tenant, module = await _orders_tenant_module(tid)
+    if not ObjectId.is_valid(uid):
+        raise HTTPException(404, "Usuário não encontrado")
+    tenant_user = await db.tenant_users.find_one({"_id": ObjectId(uid), "tenant_id": tid})
+    if not tenant_user:
+        raise HTTPException(404, "Usuário não pertence ao restaurante selecionado")
+    if not _tenant_operational(tenant):
+        raise HTTPException(400, "Restaurante não está operacional")
+    if module.get("status") != "available":
+        raise HTTPException(400, "Módulo Pedidos não está disponível")
+    activation = await db.tenant_modules.find_one({"tenant_id": tid, "module_key": ORDERS_MODULE_KEY, "active": True})
+    if not activation:
+        raise HTTPException(400, "Pedidos não está ativo para este restaurante")
+    now = now_utc().isoformat()
+    await db.module_user_grants.update_one(
+        {"tenant_id": tid, "user_id": uid, "module_key": ORDERS_MODULE_KEY},
+        {"$set": {"active": payload.active, "updated_at": now, "updated_by": user["_id"], "source": "admin"},
+         "$setOnInsert": {"created_at": now}},
+        upsert=True,
+    )
+    await log_activity(
+        actor_id=user["_id"], actor_name=user.get("name", user["email"]),
+        action="module.user_access_granted" if payload.active else "module.user_access_revoked",
+        target_type="module_user_grant", target_id=uid, tenant_id=tid,
+        metadata={"module": ORDERS_MODULE_KEY, "tenant_name": tenant["name"]},
+    )
+    return {"user_id": uid, "active": payload.active}
 
 
 # ─── Tenant users ──────────────────────────────────────────────────────────────
@@ -1109,8 +1195,11 @@ async def module_access(tid: str, mkey: str, payload: ModuleAccessIn, request: R
     module = await db.modules.find_one({"key": mkey})
     activation = await db.tenant_modules.find_one({"tenant_id": tid, "module_key": mkey, "active": True})
     user = await db.tenant_users.find_one({"_id": ObjectId(uid), "tenant_id": tid})
+    grant = await db.module_user_grants.find_one(
+        {"tenant_id": tid, "user_id": uid, "module_key": ORDERS_MODULE_KEY, "active": True}
+    )
     if (not tenant or not _tenant_operational(tenant) or not module or module.get("status") != "available"
-            or not activation or not user or user.get("status") != "active"
+            or not activation or not user or not grant or user.get("status") != "active"
             or user.get("password_reset_required") or not user.get("password_hash")
             or user.get("role") not in VALID_HANDOFF_ROLES or user.get("role") != payload.role):
         return denied
@@ -1189,6 +1278,12 @@ async def portal_launch_token(mkey: str, user: dict = Depends(get_restaurant_use
         raise HTTPException(400, "Módulo não está ativo para o seu restaurante")
     if user.get("role") not in VALID_HANDOFF_ROLES:
         raise HTTPException(403, "Papel operacional inválido")
+    if mkey == ORDERS_MODULE_KEY:
+        grant = await db.module_user_grants.find_one(
+            {"tenant_id": tid, "user_id": user["_id"], "module_key": mkey, "active": True}
+        )
+        if not grant:
+            raise HTTPException(403, "Usuário não possui acesso a este módulo")
     role = user["role"]
     launch_url = (activation.get("launch_url") or "").strip()
     if not launch_url and module.get("launch_url_template"):
@@ -1356,6 +1451,7 @@ async def startup():
             updates["token_version"] = 0
         if updates:
             await db.tenant_users.update_one({"_id": tu["_id"]}, {"$set": updates})
+    await bootstrap_orders_user_grants(db, VALID_HANDOFF_ROLES, TENANT_OPERATIONAL_STATUSES)
 
 
 app.include_router(api_router)
