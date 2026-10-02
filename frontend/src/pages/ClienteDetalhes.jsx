@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback } from "react";
 import { useParams, Link } from "react-router-dom";
 import { api } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
+import { isReleasedModule } from "@/lib/releasedModules";
 import { ArrowLeft, ExternalLink, Mail, Phone, MapPin, Calendar, Settings2, Users as UsersIcon, UserPlus } from "lucide-react";
 import StatusBadge from "@/components/StatusBadge";
 import { toast } from "sonner";
@@ -167,6 +168,7 @@ function MetricSmall({ label, value, textual }) {
 
 function ModulesTab({ tenantId, tenantSlug, modules, reload, canWrite }) {
   const [editing, setEditing] = useState(null);
+  const visibleModules = modules.filter(isReleasedModule);
 
   const toggle = async (m) => {
     if (!m.can_activate && !m.active) {
@@ -186,7 +188,7 @@ function ModulesTab({ tenantId, tenantSlug, modules, reload, canWrite }) {
 
   return (
     <div className="grid grid-cols-1 md:grid-cols-2 gap-5 dh-fade-in" data-testid="modules-tab">
-      {modules.map((m) => (
+      {visibleModules.map((m) => (
         <div
           key={m.key}
           className="dh-card p-6 transition-all duration-200 relative"
