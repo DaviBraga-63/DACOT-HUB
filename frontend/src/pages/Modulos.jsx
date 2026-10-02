@@ -1,10 +1,12 @@
 import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import { getModuleIcon } from "@/lib/moduleIcons";
+import { isReleasedModule } from "@/lib/releasedModules";
 import StatusBadge from "@/components/StatusBadge";
 
 export default function Modulos() {
   const [mods, setMods] = useState(null);
+  const visibleMods = mods?.filter(isReleasedModule);
 
   useEffect(() => { api.get("/hub/modules").then((r) => setMods(r.data)); }, []);
 
@@ -18,7 +20,7 @@ export default function Modulos() {
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5">
-        {!mods && [0,1,2,3,4,5].map((i) => (
+        {!mods && [0].map((i) => (
           <div key={i} className="dh-card p-6 space-y-4">
             <div className="flex items-start justify-between">
               <div className="dh-skeleton w-12 h-12 rounded-xl" />
@@ -29,7 +31,7 @@ export default function Modulos() {
             <div className="dh-skeleton h-4 w-4/5" />
           </div>
         ))}
-        {mods?.map((m, idx) => {
+        {visibleMods?.map((m, idx) => {
           const Icon = getModuleIcon(m.icon);
           return (
             <div 

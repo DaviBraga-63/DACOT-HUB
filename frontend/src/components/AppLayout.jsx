@@ -5,6 +5,7 @@ import { useAuth } from "@/context/AuthContext";
 import { useTheme } from "@/context/ThemeContext";
 import { api } from "@/lib/api";
 import { getModuleIcon } from "@/lib/moduleIcons";
+import { isReleasedModule } from "@/lib/releasedModules";
 import { toast } from "sonner";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import StatusBadge from "@/components/StatusBadge";
@@ -125,7 +126,8 @@ export default function AppLayout() {
     setModulesOpen(true);
   };
 
-  const selectedModule = modules?.find((module) => module.key === selectedModuleKey);
+  const visibleModules = modules?.filter(isReleasedModule);
+  const selectedModule = visibleModules?.find((module) => module.key === selectedModuleKey);
   const selectedModuleUrl = publicModuleUrl(selectedModule);
 
   const copySelectedModuleUrl = async () => {
@@ -214,10 +216,10 @@ export default function AppLayout() {
           {modulesError && (
             <div className="dh-modules-menu-message">Não foi possível carregar os módulos.</div>
           )}
-          {modules?.length === 0 && (
+          {visibleModules?.length === 0 && (
             <div className="dh-modules-menu-message">Nenhum módulo disponível.</div>
           )}
-          {modules?.map((module) => {
+          {visibleModules?.map((module) => {
             const Icon = getModuleIcon(module.icon);
             return (
               <button
