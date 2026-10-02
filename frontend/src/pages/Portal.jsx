@@ -50,7 +50,7 @@ export default function Portal() {
     if (user?.user_type === "restaurant" && user?.role === "admin") loadUsers();
   }, [user?.user_type, user?.role, loadUsers]);
 
-  if (user?.user_type === "staff") return <Navigate to="/" replace />;
+  if (user?.user_type === "staff") return <Navigate to="/painel" replace />;
 
   const openModule = async (m) => {
     try {

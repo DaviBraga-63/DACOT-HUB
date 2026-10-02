@@ -50,5 +50,9 @@ def test_auth_cookies_are_secure_browser_session_cookies(services):
         assert "Max-Age=0" in cookie and "HttpOnly" in cookie and "Secure" in cookie, cookie
         assert "SameSite=none" in cookie, cookie
 
+    logout_without_access = requests.post(service.hub + "/api/auth/logout", timeout=10)
+    assert logout_without_access.status_code == 200, logout_without_access.text
+    assert len(_auth_cookies(logout_without_access)) == 2
+
     assert requests.get(service.hub + "/api/auth/me", timeout=10).status_code == 401
     assert requests.post(service.hub + "/api/auth/refresh", timeout=10).status_code == 401

@@ -11,7 +11,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip
 import StatusBadge from "@/components/StatusBadge";
 
 const NAV = [
-  { to: "/", label: "Dashboard", icon: LayoutDashboard, testid: "menu-dashboard", end: true },
+  { to: "/painel", label: "Dashboard", icon: LayoutDashboard, testid: "menu-dashboard", end: true },
   { to: "/clientes", label: "Clientes", icon: Building2, testid: "menu-clientes" },
   { to: "/modulos", label: "Módulos", icon: Blocks, testid: "menu-modulos" },
   { to: "/equipe", label: "Equipe", icon: Users, testid: "menu-equipe" },

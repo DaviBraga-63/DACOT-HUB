@@ -14,7 +14,7 @@ export default function Login() {
     setBusy(true); setError(null);
     const data = await login(email.trim(), password);
     setBusy(false);
-    if (data) navigate(data.user_type === "restaurant" ? "/portal" : "/", { replace: true });
+    if (data) navigate(data.user_type === "restaurant" ? "/portal" : "/painel", { replace: true });
   };
 
   return (

@@ -10,6 +10,7 @@ import Login from "@/pages/Login";
 import ForgotPassword from "@/pages/ForgotPassword";
 import ResetPassword from "@/pages/ResetPassword";
 import Dashboard from "@/pages/Dashboard";
+import FreshEntry from "@/pages/FreshEntry";
 import Clientes from "@/pages/Clientes";
 import ClienteNovo from "@/pages/ClienteNovo";
 import ClienteDetalhes from "@/pages/ClienteDetalhes";
@@ -29,8 +30,9 @@ export default function App() {
             <Route path="/login" element={<Login />} />
             <Route path="/forgot-password" element={<ForgotPassword />} />
             <Route path="/reset-password" element={<ResetPassword />} />
+            <Route path="/" element={<FreshEntry />} />
             <Route element={<ProtectedRoute><AppLayout /></ProtectedRoute>}>
-              <Route path="/" element={<Dashboard />} />
+              <Route path="/painel" element={<Dashboard />} />
               <Route path="/clientes" element={<Clientes />} />
               <Route path="/clientes/novo" element={<ClienteNovo />} />
               <Route path="/clientes/:id" element={<ClienteDetalhes />} />
@@ -39,7 +41,7 @@ export default function App() {
               <Route path="/equipe" element={<Equipe />} />
             </Route>
             <Route path="/portal" element={<ProtectedRoute><Portal /></ProtectedRoute>} />
-            <Route path="*" element={<Navigate to="/" replace />} />
+            <Route path="*" element={<Navigate to="/login" replace />} />
           </Routes>
           <Toaster position="top-right" />
           </TooltipProvider>
