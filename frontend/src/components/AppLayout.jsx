@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { NavLink, useLocation, useNavigate, Outlet, Navigate } from "react-router-dom";
-import { LayoutDashboard, Building2, Blocks, Users, LogOut, Settings, Menu, Moon, Sun, X, ChevronDown } from "lucide-react";
+import { LayoutDashboard, Building2, Blocks, Users, LogOut, Settings, Menu, Moon, Sun, X, ChevronDown, ArrowLeft, Copy } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 import { useTheme } from "@/context/ThemeContext";
 import { api } from "@/lib/api";
@@ -31,6 +31,15 @@ function Brand({ compact }) {
   );
 }
 
+function publicModuleUrl(module) {
+  if (!module?.launch_url_template) return null;
+  try {
+    return `${new URL(module.launch_url_template).origin}/`;
+  } catch {
+    return null;
+  }
+}
+
 export default function AppLayout() {
   const { user, logout } = useAuth();
   const { theme, toggleTheme } = useTheme();
@@ -38,6 +47,7 @@ export default function AppLayout() {
   const location = useLocation();
   const [drawer, setDrawer] = useState(false);
   const [modulesOpen, setModulesOpen] = useState(false);
+  const [selectedModuleKey, setSelectedModuleKey] = useState(null);
   const [modules, setModules] = useState(null);
   const [modulesError, setModulesError] = useState(false);
   const modulesMenuRef = useRef(null);
@@ -58,15 +68,22 @@ export default function AppLayout() {
 
   useEffect(() => {
     setModulesOpen(false);
+    setSelectedModuleKey(null);
   }, [location.pathname]);
 
   useEffect(() => {
     if (!modulesOpen) return undefined;
     const closeWhenOutside = (event) => {
-      if (!modulesMenuRef.current?.contains(event.target)) setModulesOpen(false);
+      if (!modulesMenuRef.current?.contains(event.target)) {
+        setModulesOpen(false);
+        setSelectedModuleKey(null);
+      }
     };
     const closeWithEscape = (event) => {
-      if (event.key === "Escape") setModulesOpen(false);
+      if (event.key === "Escape") {
+        setModulesOpen(false);
+        setSelectedModuleKey(null);
+      }
     };
     document.addEventListener("mousedown", closeWhenOutside);
     document.addEventListener("keydown", closeWithEscape);
@@ -81,6 +98,10 @@ export default function AppLayout() {
   }
 
   const selectModule = (module) => {
+    if (module.key === "orders") {
+      setSelectedModuleKey(module.key);
+      return;
+    }
     setModulesOpen(false);
     if (module.status === "available") {
       toast.info(`Selecione um restaurante para acessar ${module.name}.`);
@@ -90,13 +111,40 @@ export default function AppLayout() {
     navigate("/modulos");
   };
 
+  const closeModulesMenu = () => {
+    setModulesOpen(false);
+    setSelectedModuleKey(null);
+  };
+
+  const toggleModulesMenu = () => {
+    if (modulesOpen) {
+      closeModulesMenu();
+      return;
+    }
+    setSelectedModuleKey(null);
+    setModulesOpen(true);
+  };
+
+  const selectedModule = modules?.find((module) => module.key === selectedModuleKey);
+  const selectedModuleUrl = publicModuleUrl(selectedModule);
+
+  const copySelectedModuleUrl = async () => {
+    if (!selectedModuleUrl) return;
+    try {
+      await navigator.clipboard.writeText(selectedModuleUrl);
+      toast.success("URL copiada");
+    } catch {
+      toast.error("Não foi possível copiar a URL.");
+    }
+  };
+
   const desktopModulesMenu = (
     <div key="/modulos" className="dh-modules-menu-wrap" ref={modulesMenuRef}>
       <button
         type="button"
         className={`dh-topnav-link ${location.pathname === "/modulos" ? "dh-topnav-link-active" : ""}`}
         data-testid="menu-modulos"
-        onClick={() => setModulesOpen((isOpen) => !isOpen)}
+        onClick={toggleModulesMenu}
         aria-haspopup="menu"
         aria-expanded={modulesOpen}
         aria-controls="desktop-modules-menu"
@@ -106,7 +154,60 @@ export default function AppLayout() {
         <ChevronDown className={`dh-modules-menu-chevron ${modulesOpen ? "dh-modules-menu-chevron-open" : ""}`} size={15} strokeWidth={2} />
       </button>
       {modulesOpen && (
-        <div id="desktop-modules-menu" className="dh-modules-menu" role="menu" aria-label="Módulos DACOT">
+        <div id="desktop-modules-menu" className={`dh-modules-menu ${selectedModule ? "dh-modules-menu-detail" : ""}`} role="menu" aria-label="Módulos DACOT">
+          {selectedModule ? (
+            <div className="dh-module-detail" data-testid={`module-detail-${selectedModule.key}`}>
+              <button
+                type="button"
+                className="dh-module-detail-back"
+                onClick={() => setSelectedModuleKey(null)}
+                data-testid="module-detail-back"
+              >
+                <ArrowLeft size={15} strokeWidth={2} /> Voltar
+              </button>
+              <div className="dh-module-detail-heading">
+                <span className="dh-icon-tile dh-module-detail-icon">
+                  {(() => {
+                    const Icon = getModuleIcon(selectedModule.icon);
+                    return <Icon size={20} strokeWidth={1.7} />;
+                  })()}
+                </span>
+                <div className="min-w-0">
+                  <h2 className="dh-font-display text-[18px] font-bold tracking-tight text-[var(--dh-text)]">{selectedModule.name}</h2>
+                  <p className="text-[12px] text-[var(--dh-muted)] truncate">{selectedModule.category || "Módulo DACOT"}</p>
+                </div>
+              </div>
+              <p className="dh-module-detail-description">{selectedModule.description}</p>
+              <div className="dh-module-detail-section">
+                <span className="dh-module-detail-label">Status</span>
+                <StatusBadge status={selectedModule.status} />
+              </div>
+              <div className="dh-module-detail-section">
+                <span className="dh-module-detail-label">Usuários com acesso</span>
+                <p className="dh-module-detail-note">Selecione um restaurante para visualizar os usuários deste módulo.</p>
+              </div>
+              <div className="dh-module-detail-section">
+                <span className="dh-module-detail-label">URL do módulo</span>
+                {selectedModuleUrl ? (
+                  <div className="dh-module-detail-url-row">
+                    <span className="dh-module-detail-url" title={selectedModuleUrl}>{selectedModuleUrl.replace(/^https:\/\//, "")}</span>
+                    <button
+                      type="button"
+                      className="dh-module-detail-copy"
+                      onClick={copySelectedModuleUrl}
+                      aria-label="Copiar URL do módulo Pedidos"
+                      data-testid="module-detail-copy-url"
+                    >
+                      <Copy size={14} strokeWidth={1.9} /> Copiar
+                    </button>
+                  </div>
+                ) : (
+                  <p className="dh-module-detail-note">URL pública não configurada.</p>
+                )}
+              </div>
+            </div>
+          ) : (
+            <>
           {modules === null && !modulesError && (
             <div className="dh-modules-menu-message" role="status">Carregando módulos…</div>
           )}
@@ -144,6 +245,8 @@ export default function AppLayout() {
             <Blocks size={16} strokeWidth={1.75} />
             Gerenciar módulos
           </button>
+            </>
+          )}
         </div>
       )}
     </div>
