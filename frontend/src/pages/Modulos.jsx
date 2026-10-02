@@ -1,8 +1,13 @@
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { api } from "@/lib/api";
 import { getModuleIcon } from "@/lib/moduleIcons";
 import { isReleasedModule } from "@/lib/releasedModules";
 import StatusBadge from "@/components/StatusBadge";
+
+const MODULE_ADMIN_ROUTES = {
+  orders: "/modulos/orders",
+};
 
 export default function Modulos() {
   const [mods, setMods] = useState(null);
@@ -33,10 +38,14 @@ export default function Modulos() {
         ))}
         {visibleMods?.map((m, idx) => {
           const Icon = getModuleIcon(m.icon);
+          const adminRoute = MODULE_ADMIN_ROUTES[m.key];
+          const Card = adminRoute ? Link : "div";
           return (
-            <div 
+            <Card
               key={m.key} 
-              className="dh-card dh-card-hover p-6 flex flex-col group" 
+              {...(adminRoute ? { to: adminRoute } : {})}
+              className={`dh-card dh-card-hover p-6 flex flex-col group${adminRoute ? " dh-card-link" : ""}`}
+              aria-label={adminRoute ? `Abrir administração do módulo ${m.name}` : undefined}
               data-testid={`catalog-${m.key}`}
               style={{
                 animation: `dhFadeIn 0.3s ease-out ${idx * 50}ms both`
@@ -55,7 +64,7 @@ export default function Modulos() {
                 <span className="text-slate-500 font-mono">key: <b className="text-slate-700">{m.key}</b></span>
                 {m.status === "available" && <span className="text-emerald-600 font-medium">Pronto</span>}
               </div>
-            </div>
+            </Card>
           );
         })}
       </div>

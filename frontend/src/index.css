@@ -164,6 +164,21 @@
     box-shadow: 0 4px 6px -1px rgba(15,23,42,.07), 0 2px 4px -2px rgba(15,23,42,.05);
 }
 
+.dh-card-link {
+    color: inherit;
+    cursor: pointer;
+    text-decoration: none;
+}
+.dh-card-link:hover {
+    background: var(--dh-surface-hover);
+    border-color: color-mix(in srgb, var(--dh-accent) 32%, var(--dh-border));
+}
+.dh-card-link:focus-visible {
+    outline: none;
+    border-color: var(--dh-accent);
+    box-shadow: 0 0 0 3px var(--dh-accent-focus), var(--dh-shadow-md);
+}
+
 /* KPI bento grid — soft */
 .dh-grid {
     border: 1px solid var(--dh-border);
