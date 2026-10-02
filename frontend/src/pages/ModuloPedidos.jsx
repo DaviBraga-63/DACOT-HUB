@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { ArrowLeft, Building2, Save, Users } from "lucide-react";
+import { ArrowLeft, Save, Users } from "lucide-react";
 import { api, formatApiErrorDetail } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
 import { getModuleIcon } from "@/lib/moduleIcons";
@@ -162,7 +162,7 @@ export default function ModuloPedidos() {
       <section className="order-1 dh-card p-6 sm:p-7" data-testid="orders-access-section">
         <div className="flex items-start gap-3 mb-6"><span className="dh-icon-tile-neutral w-10 h-10 rounded-lg"><Users size={19} strokeWidth={1.7} /></span><div><h2 className="text-lg font-semibold text-[var(--dh-text)]">Acesso de usuários</h2><p className="text-[13px] text-[var(--dh-muted)] mt-1">Configure acessos por restaurante, sem misturar usuários de tenants diferentes.</p></div></div>
         <label className="text-[11px] uppercase tracking-wider font-semibold text-[var(--dh-muted)]">Restaurante</label>
-        <div className="relative mt-2 max-w-lg"><Building2 size={16} strokeWidth={1.8} className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--dh-muted)]" /><select value={selectedTenantId} onChange={(event) => setSelectedTenantId(event.target.value)} className="dh-input pl-10" data-testid="orders-tenant-select"><option value="">Selecionar restaurante</option>{tenants.map((tenant) => <option key={tenant.id} value={tenant.id}>{tenant.name}</option>)}</select></div>
+        <div className="mt-2 max-w-lg"><select value={selectedTenantId} onChange={(event) => setSelectedTenantId(event.target.value)} className="dh-input" data-testid="orders-tenant-select"><option value="">Selecionar restaurante</option>{tenants.map((tenant) => <option key={tenant.id} value={tenant.id}>{tenant.name}</option>)}</select></div>
 
         {!selectedTenantId && <p className="text-[13px] text-[var(--dh-muted)] py-10 text-center">Selecione um restaurante para visualizar os usuários e seus acessos.</p>}
         {selectedTenantId && tenantLoading && <div className="mt-6 space-y-3"><div className="dh-skeleton h-12 w-full" /><div className="dh-skeleton h-12 w-full" /></div>}
