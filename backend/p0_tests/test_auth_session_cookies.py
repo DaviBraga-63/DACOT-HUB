@@ -95,7 +95,7 @@ def test_handoff_requires_a_live_tab_session(services):
     ).status_code == 401
 
 
-def test_restaurant_user_and_tenant_state_are_revalidated(services):
+def test_restaurant_user_and_tenant_state_have_separate_semantics(services):
     inactive_user = services.restaurant()
     services.db.tenant_users.update_one(
         {"_id": ObjectId(inactive_user["uid"])}, {"$set": {"status": "inactive"}}
@@ -108,6 +108,16 @@ def test_restaurant_user_and_tenant_state_are_revalidated(services):
     services.db.tenants.update_one(
         {"_id": ObjectId(suspended_tenant["tid"])}, {"$set": {"status": "suspended"}}
     )
+    # A tenant state transition is an operational authorization decision, not
+    # a browser-session revocation. The identity remains valid, while the
+    # handoff dependency rejects a non-operational tenant with 403.
+    assert requests.get(
+        services.hub + "/api/auth/me", headers=suspended_tenant["headers"], timeout=10
+    ).status_code == 200
     assert requests.post(
         services.hub + "/api/auth/refresh", headers=suspended_tenant["headers"], timeout=10
-    ).status_code == 401
+    ).status_code == 200
+    assert requests.post(
+        services.hub + "/api/portal/modules/orders/launch-token",
+        headers=suspended_tenant["headers"], timeout=10,
+    ).status_code == 403

@@ -146,10 +146,6 @@ async def _user_for_session(session: dict) -> dict:
         raise HTTPException(401, "Usuário não encontrado")
     if ut == "restaurant" and (user.get("status", "active") != "active" or user.get("password_reset_required")):
         raise HTTPException(401, "Usuário não encontrado")
-    if ut == "restaurant":
-        tenant = await db.tenants.find_one({"_id": ObjectId(user["tenant_id"])}) if user.get("tenant_id") else None
-        if not tenant or not _tenant_operational(tenant):
-            raise HTTPException(401, "Sessão expirada")
     if session.get("user_token_version", 0) != user.get("token_version", 0):
         raise HTTPException(401, "Sessão expirada")
     user["_id"] = str(user["_id"])
