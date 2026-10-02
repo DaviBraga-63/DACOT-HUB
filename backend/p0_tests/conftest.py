@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import uuid
 
 import pytest
 import requests
@@ -99,10 +100,28 @@ class Services:
         self.start("hub", [sys.executable, "-m", "uvicorn", "server:app", "--host", "127.0.0.1", "--port", str(self.hport)], self.hub_backend, self.env)
         self.wait(lambda: requests.get(self.hub + "/api/", timeout=1).raise_for_status(), "hub")
 
-    def login(self, email, password):
-        r = requests.post(self.hub + "/api/auth/login", json={"email": email, "password": password}, timeout=10)
+    def login(self, email, password, *, browser_binding=None, tab_session_id=None):
+        """Return the HTTP representation of one browser-tab session.
+
+        P0 runs over HTTP while production cookies are Secure, so the harness
+        passes the HttpOnly cookie back explicitly. No deployment credential is
+        used and the opaque UUID is the only tab-local value.
+        """
+        tab_session_id = tab_session_id or str(uuid.uuid4())
+        headers = {"X-DACOT-Tab-Session": tab_session_id}
+        if browser_binding:
+            headers["Cookie"] = f"__Host-dacot_browser={browser_binding}"
+        r = requests.post(
+            self.hub + "/api/auth/login", json={"email": email, "password": password},
+            headers=headers, timeout=10,
+        )
         r.raise_for_status()
-        return {"Authorization": "Bearer " + r.cookies["access_token"]}
+        binding = r.cookies.get("__Host-dacot_browser") or browser_binding
+        assert binding, "login must issue or retain the browser binding"
+        return {
+            "X-DACOT-Tab-Session": tab_session_id,
+            "Cookie": f"__Host-dacot_browser={binding}",
+        }
 
     def call(self, method, path, **kwargs):
         kwargs.setdefault("headers", self.staff)

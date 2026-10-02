@@ -19,6 +19,11 @@ from urllib.parse import urlparse
 from handoff_policy import validate_handoff_configuration, validate_launch_url, orders_module_key
 from orders_launch_urls import ORDERS_LAUNCH_URL_TEMPLATE, migrate_legacy_orders_launch_urls
 from orders_user_grants import ORDERS_MODULE_KEY, bootstrap_orders_user_grants
+from auth_sessions import (
+    BROWSER_COOKIE_NAME, TAB_SESSION_HEADER, create_session, ensure_indexes,
+    find_session, new_browser_binding, refresh_session, revoke_session,
+    revoke_user_sessions, valid_tab_session_id,
+)
 
 import bcrypt
 import jwt
@@ -116,58 +121,59 @@ async def _email_in_use(email: str, *, exclude_collection: Optional[str] = None,
     return False
 
 
-def create_access_token(user_id: str, email: str, ver: int = 0, ut: str = "staff") -> str:
-    payload = {"sub": user_id, "email": email, "ver": ver, "ut": ut,
-               "exp": now_utc() + timedelta(minutes=60), "type": "access"}
-    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
-
-
-def create_refresh_token(user_id: str, ver: int = 0, ut: str = "staff") -> str:
-    payload = {"sub": user_id, "ver": ver, "ut": ut,
-               "exp": now_utc() + timedelta(days=7), "type": "refresh"}
-    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
-
-
-def _set_auth_cookies(response: Response, access: str, refresh: str) -> None:
-    response.set_cookie("access_token", access, httponly=True, secure=True,
+def _set_browser_binding_cookie(response: Response, binding: str) -> None:
+    """Cookie HttpOnly shared by browser tabs; it is not auth on its own."""
+    response.set_cookie(BROWSER_COOKIE_NAME, binding, httponly=True, secure=True,
                         samesite="none", path="/")
-    response.set_cookie("refresh_token", refresh, httponly=True, secure=True,
-                        samesite="none", path="/")
+
+
+def _expire_legacy_auth_cookies(response: Response) -> None:
+    """JWT cookies are migration cleanup only and are never consulted for auth."""
+    response.delete_cookie("access_token", path="/", secure=True, httponly=True, samesite="none")
+    response.delete_cookie("refresh_token", path="/", secure=True, httponly=True, samesite="none")
+
+
+async def _user_for_session(session: dict) -> dict:
+    """Re-resolve authority from Mongo; session fields never grant a role."""
+    ut = session.get("user_type")
+    if ut not in {"staff", "restaurant"} or not ObjectId.is_valid(session.get("user_id", "")):
+        raise HTTPException(401, "Sessão inválida")
+    coll = db.hub_users if ut == "staff" else db.tenant_users
+    user = await coll.find_one({"_id": ObjectId(session["user_id"])})
+    if not user:
+        raise HTTPException(401, "Usuário não encontrado")
+    if ut == "staff" and not user.get("active", True):
+        raise HTTPException(401, "Usuário não encontrado")
+    if ut == "restaurant" and (user.get("status", "active") != "active" or user.get("password_reset_required")):
+        raise HTTPException(401, "Usuário não encontrado")
+    if ut == "restaurant":
+        tenant = await db.tenants.find_one({"_id": ObjectId(user["tenant_id"])}) if user.get("tenant_id") else None
+        if not tenant or not _tenant_operational(tenant):
+            raise HTTPException(401, "Sessão expirada")
+    if session.get("user_token_version", 0) != user.get("token_version", 0):
+        raise HTTPException(401, "Sessão expirada")
+    user["_id"] = str(user["_id"])
+    user.pop("password_hash", None)
+    user["user_type"] = ut
+    return user
+
+
+async def _session_from_request(request: Request, *, require_access: bool) -> Optional[dict]:
+    return await find_session(
+        db,
+        browser_binding=request.cookies.get(BROWSER_COOKIE_NAME),
+        tab_session_id=request.headers.get(TAB_SESSION_HEADER),
+        require_access=require_access,
+    )
 
 
 async def get_current_user(request: Request) -> dict:
-    token = request.cookies.get("access_token")
-    if not token:
-        auth = request.headers.get("Authorization", "")
-        if auth.startswith("Bearer "):
-            token = auth[7:]
-    if not token:
+    # Deliberately no JWT-cookie or Authorization bearer fallback: browser
+    # authentication is fail-closed on the binding + per-tab session record.
+    session = await _session_from_request(request, require_access=True)
+    if not session:
         raise HTTPException(401, "Não autenticado")
-    try:
-        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
-        if payload.get("type") != "access":
-            raise HTTPException(401, "Token inválido")
-        # user_type (ut) only routes the account lookup — role/tenant are ALWAYS
-        # re-derived from the database, never trusted from the token.
-        ut = payload.get("ut", "staff")
-        coll = db.hub_users if ut == "staff" else db.tenant_users
-        user = await coll.find_one({"_id": ObjectId(payload["sub"])})
-        if not user:
-            raise HTTPException(401, "Usuário não encontrado")
-        if ut == "staff" and not user.get("active", True):
-            raise HTTPException(401, "Usuário não encontrado")
-        if ut == "restaurant" and (user.get("status", "active") != "active" or user.get("password_reset_required")):
-            raise HTTPException(401, "Usuário não encontrado")
-        if payload.get("ver", 0) != user.get("token_version", 0):
-            raise HTTPException(401, "Sessão expirada")
-        user["_id"] = str(user["_id"])
-        user.pop("password_hash", None)
-        user["user_type"] = ut
-        return user
-    except jwt.ExpiredSignatureError:
-        raise HTTPException(401, "Token expirado")
-    except jwt.InvalidTokenError:
-        raise HTTPException(401, "Token inválido")
+    return await _user_for_session(session)
 
 
 # ─── Authorization dependencies (two role scopes, never collapsed) ─────────────
@@ -312,9 +318,21 @@ async def login(payload: LoginIn, request: Request, response: Response):
     await coll.update_one({"_id": user["_id"]}, {"$set": {"last_login_at": now_utc().isoformat()}})
     uid = str(user["_id"])
     ver = user.get("token_version", 0)
-    access = create_access_token(uid, email, ver, ut)
-    refresh = create_refresh_token(uid, ver, ut)
-    _set_auth_cookies(response, access, refresh)
+    tab_session_id = request.headers.get(TAB_SESSION_HEADER)
+    if not tab_session_id:
+        raise HTTPException(400, "Identificador da aba ausente")
+    if not valid_tab_session_id(tab_session_id):
+        raise HTTPException(400, "Identificador da aba inválido")
+    browser_binding = request.cookies.get(BROWSER_COOKIE_NAME)
+    if not browser_binding:
+        browser_binding = new_browser_binding()
+        _set_browser_binding_cookie(response, browser_binding)
+    await create_session(
+        db, browser_binding=browser_binding, tab_session_id=tab_session_id,
+        user_id=uid, user_type=ut, user_token_version=ver,
+    )
+    # Existing browser JWTs are deliberately not a fallback after migration.
+    _expire_legacy_auth_cookies(response)
     await log_activity(actor_id=uid, actor_name=user.get("name", email),
                        action="hub_user.login" if ut == "staff" else "restaurant_user.login",
                        target_type=ut, target_id=uid,
@@ -329,9 +347,16 @@ async def login(payload: LoginIn, request: Request, response: Response):
 
 
 @api_router.post("/auth/logout")
-async def logout(response: Response):
-    response.delete_cookie("access_token", path="/", secure=True, httponly=True, samesite="none")
-    response.delete_cookie("refresh_token", path="/", secure=True, httponly=True, samesite="none")
+async def logout(request: Request, response: Response):
+    await revoke_session(
+        db,
+        browser_binding=request.cookies.get(BROWSER_COOKIE_NAME),
+        tab_session_id=request.headers.get(TAB_SESSION_HEADER),
+        reason="logout",
+    )
+    # Keep the browser binding: other tabs rely on it together with their own
+    # opaque identifiers. Only obsolete, non-authoritative JWT cookies go away.
+    _expire_legacy_auth_cookies(response)
     return {"ok": True}
 
 
@@ -349,35 +374,15 @@ async def me(user: dict = Depends(get_current_user)):
 
 @api_router.post("/auth/refresh")
 async def refresh(request: Request, response: Response):
-    tok = request.cookies.get("refresh_token")
-    if not tok:
-        raise HTTPException(401, "Sem refresh token")
-    try:
-        payload = jwt.decode(tok, JWT_SECRET, algorithms=[JWT_ALGORITHM])
-        if payload.get("type") != "refresh":
-            raise HTTPException(401, "Token inválido")
-        ut = payload.get("ut", "staff")
-        coll = db.hub_users if ut == "staff" else db.tenant_users
-        user = await coll.find_one({"_id": ObjectId(payload["sub"])})
-        if not user or payload.get("ver", 0) != user.get("token_version", 0):
-            raise HTTPException(401, "Sessão expirada")
-        # Same revocation checks as get_current_user: a refresh must not
-        # resurrect a session for an account (or, for restaurants, a tenant)
-        # that became inactive/suspended after the refresh token was issued.
-        if ut == "staff" and not user.get("active", True):
-            raise HTTPException(401, "Sessão expirada")
-        if ut == "restaurant":
-            if user.get("status", "active") != "active" or user.get("password_reset_required"):
-                raise HTTPException(401, "Sessão expirada")
-            tenant = await db.tenants.find_one({"_id": ObjectId(user["tenant_id"])}) if user.get("tenant_id") else None
-            if not tenant or not _tenant_operational(tenant):
-                raise HTTPException(401, "Sessão expirada")
-        access = create_access_token(str(user["_id"]), user["email"], user.get("token_version", 0), ut)
-        response.set_cookie("access_token", access, httponly=True, secure=True,
-                            samesite="none", path="/")
-        return {"ok": True}
-    except jwt.InvalidTokenError:
-        raise HTTPException(401, "Token inválido")
+    session = await refresh_session(
+        db,
+        browser_binding=request.cookies.get(BROWSER_COOKIE_NAME),
+        tab_session_id=request.headers.get(TAB_SESSION_HEADER),
+    )
+    if not session:
+        raise HTTPException(401, "Sessão expirada")
+    await _user_for_session(session)
+    return {"ok": True}
 
 
 GENERIC_RESET_RESPONSE = {"message": "Se este e-mail estiver cadastrado, um link de redefinição foi enviado."}
@@ -424,6 +429,9 @@ async def reset(payload: ResetIn):
     await coll.update_one(
         {"_id": ObjectId(doc["user_id"])},
         {"$set": {"password_hash": hash_password(payload.password), "password_reset_required": False}, "$inc": {"token_version": 1}},
+    )
+    await revoke_user_sessions(
+        db, user_id=doc["user_id"], user_type=doc.get("user_type", "staff"), reason="password_reset"
     )
     await db.password_reset_tokens.delete_many({"user_id": doc["user_id"], "used": False})
     await db.login_attempts.delete_many({"email": email})
@@ -948,6 +956,10 @@ async def _apply_tenant_user_patch(tid: str, uid: str, payload: TenantUserPatch,
                 await db.tenant_users.update_one({"_id": oid, "tenant_id": tid}, mutation)
             except DuplicateKeyError:
                 raise HTTPException(409, "Já existe um usuário com este e-mail")
+            if "status" in update or "role" in update:
+                await revoke_user_sessions(
+                    db, user_id=uid, user_type="restaurant", reason="account_security_changed"
+                )
     finally:
         if lock_owner:
             await _release_tenant_admin_lock(tid, lock_owner)
@@ -974,6 +986,7 @@ async def _reset_tenant_user_password(tid: str, uid: str, actor: dict) -> dict:
     )
     if result.matched_count != 1:
         raise HTTPException(404, "Usuário não encontrado")
+    await revoke_user_sessions(db, user_id=uid, user_type="restaurant", reason="password_reset")
     await log_activity(actor_id=actor["_id"], actor_name=actor.get("name", actor["email"]),
                        action="tenant_user.password_reset", target_type="tenant_user",
                        target_id=uid, tenant_id=tid)
@@ -1087,6 +1100,8 @@ async def patch_hub_user(uid: str, payload: HubUserPatch, user: dict = Depends(g
 
     if update:
         await db.hub_users.update_one({"_id": ObjectId(uid)}, {"$set": update})
+    if "active" in update or "role" in update:
+        await revoke_user_sessions(db, user_id=uid, user_type="staff", reason="account_security_changed")
     if "active" in update or "role" in update:
         await log_activity(actor_id=user["_id"], actor_name=user.get("name", user["email"]),
                            action="hub_user.updated", target_type="hub_user", target_id=uid,
@@ -1385,6 +1400,7 @@ async def startup():
     await db.password_reset_tokens.create_index("expires_at", expireAfterSeconds=0)
     await db.password_reset_requests.create_index("email")
     await db.password_reset_requests.create_index("created_at", expireAfterSeconds=900)
+    await ensure_indexes(db)
 
     # Seed admin
     admin_email = os.environ["ADMIN_EMAIL"].lower()
@@ -1512,7 +1528,8 @@ app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
     allow_origins=[FRONTEND_URL, "http://localhost:3000"],
-    allow_methods=["*"], allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization", "X-Module-Key", TAB_SESSION_HEADER],
 )
 
 

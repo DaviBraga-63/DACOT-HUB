@@ -1,58 +1,113 @@
-"""P0 coverage for browser-session authentication cookies."""
+"""P0 coverage for server-side sessions independently scoped to browser tabs."""
+
+import hashlib
+import uuid
+from datetime import datetime, timezone
 
 import requests
+from bson import ObjectId
 
 
-def _auth_cookies(response):
-    return [
-        cookie for cookie in response.raw.headers.getlist("Set-Cookie")
-        if cookie.startswith(("access_token=", "refresh_token="))
-    ]
+def _binding(headers):
+    return headers["Cookie"].split("=", 1)[1]
 
 
-def _cookie_header(response):
-    cookies = response.cookies
-    return f"access_token={cookies['access_token']}; refresh_token={cookies['refresh_token']}"
-
-
-def test_auth_cookies_are_secure_browser_session_cookies(services):
-    service = services
+def test_browser_binding_is_secure_http_only_session_cookie(services):
     login = requests.post(
-        service.hub + "/api/auth/login",
-        json={"email": service.admin_email, "password": service.password},
-        timeout=10,
+        services.hub + "/api/auth/login",
+        json={"email": services.admin_email, "password": services.password},
+        headers={"X-DACOT-Tab-Session": str(uuid.uuid4())}, timeout=10,
     )
     assert login.status_code == 200, login.text
+    cookies = [item for item in login.raw.headers.getlist("Set-Cookie") if item.startswith("__Host-dacot_browser=")]
+    assert len(cookies) == 1
+    cookie = cookies[0]
+    assert "HttpOnly" in cookie and "Secure" in cookie and "SameSite=none" in cookie, cookie
+    assert "Path=/" in cookie and "Domain=" not in cookie, cookie
+    assert "Max-Age" not in cookie and "expires=" not in cookie.lower(), cookie
 
-    cookies = _auth_cookies(login)
-    assert len(cookies) == 2
-    for cookie in cookies:
-        assert "HttpOnly" in cookie and "Secure" in cookie and "SameSite=none" in cookie, cookie
-        assert "Max-Age" not in cookie and "expires=" not in cookie.lower(), cookie
 
-    headers = {"Cookie": _cookie_header(login)}
-    assert requests.get(service.hub + "/api/auth/me", headers=headers, timeout=10).status_code == 200
+def test_tab_sessions_are_independent_and_logout_is_scoped(services):
+    a = services.login(services.admin_email, services.password)
+    b = services.login(
+        services.admin_email, services.password,
+        browser_binding=_binding(a), tab_session_id=str(uuid.uuid4()),
+    )
+    assert requests.get(services.hub + "/api/auth/me", headers=a, timeout=10).status_code == 200
+    assert requests.get(services.hub + "/api/auth/me", headers=b, timeout=10).status_code == 200
 
-    refresh = requests.post(service.hub + "/api/auth/refresh", headers=headers, timeout=10)
-    assert refresh.status_code == 200, refresh.text
-    refreshed_access = _auth_cookies(refresh)
-    assert len(refreshed_access) == 1
-    assert "access_token=" in refreshed_access[0]
-    assert "HttpOnly" in refreshed_access[0] and "Secure" in refreshed_access[0]
-    assert "SameSite=none" in refreshed_access[0]
-    assert "Max-Age" not in refreshed_access[0] and "expires=" not in refreshed_access[0].lower()
+    assert requests.post(services.hub + "/api/auth/logout", headers=a, timeout=10).status_code == 200
+    assert requests.get(services.hub + "/api/auth/me", headers=a, timeout=10).status_code == 401
+    assert requests.post(services.hub + "/api/auth/refresh", headers=a, timeout=10).status_code == 401
+    assert requests.get(services.hub + "/api/auth/me", headers=b, timeout=10).status_code == 200
+    assert requests.post(services.hub + "/api/auth/refresh", headers=b, timeout=10).status_code == 200
 
-    logout = requests.post(service.hub + "/api/auth/logout", headers=headers, timeout=10)
-    assert logout.status_code == 200, logout.text
-    deleted = _auth_cookies(logout)
-    assert len(deleted) == 2
-    for cookie in deleted:
-        assert "Max-Age=0" in cookie and "HttpOnly" in cookie and "Secure" in cookie, cookie
-        assert "SameSite=none" in cookie, cookie
+    assert requests.post(services.hub + "/api/auth/logout", headers=b, timeout=10).status_code == 200
+    assert requests.get(services.hub + "/api/auth/me", headers=b, timeout=10).status_code == 401
 
-    logout_without_access = requests.post(service.hub + "/api/auth/logout", timeout=10)
-    assert logout_without_access.status_code == 200, logout_without_access.text
-    assert len(_auth_cookies(logout_without_access)) == 2
 
-    assert requests.get(service.hub + "/api/auth/me", timeout=10).status_code == 401
-    assert requests.post(service.hub + "/api/auth/refresh", timeout=10).status_code == 401
+def test_auth_fails_closed_for_missing_or_mixed_session_identifiers(services):
+    identity = services.login(services.admin_email, services.password)
+    no_tab = {"Cookie": identity["Cookie"]}
+    no_binding = {"X-DACOT-Tab-Session": identity["X-DACOT-Tab-Session"]}
+    mixed = {"Cookie": identity["Cookie"], "X-DACOT-Tab-Session": str(uuid.uuid4())}
+    for headers in (no_tab, no_binding, mixed):
+        assert requests.get(services.hub + "/api/auth/me", headers=headers, timeout=10).status_code == 401
+        assert requests.post(services.hub + "/api/auth/refresh", headers=headers, timeout=10).status_code == 401
+
+    # An obsolete JWT-named cookie, with no valid server-side session pair,
+    # never authenticates a browser request.
+    assert requests.get(
+        services.hub + "/api/auth/me", headers={"Cookie": "access_token=legacy"}, timeout=10
+    ).status_code == 401
+
+
+def test_expired_and_globally_revoked_sessions_fail_closed(services):
+    identity = services.login(services.admin_email, services.password)
+    binding = _binding(identity)
+    services.db.auth_sessions.update_one(
+        {"browser_binding_hash": hashlib.sha256(binding.encode()).hexdigest(),
+         "tab_session_id_hash": hashlib.sha256(identity["X-DACOT-Tab-Session"].encode()).hexdigest()},
+        {"$set": {"access_expires_at": datetime.now(timezone.utc),
+                  "refresh_expires_at": datetime.now(timezone.utc)}},
+    )
+    assert requests.get(services.hub + "/api/auth/me", headers=identity, timeout=10).status_code == 401
+    assert requests.post(services.hub + "/api/auth/refresh", headers=identity, timeout=10).status_code == 401
+
+    identity = services.login(services.admin_email, services.password)
+    admin = services.db.hub_users.find_one({"email": services.admin_email})
+    original_version = admin.get("token_version", 0)
+    services.db.hub_users.update_one({"_id": admin["_id"]}, {"$inc": {"token_version": 1}})
+    assert requests.get(services.hub + "/api/auth/me", headers=identity, timeout=10).status_code == 401
+    services.db.hub_users.update_one({"_id": admin["_id"]}, {"$set": {"token_version": original_version}})
+
+
+def test_handoff_requires_a_live_tab_session(services):
+    restaurant = services.restaurant()
+    assert requests.post(
+        services.hub + "/api/portal/modules/orders/launch-token", headers=restaurant["headers"], timeout=10
+    ).status_code == 200
+    assert requests.post(
+        services.hub + "/api/auth/logout", headers=restaurant["headers"], timeout=10
+    ).status_code == 200
+    assert requests.post(
+        services.hub + "/api/portal/modules/orders/launch-token", headers=restaurant["headers"], timeout=10
+    ).status_code == 401
+
+
+def test_restaurant_user_and_tenant_state_are_revalidated(services):
+    inactive_user = services.restaurant()
+    services.db.tenant_users.update_one(
+        {"_id": ObjectId(inactive_user["uid"])}, {"$set": {"status": "inactive"}}
+    )
+    assert requests.get(
+        services.hub + "/api/auth/me", headers=inactive_user["headers"], timeout=10
+    ).status_code == 401
+
+    suspended_tenant = services.restaurant()
+    services.db.tenants.update_one(
+        {"_id": ObjectId(suspended_tenant["tid"])}, {"$set": {"status": "suspended"}}
+    )
+    assert requests.post(
+        services.hub + "/api/auth/refresh", headers=suspended_tenant["headers"], timeout=10
+    ).status_code == 401

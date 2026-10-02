@@ -1,4 +1,5 @@
 import axios from "axios";
+import { clearTabSessionId, getTabSessionId } from "@/lib/tabSession";
 
 const configuredBackendUrl = process.env.REACT_APP_BACKEND_URL?.trim().replace(/\/+$/, "");
 
@@ -10,6 +11,14 @@ export const API_BASE = configuredBackendUrl ? `${configuredBackendUrl}/api` : "
 export const api = axios.create({
   baseURL: API_BASE,
   withCredentials: true,
+});
+
+api.interceptors.request.use((config) => {
+  // The UUID alone is not an authentication credential. The backend also
+  // requires a matching HttpOnly browser binding and live Mongo session.
+  config.headers = config.headers || {};
+  config.headers["X-DACOT-Tab-Session"] = getTabSessionId();
+  return config;
 });
 
 const AUTH_PATHS = [
@@ -57,6 +66,7 @@ api.interceptors.response.use(
     } catch (refreshError) {
       // Sessão não recuperável: navegue sem recarregar a página para manter a
       // resolução da rota no React Router, e não no servidor de hospedagem.
+      clearTabSessionId();
       navigateToLogin();
       return Promise.reject(refreshError);
     }
