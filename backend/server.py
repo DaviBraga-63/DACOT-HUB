@@ -130,9 +130,9 @@ def create_refresh_token(user_id: str, ver: int = 0, ut: str = "staff") -> str:
 
 def _set_auth_cookies(response: Response, access: str, refresh: str) -> None:
     response.set_cookie("access_token", access, httponly=True, secure=True,
-                        samesite="none", max_age=3600, path="/")
+                        samesite="none", path="/")
     response.set_cookie("refresh_token", refresh, httponly=True, secure=True,
-                        samesite="none", max_age=604800, path="/")
+                        samesite="none", path="/")
 
 
 async def get_current_user(request: Request) -> dict:
@@ -329,9 +329,9 @@ async def login(payload: LoginIn, request: Request, response: Response):
 
 
 @api_router.post("/auth/logout")
-async def logout(response: Response, _u: dict = Depends(get_current_user)):
-    response.delete_cookie("access_token", path="/")
-    response.delete_cookie("refresh_token", path="/")
+async def logout(response: Response):
+    response.delete_cookie("access_token", path="/", secure=True, httponly=True, samesite="none")
+    response.delete_cookie("refresh_token", path="/", secure=True, httponly=True, samesite="none")
     return {"ok": True}
 
 
@@ -374,7 +374,7 @@ async def refresh(request: Request, response: Response):
                 raise HTTPException(401, "Sessão expirada")
         access = create_access_token(str(user["_id"]), user["email"], user.get("token_version", 0), ut)
         response.set_cookie("access_token", access, httponly=True, secure=True,
-                            samesite="none", max_age=3600, path="/")
+                            samesite="none", path="/")
         return {"ok": True}
     except jwt.InvalidTokenError:
         raise HTTPException(401, "Token inválido")
