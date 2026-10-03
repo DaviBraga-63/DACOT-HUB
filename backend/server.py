@@ -12,13 +12,13 @@ import logging
 import secrets
 import hashlib
 from datetime import datetime, timezone, timedelta
-from html import escape
 from typing import List, Optional, Annotated, Any
 from urllib.parse import urlparse
 
 from handoff_policy import validate_handoff_configuration, validate_launch_url, orders_module_key
 from orders_launch_urls import ORDERS_LAUNCH_URL_TEMPLATE, migrate_legacy_orders_launch_urls
 from orders_user_grants import ORDERS_MODULE_KEY, bootstrap_orders_user_grants
+from email_delivery import send_password_reset_email as _send_password_reset_email
 from auth_sessions import (
     BROWSER_COOKIE_NAME, TAB_SESSION_HEADER, create_session, ensure_indexes,
     find_session, new_browser_binding, refresh_session, revoke_session,
@@ -50,9 +50,9 @@ db = client[DB_NAME]
 JWT_ALGORITHM = "HS256"
 JWT_SECRET = os.environ["JWT_SECRET"]
 FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://localhost:3000")
-EMAIL_BASE_URL = (os.environ.get("INTEGRATION_PROXY_URL") or "").strip().rstrip("/") or "https://integrations.emergentagent.com"
-EMAIL_KEY = os.environ.get("EMERGENT_EMAIL_KEY", "")
-EMAIL_FROM_NAME = os.environ.get("EMAIL_FROM_NAME") or "DACOT Hub"
+RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "")
+EMAIL_FROM_ADDRESS = os.environ.get("EMAIL_FROM_ADDRESS", "")
+EMAIL_FROM_NAME = os.environ.get("EMAIL_FROM_NAME") or "DACOT"
 
 # ─── Module handoff (integration with external modules) ────────────────────────
 HANDOFF_JWT_SECRET = os.environ.get("HANDOFF_JWT_SECRET", "")
@@ -246,35 +246,14 @@ async def _record_attempt(ip: str, email: str, success: bool) -> None:
 
 # ─── Email (reset) ─────────────────────────────────────────────────────────────
 async def send_password_reset_email(to_email: str, token: str) -> bool:
-    base = FRONTEND_URL.rstrip("/")
-    link = f"{base}/reset-password?token={token}"
-    if not EMAIL_KEY or EMAIL_KEY.startswith("{") or not base.startswith("https://"):
-        if urlparse(base).hostname in ("localhost", "127.0.0.1", "::1"):
-            logger.warning("Email not configured; reset link: %s", link)
-        else:
-            logger.error("Password reset email not configured")
-        return False
-    brand = escape(EMAIL_FROM_NAME)
-    html = (
-        f'<table role="presentation" width="100%"><tr><td style="padding:24px;font-family:Arial,sans-serif">'
-        f'<p>Recebemos uma solicitação para redefinir sua senha no {brand}.</p>'
-        f'<p><a href="{escape(link)}">Redefinir minha senha</a></p>'
-        f'<p>Este link expira em 1 hora e pode ser usado apenas uma vez. Se você não solicitou, ignore este e-mail.</p>'
-        f'<p style="font-size:12px;color:#888">Enviado por {brand}.</p>'
-        f'</td></tr></table>'
+    return await _send_password_reset_email(
+        to_email,
+        token,
+        frontend_url=FRONTEND_URL,
+        resend_api_key=RESEND_API_KEY,
+        email_from_address=EMAIL_FROM_ADDRESS,
+        email_from_name=EMAIL_FROM_NAME,
     )
-    try:
-        async with httpx.AsyncClient(timeout=30) as c:
-            r = await c.post(f"{EMAIL_BASE_URL}/api/v1/email/send",
-                             headers={"X-Email-Key": EMAIL_KEY},
-                             json={"to": [to_email],
-                                   "subject": f"Redefina sua senha do {EMAIL_FROM_NAME}",
-                                   "html": html, "from_name": EMAIL_FROM_NAME})
-        r.raise_for_status()
-        return True
-    except Exception as e:
-        logger.error(f"reset email failed: {e}")
-        return False
 
 
 # ─── Auth Models ───────────────────────────────────────────────────────────────

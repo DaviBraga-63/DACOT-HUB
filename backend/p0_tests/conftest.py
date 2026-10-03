@@ -44,7 +44,7 @@ class Services:
             "HUB_BASE_URL": self.hub, "MODULE_API_KEY": self.key,
             "ORDERS_BACKEND_URL": self.orders,
             "ADMIN_EMAIL": self.admin_email, "ADMIN_PASSWORD": self.password,
-            "FRONTEND_URL": "https://hub.example.test", "EMERGENT_EMAIL_KEY": "",
+            "FRONTEND_URL": "https://hub.example.test", "RESEND_API_KEY": "", "EMAIL_FROM_ADDRESS": "",
             "HANDOFF_ALLOWED_ORIGINS_JSON": '{"orders":["https://orders.example.test"]}',
             "APP_ENV": "development", "NO_PROXY": "*", "no_proxy": "*",
         })
