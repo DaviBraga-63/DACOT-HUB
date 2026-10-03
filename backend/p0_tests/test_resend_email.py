@@ -1,10 +1,23 @@
 """Unit coverage for the isolated Resend password-reset delivery adapter."""
 
 import asyncio
+import importlib.util
+from pathlib import Path
 
 import httpx
 
-import email_delivery
+
+BACKEND = Path(__file__).resolve().parents[1]
+
+
+def load_email_delivery():
+    spec = importlib.util.spec_from_file_location("email_delivery_test", BACKEND / "email_delivery.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+email_delivery = load_email_delivery()
 
 
 class _Client:
