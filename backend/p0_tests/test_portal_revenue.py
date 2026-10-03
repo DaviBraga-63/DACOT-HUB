@@ -16,9 +16,9 @@ def _periods():
     return today, month_extra, prior_month, local_now.day == 1
 
 
-def _order(restaurant_id, cents, delivered_at, status="delivered"):
+def _order(restaurant_id, order_number, cents, delivered_at, status="delivered"):
     return {
-        "id": secrets.token_hex(12), "restaurant_id": restaurant_id,
+        "id": secrets.token_hex(12), "restaurant_id": restaurant_id, "order_number": order_number,
         "total_cents": cents, "status": status, "delivered_at": delivered_at,
         "created_at": delivered_at, "updated_at": delivered_at,
     }
@@ -28,11 +28,11 @@ def test_portal_revenue_is_aggregate_only_and_tenant_scoped(services):
     service, first, second = services, services.restaurant(), services.restaurant()
     today, month_extra, prior_month, first_day_of_month = _periods()
     service.odb.orders.insert_many([
-        _order(first["tid"], 10_000, today),
-        _order(first["tid"], 2_500, month_extra),
-        _order(first["tid"], 9_999, today, "cancelled"),
-        _order(first["tid"], 8_888, prior_month),
-        _order(second["tid"], 50_000, today),
+        _order(first["tid"], 1001, 10_000, today),
+        _order(first["tid"], 1002, 2_500, month_extra),
+        _order(first["tid"], 1003, 9_999, today, "cancelled"),
+        _order(first["tid"], 1004, 8_888, prior_month),
+        _order(second["tid"], 1001, 50_000, today),
     ])
     response = service.call(
         "GET", "/portal/analytics/revenue", headers=first["headers"],
@@ -52,7 +52,10 @@ def test_portal_revenue_is_aggregate_only_and_tenant_scoped(services):
 def test_orders_analytics_assertion_is_strict_and_never_selects_another_restaurant(services):
     service, first, second = services, services.restaurant(), services.restaurant()
     _, month_extra, _, _ = _periods()
-    service.odb.orders.insert_many([_order(first["tid"], 100, month_extra), _order(second["tid"], 500, month_extra)])
+    service.odb.orders.insert_many([
+        _order(first["tid"], 1001, 100, month_extra),
+        _order(second["tid"], 1001, 500, month_extra),
+    ])
     now = int(datetime.now(timezone.utc).timestamp())
 
     def assertion(**overrides):
@@ -68,7 +71,7 @@ def test_orders_analytics_assertion_is_strict_and_never_selects_another_restaura
     valid = requests.get(endpoint, headers={"Authorization": f"Bearer {assertion()}"}, timeout=10)
     assert valid.status_code == 200 and valid.json()["current_month_cents"] == 100
     for token in (
-        jwt.encode({"iss": "dacot-hub", "aud": "dacot-orders-analytics", "restaurant_id": first["tid"], "module": "orders", "scope": "analytics.revenue", "jti": "bad", "iat": now, "nbf": now - 1, "exp": now + 30}, "wrong-secret", algorithm="HS256"),
+        jwt.encode({"iss": "dacot-hub", "aud": "dacot-orders-analytics", "restaurant_id": first["tid"], "module": "orders", "scope": "analytics.revenue", "jti": "bad", "iat": now, "nbf": now - 1, "exp": now + 30}, "x" * 32, algorithm="HS256"),
         assertion(iss="other"), assertion(aud="dacot-orders"), assertion(exp=now - 1), assertion(restaurant_id=""),
     ):
         assert requests.get(endpoint, headers={"Authorization": f"Bearer {token}"}, timeout=10).status_code == 401
