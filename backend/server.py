@@ -60,6 +60,8 @@ HANDOFF_ISSUER = os.environ.get("HANDOFF_ISSUER", "dacot-hub")
 HANDOFF_VERSION = 1
 HANDOFF_MAX_TTL_SECONDS = 60
 HANDOFF_AUDIENCE = {"orders": "dacot-orders", "kitchen": "dacot-kitchen"}
+ORDERS_ANALYTICS_AUDIENCE = "dacot-orders-analytics"
+ORDERS_ANALYTICS_SCOPE = "analytics.revenue"
 MODULE_ACCESS_KEYS = {
     "orders": orders_module_key(),
     "kitchen": os.environ.get("KITCHEN_MODULE_KEY", ""),
@@ -83,6 +85,21 @@ PyObjectId = Annotated[str, BeforeValidator(_validate_object_id)]
 
 def now_utc() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _orders_backend_url() -> str:
+    """Return the exact service origin used only for Hub → Pedidos calls."""
+    value = os.environ.get("ORDERS_BACKEND_URL", "").strip().rstrip("/")
+    parsed = urlparse(value)
+    is_local_development = (
+        os.environ.get("APP_ENV", "").strip().lower() == "development"
+        and parsed.scheme == "http" and parsed.hostname in {"127.0.0.1", "localhost", "::1"}
+    )
+    if (not parsed.hostname or parsed.username or parsed.password or parsed.path not in ("", "/")
+            or parsed.query or parsed.fragment or "\\" in value
+            or (parsed.scheme != "https" and not is_local_development)):
+        raise HTTPException(503, "Integração com Pedidos indisponível")
+    return value
 
 
 def iso(dt: Optional[datetime]) -> Optional[str]:
@@ -273,6 +290,18 @@ class ResetIn(BaseModel):
     password: str = Field(min_length=6)
 
 
+async def _issue_password_reset(user_id: str, email: str, user_type: str) -> str:
+    """Create the existing one-time reset credential without exposing it."""
+    raw = secrets.token_urlsafe(32)
+    await db.password_reset_tokens.insert_one({
+        "token_hash": hashlib.sha256(raw.encode()).hexdigest(),
+        "user_id": user_id, "email": email, "user_type": user_type,
+        "used": False, "expires_at": now_utc() + timedelta(hours=1),
+        "created_at": now_utc(),
+    })
+    return raw
+
+
 # ─── Auth endpoints ────────────────────────────────────────────────────────────
 def _client_ip(request: Request) -> str:
     # Behind the k8s ingress, request.client.host is the proxy pod IP — use the
@@ -399,14 +428,7 @@ async def forgot(payload: ForgotIn, background_tasks: BackgroundTasks):
         ut = "restaurant"
     if not user:
         return GENERIC_RESET_RESPONSE
-    raw = secrets.token_urlsafe(32)
-    token_hash = hashlib.sha256(raw.encode()).hexdigest()
-    await db.password_reset_tokens.insert_one({
-        "token_hash": token_hash, "user_id": str(user["_id"]), "email": email,
-        "user_type": ut,
-        "used": False, "expires_at": now_utc() + timedelta(hours=1),
-        "created_at": now_utc(),
-    })
+    raw = await _issue_password_reset(str(user["_id"]), email, ut)
     background_tasks.add_task(send_password_reset_email, user["email"], raw)
     return GENERIC_RESET_RESPONSE
 
@@ -456,6 +478,12 @@ class TenantIn(BaseModel):
     address: Optional[str] = ""
     notes: Optional[str] = ""
 
+
+class TenantOnboardingIn(TenantIn):
+    create_hub_access: bool = False
+    access_name: Optional[str] = Field(default=None, min_length=1, max_length=120)
+    access_email: Optional[EmailStr] = None
+
 class TenantPatch(BaseModel):
     name: Optional[str] = None
     owner_name: Optional[str] = None
@@ -500,6 +528,23 @@ def _tenant_out(doc: dict) -> dict:
     }
 
 
+def _new_tenant_doc(payload: TenantIn) -> dict:
+    if payload.status not in VALID_STATUS:
+        raise HTTPException(400, "Status inválido")
+    return {
+        "name": payload.name.strip(),
+        "slug": _slug(payload.name),
+        "owner_name": payload.owner_name.strip(),
+        "email": payload.email.lower(),
+        "phone": payload.phone or "",
+        "status": payload.status,
+        "address": payload.address or "",
+        "notes": payload.notes or "",
+        "created_at": now_utc().isoformat(),
+        "updated_at": now_utc().isoformat(),
+    }
+
+
 # ─── Tenants ───────────────────────────────────────────────────────────────────
 @api_router.get("/hub/tenants")
 async def list_tenants(status: Optional[str] = None, q: Optional[str] = None,
@@ -526,20 +571,7 @@ async def list_tenants(status: Optional[str] = None, q: Optional[str] = None,
 
 @api_router.post("/hub/tenants")
 async def create_tenant(payload: TenantIn, user: dict = Depends(get_staff_write)):
-    if payload.status not in VALID_STATUS:
-        raise HTTPException(400, "Status inválido")
-    doc = {
-        "name": payload.name.strip(),
-        "slug": _slug(payload.name),
-        "owner_name": payload.owner_name.strip(),
-        "email": payload.email.lower(),
-        "phone": payload.phone or "",
-        "status": payload.status,
-        "address": payload.address or "",
-        "notes": payload.notes or "",
-        "created_at": now_utc().isoformat(),
-        "updated_at": now_utc().isoformat(),
-    }
+    doc = _new_tenant_doc(payload)
     res = await db.tenants.insert_one(doc)
     tid = str(res.inserted_id)
     await log_activity(actor_id=user["_id"], actor_name=user.get("name", user["email"]),
@@ -547,6 +579,55 @@ async def create_tenant(payload: TenantIn, user: dict = Depends(get_staff_write)
                        tenant_id=tid, metadata={"name": doc["name"]})
     doc["_id"] = res.inserted_id
     return {**_tenant_out(doc), "active_modules": 0, "users_count": 0}
+
+
+@api_router.post("/hub/tenants/onboard")
+async def onboard_tenant(payload: TenantOnboardingIn, background_tasks: BackgroundTasks,
+                         user: dict = Depends(get_staff_write)):
+    """Create a tenant and, when requested, its first manager access safely.
+
+    Mongo deployments are not assumed to support transactions. All validation
+    that does not require persistence happens first; if the new user cannot be
+    created, only the tenant inserted by this request is compensated.
+    """
+    doc = _new_tenant_doc(payload)
+    access_name = (payload.access_name or payload.owner_name).strip()
+    access_email = (payload.access_email or payload.email).lower()
+    if payload.create_hub_access:
+        if not access_name:
+            raise HTTPException(400, "Nome do responsável é obrigatório")
+        if await _email_in_use(access_email):
+            raise HTTPException(409, "Já existe um usuário com este e-mail")
+
+    inserted = await db.tenants.insert_one(doc)
+    tid = str(inserted.inserted_id)
+    doc["_id"] = inserted.inserted_id
+    created_user_id: Optional[str] = None
+    raw_reset: Optional[str] = None
+    try:
+        access_created = False
+        if payload.create_hub_access:
+            created_user_id = await _create_initial_tenant_manager(tid, access_name, access_email)
+            raw_reset = await _issue_password_reset(created_user_id, access_email, "restaurant")
+            access_created = True
+        await log_activity(
+            actor_id=user["_id"], actor_name=user.get("name", user["email"]),
+            action="tenant.onboarded", target_type="tenant", target_id=tid, tenant_id=tid,
+            metadata={"name": doc["name"], "initial_access_created": access_created,
+                      "initial_access_user_id": created_user_id, "initial_access_role": "manager" if access_created else None},
+        )
+    except Exception:
+        # This ID was created in this request and has no other dependencies yet.
+        if created_user_id:
+            await db.password_reset_tokens.delete_many({"user_id": created_user_id, "used": False})
+            await db.tenant_users.delete_one({"_id": ObjectId(created_user_id), "tenant_id": tid})
+        await db.tenants.delete_one({"_id": inserted.inserted_id})
+        raise
+    if raw_reset:
+        background_tasks.add_task(send_password_reset_email, access_email, raw_reset)
+    return {**_tenant_out(doc), "active_modules": 0, "users_count": 1 if payload.create_hub_access else 0,
+            "initial_access_created": payload.create_hub_access,
+            "invitation": "queued" if payload.create_hub_access else None}
 
 
 @api_router.get("/hub/tenants/{tid}")
@@ -863,6 +944,30 @@ async def _create_tenant_user(tid: str, payload: TenantUserIn, actor: dict) -> d
     out = _tenant_user_out(doc)
     out["temp_password"] = generated_password
     return out
+
+
+async def _create_initial_tenant_manager(tid: str, name: str, email: str) -> str:
+    """Persist the invite-only first manager without ever exposing a password.
+
+    This is intentionally separate from the legacy user-creation helper: its
+    audit write happens after the complete onboarding succeeds, so a failure
+    can compensate every document created by this request.
+    """
+    if await _email_in_use(email):
+        raise HTTPException(409, "Já existe um usuário com este e-mail")
+    doc = {
+        "tenant_id": tid, "name": name, "email": email,
+        "role": "manager", "status": "active", "user_type": "restaurant",
+        # A random unusable credential satisfies the legacy schema only; the
+        # reset-required flag blocks login until the invite link sets a password.
+        "password_hash": hash_password(secrets.token_urlsafe(32)), "password_reset_required": True,
+        "token_version": 0, "created_at": now_utc().isoformat(),
+    }
+    try:
+        result = await db.tenant_users.insert_one(doc)
+    except DuplicateKeyError:
+        raise HTTPException(409, "Já existe um usuário com este e-mail")
+    return str(result.inserted_id)
 
 
 @api_router.post("/hub/tenants/{tid}/users")
@@ -1233,12 +1338,12 @@ async def portal_context(user: dict = Depends(get_restaurant_user)):
     for m in modules:
         act = activations.get(m["key"])
         active = bool(act)
-        launch_url = ""
-        if active:
-            launch_url = (act.get("launch_url") or "").strip()
-            if not launch_url and m.get("launch_url_template"):
-                launch_url = m["launch_url_template"].replace("{slug}", tenant.get("slug", ""))
-        out.append({**_module_out(m), "active": active, "launch_url": launch_url})
+        # Portal consumers receive only products released, available and
+        # activated for their own tenant. Administrative catalog details and
+        # launch URLs remain server-side until a handoff is requested.
+        if m["key"] != ORDERS_MODULE_KEY or not active or m.get("status") != "available":
+            continue
+        out.append({**_module_out(m), "active": True})
     return {
         "user": {"id": user["_id"], "name": user.get("name"), "email": user["email"],
                  "role": user.get("role", "waiter")},
@@ -1246,6 +1351,51 @@ async def portal_context(user: dict = Depends(get_restaurant_user)):
                    "status": tenant.get("status", "trial")},
         "modules": out,
     }
+
+
+@api_router.get("/portal/analytics/revenue")
+async def portal_revenue(response: Response, user: dict = Depends(get_restaurant_user)):
+    """Return only Pedidos aggregates for the authenticated restaurant."""
+    if not HANDOFF_JWT_SECRET or len(HANDOFF_JWT_SECRET) < 32:
+        raise HTTPException(503, "Faturamento indisponível no momento")
+    tid = user["tenant_id"]
+    module = await db.modules.find_one({"key": ORDERS_MODULE_KEY})
+    activation = await db.tenant_modules.find_one(
+        {"tenant_id": tid, "module_key": ORDERS_MODULE_KEY, "active": True}
+    )
+    grant = await db.module_user_grants.find_one(
+        {"tenant_id": tid, "user_id": user["_id"], "module_key": ORDERS_MODULE_KEY, "active": True}
+    )
+    if not module or module.get("status") != "available" or not activation or not grant:
+        raise HTTPException(403, "Módulo Pedidos não está disponível para este usuário")
+
+    now = now_utc()
+    assertion = jwt.encode({
+        "iss": HANDOFF_ISSUER, "aud": ORDERS_ANALYTICS_AUDIENCE,
+        "restaurant_id": tid, "module": ORDERS_MODULE_KEY, "scope": ORDERS_ANALYTICS_SCOPE,
+        "jti": secrets.token_urlsafe(16),
+        "iat": int(now.timestamp()), "nbf": int(now.timestamp()) - 5,
+        "exp": int((now + timedelta(seconds=HANDOFF_MAX_TTL_SECONDS)).timestamp()),
+    }, HANDOFF_JWT_SECRET, algorithm="HS256")
+    try:
+        async with httpx.AsyncClient(timeout=5.0, follow_redirects=False) as client:
+            result = await client.get(
+                f"{_orders_backend_url()}/api/internal/analytics/revenue",
+                headers={"Authorization": f"Bearer {assertion}"},
+            )
+        if result.status_code != 200:
+            raise ValueError("Pedidos rejected analytics assertion")
+        payload = result.json()
+        required = {"today_cents", "current_month_cents", "currency", "timezone"}
+        if (set(payload) != required or payload["currency"] != "BRL"
+                or payload["timezone"] != "America/Sao_Paulo"
+                or any(type(payload[field]) is not int or payload[field] < 0
+                       for field in ("today_cents", "current_month_cents"))):
+            raise ValueError("Invalid Pedidos analytics response")
+    except (httpx.HTTPError, ValueError, TypeError, KeyError):
+        raise HTTPException(503, "Faturamento indisponível no momento")
+    response.headers["Cache-Control"] = "no-store"
+    return payload
 
 
 @api_router.get("/portal/users")

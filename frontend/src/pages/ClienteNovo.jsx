@@ -17,6 +17,7 @@ export default function ClienteNovo() {
   const [form, setForm] = useState({
     name: "", owner_name: "", email: "", phone: "",
     status: "trial", address: "", notes: "",
+    create_hub_access: false, access_name: "", access_email: "",
   });
   const [err, setErr] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -29,7 +30,14 @@ export default function ClienteNovo() {
     e.preventDefault();
     setBusy(true); setErr(null);
     try {
-      const { data } = await api.post("/hub/tenants", form);
+      const payload = {
+        ...form,
+        // Empty optional fields are omitted so the backend can deliberately
+        // fall back to the restaurant owner contact.
+        access_name: form.access_name.trim() || undefined,
+        access_email: form.access_email.trim() || undefined,
+      };
+      const { data } = await api.post("/hub/tenants/onboard", payload);
       nav(`/clientes/${data.id}`);
     } catch (e) {
       setErr(formatApiErrorDetail(e.response?.data?.detail) || e.message);
@@ -74,6 +82,32 @@ export default function ClienteNovo() {
         <Field label="Observações">
           <textarea rows={4} className="dh-input resize-none" value={form.notes} onChange={set("notes")} data-testid="input-notes" />
         </Field>
+
+        <section className="pt-6 border-t border-[var(--dh-border-soft)] space-y-4" data-testid="hub-access-section">
+          <div>
+            <div className="text-[12px] uppercase tracking-widest font-bold text-[var(--dh-muted)]">Acesso ao Hub</div>
+            <p className="text-[13px] text-[var(--dh-muted)] mt-1">Crie o primeiro acesso do responsável sem expor senha temporária.</p>
+          </div>
+          <label className="flex items-start gap-3 cursor-pointer">
+            <input type="checkbox" checked={form.create_hub_access}
+                   onChange={(e) => setForm((f) => ({ ...f, create_hub_access: e.target.checked }))}
+                   className="mt-1" data-testid="create-hub-access" />
+            <span className="text-[14px] font-medium text-[var(--dh-text)]">Criar acesso ao Hub para o responsável</span>
+          </label>
+          {form.create_hub_access && (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6 dh-fade-in">
+              <Field label="Nome de acesso" required>
+                <input required className="dh-input" value={form.access_name || form.owner_name}
+                       onChange={set("access_name")} data-testid="input-access-name" />
+              </Field>
+              <Field label="E-mail de acesso" required>
+                <input type="email" required className="dh-input" value={form.access_email || form.email}
+                       onChange={set("access_email")} data-testid="input-access-email" />
+              </Field>
+            </div>
+          )}
+          {form.create_hub_access && <p className="text-[12px] text-[var(--dh-muted)]">O responsável receberá um link seguro para definir a própria senha.</p>}
+        </section>
 
         {err && <div className="dh-chip dh-chip-error">{err}</div>}
 

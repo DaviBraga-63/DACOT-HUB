@@ -42,6 +42,7 @@ class Services:
             "HANDOFF_JWT_SECRET": self.secret, "HANDOFF_ISSUER": "dacot-hub",
             "HANDOFF_AUDIENCE": "dacot-orders", "HANDOFF_VERSION": "1", "HANDOFF_MODULE_ID": "orders",
             "HUB_BASE_URL": self.hub, "MODULE_API_KEY": self.key,
+            "ORDERS_BACKEND_URL": self.orders,
             "ADMIN_EMAIL": self.admin_email, "ADMIN_PASSWORD": self.password,
             "FRONTEND_URL": "https://hub.example.test", "EMERGENT_EMAIL_KEY": "",
             "HANDOFF_ALLOWED_ORIGINS_JSON": '{"orders":["https://orders.example.test"]}',
