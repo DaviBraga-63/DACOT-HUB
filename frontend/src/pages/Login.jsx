@@ -22,7 +22,7 @@ export default function Login() {
   return (
     <div className="min-h-screen grid grid-cols-1 lg:grid-cols-2 bg-[var(--dh-bg)]">
       {/* Left */}
-      <div className="flex flex-col justify-between px-6 sm:px-10 lg:px-16 py-8 sm:py-12 lg:py-10">
+      <div className="flex flex-col px-6 sm:px-10 lg:px-16 py-8 sm:py-12 lg:py-10">
         <div className="flex items-center gap-3">
           <div 
             className="w-10 h-10 rounded-lg flex items-center justify-center text-white font-bold shadow-md"
@@ -35,7 +35,8 @@ export default function Login() {
           </div>
         </div>
 
-        <div className="max-w-md w-full self-center py-10 lg:py-0">
+        <main className="flex flex-1 items-center justify-center">
+        <div className="max-w-md w-full py-10 lg:py-0">
           <div className="text-[11px] uppercase tracking-widest font-bold text-[var(--dh-accent)] mb-5">
             Painel Administrativo
           </div>
@@ -67,7 +68,7 @@ export default function Login() {
                 <button
                   type="button"
                   onClick={() => setShowPassword((visible) => !visible)}
-                  className="absolute inset-y-0 left-0 flex w-10 items-center justify-center text-[var(--dh-muted)] transition-colors hover:text-[var(--dh-accent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--dh-accent)] focus-visible:ring-inset"
+                  className="absolute inset-y-0 right-0 flex w-10 items-center justify-center text-[var(--dh-muted)] transition-colors hover:text-[var(--dh-accent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--dh-accent)] focus-visible:ring-inset"
                   aria-label={showPassword ? "Ocultar senha" : "Mostrar senha"}
                   data-testid="toggle-password-visibility"
                 >
@@ -76,7 +77,7 @@ export default function Login() {
                 <input
                   type={showPassword ? "text" : "password"} required
                   value={password} onChange={(e) => setPassword(e.target.value)}
-                  className="dh-input pl-10" placeholder="••••••••"
+                  className="dh-input pr-10" placeholder="••••••••"
                   data-testid="login-password"
                 />
               </div>
@@ -95,6 +96,7 @@ export default function Login() {
             </button>
           </form>
         </div>
+        </main>
       </div>
 
       {/* Right */}
