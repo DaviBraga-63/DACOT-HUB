@@ -47,6 +47,7 @@ class Services:
             "FRONTEND_URL": "https://hub.example.test", "RESEND_API_KEY": "", "EMAIL_FROM_ADDRESS": "",
             "HANDOFF_ALLOWED_ORIGINS_JSON": '{"orders":["https://orders.example.test"]}',
             "APP_ENV": "development", "NO_PROXY": "*", "no_proxy": "*",
+            "DACOT_LOCAL_INTEGRATION": "1", "ORDERS_FRONTEND_URL": "https://orders.example.test",
         })
         self.env = env
         self.procs = {}
@@ -133,14 +134,11 @@ class Services:
         r = self.call("POST", "/hub/tenants", json={"name": tag, "owner_name": "Test", "email": f"{tag}@example.com", "status": "active"})
         r.raise_for_status()
         tid = r.json()["id"]
-        self.call("POST", f"/hub/tenants/{tid}/modules/orders/activate").raise_for_status()
-        self.call("PATCH", f"/hub/tenants/{tid}/modules/orders", json={"launch_url": f"https://orders.example.test/{tag}"}).raise_for_status()
         r = self.call("POST", f"/hub/tenants/{tid}/users", json={"name": "Test", "email": f"u{tag}@example.com", "role": "admin", "password": self.password})
         r.raise_for_status()
         uid = r.json()["id"]
-        # Users created after the one-time grants migration require an explicit,
-        # audited grant before they may launch Pedidos.
-        self.call("PUT", f"/hub/tenants/{tid}/modules/orders/users/{uid}/access", json={"active": True}).raise_for_status()
+        self.call("POST", f"/hub/tenants/{tid}/modules/orders/activate").raise_for_status()
+        self.call("PATCH", f"/hub/tenants/{tid}/modules/orders", json={"launch_url": f"https://orders.example.test/{tag}"}).raise_for_status()
         return {"tid": tid, "uid": uid, "headers": self.login(f"u{tag}@example.com", self.password)}
 
     def handoff(self, identity):

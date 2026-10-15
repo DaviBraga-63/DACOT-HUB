@@ -56,6 +56,17 @@ def _install_client(monkeypatch, client):
     monkeypatch.setattr(email_delivery.httpx, "AsyncClient", lambda **_kwargs: client)
 
 
+def _send_orders(**overrides):
+    values = {
+        "to_email": "manager@example.test", "token": "orders-invite-token",
+        "orders_frontend_url": "https://pedidos.dacot.com.br",
+        "resend_api_key": "synthetic-api-key", "email_from_address": "onboarding@resend.dev",
+        "email_from_name": "DACOT",
+    }
+    values.update(overrides)
+    return asyncio.run(email_delivery.send_orders_first_access_email(**values))
+
+
 def test_resend_rejects_missing_configuration_without_logging_token(caplog):
     assert _send(resend_api_key="") is False
     assert _send(email_from_address="") is False
@@ -90,3 +101,14 @@ def test_resend_http_and_network_failures_return_false_without_logging_secrets(m
     assert _send() is False
     assert "synthetic-one-time-token" not in caplog.text
     assert "synthetic-api-key" not in caplog.text
+
+
+def test_orders_invite_uses_pedidos_link_and_failure_is_safe(monkeypatch, caplog):
+    request = httpx.Request("POST", email_delivery.RESEND_EMAILS_URL)
+    client = _Client(response=httpx.Response(202, request=request))
+    _install_client(monkeypatch, client)
+    assert _send_orders() is True
+    assert "https://pedidos.dacot.com.br/primeiro-acesso?token=orders-invite-token" in client.calls[0]["json"]["html"]
+    _install_client(monkeypatch, _Client(error=httpx.ConnectTimeout("synthetic timeout")))
+    assert _send_orders() is False
+    assert "orders-invite-token" not in caplog.text

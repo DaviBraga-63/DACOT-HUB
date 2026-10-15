@@ -18,7 +18,10 @@ from urllib.parse import urlparse
 from handoff_policy import validate_handoff_configuration, validate_launch_url, orders_module_key
 from orders_launch_urls import ORDERS_LAUNCH_URL_TEMPLATE, migrate_legacy_orders_launch_urls
 from orders_user_grants import ORDERS_MODULE_KEY, bootstrap_orders_user_grants
-from email_delivery import send_password_reset_email as _send_password_reset_email
+from email_delivery import (
+    send_orders_first_access_email as _send_orders_first_access_email,
+    send_password_reset_email as _send_password_reset_email,
+)
 from auth_sessions import (
     BROWSER_COOKIE_NAME, TAB_SESSION_HEADER, create_session, ensure_indexes,
     find_session, new_browser_binding, refresh_session, revoke_session,
@@ -53,6 +56,7 @@ FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://localhost:3000")
 RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "")
 EMAIL_FROM_ADDRESS = os.environ.get("EMAIL_FROM_ADDRESS", "")
 EMAIL_FROM_NAME = os.environ.get("EMAIL_FROM_NAME") or "DACOT"
+ORDERS_FRONTEND_URL = os.environ.get("ORDERS_FRONTEND_URL", "")
 
 # ─── Module handoff (integration with external modules) ────────────────────────
 HANDOFF_JWT_SECRET = os.environ.get("HANDOFF_JWT_SECRET", "")
@@ -99,6 +103,20 @@ def _orders_backend_url() -> str:
             or parsed.query or parsed.fragment or "\\" in value
             or (parsed.scheme != "https" and not is_local_development)):
         raise HTTPException(503, "Integração com Pedidos indisponível")
+    return value
+
+
+def _orders_frontend_url() -> str:
+    value = ORDERS_FRONTEND_URL.strip().rstrip("/")
+    parsed = urlparse(value)
+    is_local_development = (
+        os.environ.get("APP_ENV", "").strip().lower() == "development"
+        and parsed.scheme == "http" and parsed.hostname in {"127.0.0.1", "localhost", "::1"}
+    )
+    if (not parsed.hostname or parsed.username or parsed.password or parsed.path not in ("", "/")
+            or parsed.query or parsed.fragment or "\\" in value
+            or (parsed.scheme != "https" and not is_local_development)):
+        raise HTTPException(503, "URL do frontend Pedidos não configurada")
     return value
 
 
@@ -252,6 +270,16 @@ async def send_password_reset_email(to_email: str, token: str) -> bool:
         frontend_url=FRONTEND_URL,
         resend_api_key=RESEND_API_KEY,
         email_from_address=EMAIL_FROM_ADDRESS,
+        email_from_name=EMAIL_FROM_NAME,
+    )
+
+
+async def send_orders_first_access_email(to_email: str, token: str) -> bool:
+    if os.environ.get("APP_ENV") == "development" and os.environ.get("DACOT_LOCAL_INTEGRATION") == "1":
+        return True
+    return await _send_orders_first_access_email(
+        to_email, token, orders_frontend_url=_orders_frontend_url(),
+        resend_api_key=RESEND_API_KEY, email_from_address=EMAIL_FROM_ADDRESS,
         email_from_name=EMAIL_FROM_NAME,
     )
 
@@ -721,6 +749,75 @@ class ModuleUserGrantIn(BaseModel):
     active: bool
 
 
+async def _orders_responsible_user(tid: str) -> Optional[dict]:
+    return await db.tenant_users.find_one(
+        {"tenant_id": tid, "status": "active", "role": {"$in": ["admin", "manager"]}},
+        sort=[("role", 1), ("created_at", 1)],
+    )
+
+
+async def _provision_orders_tenant(tid: str, tenant: dict, activation: dict) -> None:
+    responsible = await _orders_responsible_user(tid)
+    now = now_utc().isoformat()
+    if not responsible:
+        await db.tenant_modules.update_one(
+            {"tenant_id": tid, "module_key": ORDERS_MODULE_KEY},
+            {"$set": {"provisioning_status": "failed", "provisioning_updated_at": now,
+                      "provisioning_error": "responsible_user_missing"}, "$inc": {"provisioning_attempts": 1}},
+        )
+        raise HTTPException(409, "Crie um administrador ou gerente ativo antes de ativar Pedidos")
+
+    uid = str(responsible["_id"])
+    await db.module_user_grants.update_one(
+        {"tenant_id": tid, "user_id": uid, "module_key": ORDERS_MODULE_KEY},
+        {"$set": {"active": True, "source": "provisioning", "updated_at": now},
+         "$setOnInsert": {"created_at": now}}, upsert=True,
+    )
+    await db.tenant_modules.update_one(
+        {"tenant_id": tid, "module_key": ORDERS_MODULE_KEY},
+        {"$set": {"provisioning_status": "pending", "provisioning_updated_at": now},
+         "$unset": {"provisioning_error": ""}},
+    )
+    try:
+        async with httpx.AsyncClient(timeout=5.0, follow_redirects=False) as client:
+            result = await client.post(
+                f"{_orders_backend_url()}/api/internal/hub/provision",
+                headers={"X-Module-Key": MODULE_ACCESS_KEYS[ORDERS_MODULE_KEY]},
+                json={
+                    "tenant_id": tid, "tenant_name": tenant["name"],
+                    "hub_user_id": uid, "name": responsible["name"],
+                    "email": responsible["email"], "role": responsible["role"],
+                },
+            )
+        if result.status_code != 200:
+            raise ValueError(f"orders_status_{result.status_code}")
+        provisioned = result.json()
+        invite_token = provisioned.get("invite_token")
+        if invite_token and not await send_orders_first_access_email(responsible["email"], invite_token):
+            await db.tenant_modules.update_one(
+                {"tenant_id": tid, "module_key": ORDERS_MODULE_KEY},
+                {"$set": {"provisioning_status": "failed", "provisioning_updated_at": now,
+                          "provisioning_error": "email_delivery_failed"},
+                 "$inc": {"provisioning_attempts": 1}},
+            )
+            raise HTTPException(503, "Usuário provisionado, mas o convite não foi enviado; tente novamente")
+    except HTTPException:
+        raise
+    except (httpx.HTTPError, ValueError, TypeError, KeyError) as exc:
+        await db.tenant_modules.update_one(
+            {"tenant_id": tid, "module_key": ORDERS_MODULE_KEY},
+            {"$set": {"provisioning_status": "failed", "provisioning_updated_at": now,
+                      "provisioning_error": type(exc).__name__}, "$inc": {"provisioning_attempts": 1}},
+        )
+        raise HTTPException(503, "Pedidos foi ativado, mas o provisionamento falhou; tente ativar novamente")
+    await db.tenant_modules.update_one(
+        {"tenant_id": tid, "module_key": ORDERS_MODULE_KEY},
+        {"$set": {"provisioning_status": "succeeded", "provisioning_updated_at": now,
+                  "provisioned_user_id": uid}, "$unset": {"provisioning_error": ""},
+         "$inc": {"provisioning_attempts": 1}},
+    )
+
+
 @api_router.get("/hub/tenants/{tid}/modules")
 async def tenant_modules(tid: str, _u: dict = Depends(get_staff_user)):
     if not ObjectId.is_valid(tid):
@@ -766,6 +863,9 @@ async def activate_module(tid: str, mkey: str, user: dict = Depends(get_staff_wr
                   "activated_by": user["_id"], "module_id": str(m["_id"])}},
         upsert=True,
     )
+    if mkey == ORDERS_MODULE_KEY:
+        activation = await db.tenant_modules.find_one({"tenant_id": tid, "module_key": mkey})
+        await _provision_orders_tenant(tid, tenant, activation)
     await log_activity(actor_id=user["_id"], actor_name=user.get("name", user["email"]),
                        action="module.activated", target_type="module", target_id=mkey,
                        tenant_id=tid, metadata={"tenant_name": tenant["name"], "module": m["name"]})
@@ -1275,17 +1375,17 @@ class ModuleAccessIn(BaseModel):
     hub_access: AccessVersions
 
 
-@api_router.post("/public/tenants/{tid}/modules/{mkey}/access")
-async def module_access(tid: str, mkey: str, payload: ModuleAccessIn, request: Request, response: Response):
-    """Authoritative, uncached check. Caller caches only a bounded positive lease."""
-    require_module_key(mkey, request)
-    response.headers["Cache-Control"] = "no-store"
-    denied = {"active": False}
-    if mkey != "orders" or not ObjectId.is_valid(tid) or not payload.subject.startswith("tenant_user:"):
-        return denied
-    uid = payload.subject.removeprefix("tenant_user:")
+class ModuleAccessContextIn(BaseModel):
+    subject: str
+    role: str
+
+
+async def _current_module_access(tid: str, mkey: str, subject: str, role: str) -> Optional[dict]:
+    if mkey != "orders" or not ObjectId.is_valid(tid) or not subject.startswith("tenant_user:"):
+        return None
+    uid = subject.removeprefix("tenant_user:")
     if not ObjectId.is_valid(uid):
-        return denied
+        return None
     tenant = await db.tenants.find_one({"_id": ObjectId(tid)})
     module = await db.modules.find_one({"key": mkey})
     activation = await db.tenant_modules.find_one({"tenant_id": tid, "module_key": mkey, "active": True})
@@ -1296,10 +1396,30 @@ async def module_access(tid: str, mkey: str, payload: ModuleAccessIn, request: R
     if (not tenant or not _tenant_operational(tenant) or not module or module.get("status") != "available"
             or not activation or not user or not grant or user.get("status") != "active"
             or user.get("password_reset_required") or not user.get("password_hash")
-            or user.get("role") not in VALID_HANDOFF_ROLES or user.get("role") != payload.role):
+            or user.get("role") not in VALID_HANDOFF_ROLES or user.get("role") != role):
+        return None
+    return {"user": user.get("token_version", 0), "tenant": tenant.get("access_version", 0),
+            "module": activation.get("access_version", 0)}
+
+
+@api_router.post("/public/tenants/{tid}/modules/{mkey}/access-context")
+async def module_access_context(tid: str, mkey: str, payload: ModuleAccessContextIn,
+                                request: Request, response: Response):
+    require_module_key(mkey, request)
+    response.headers["Cache-Control"] = "no-store"
+    current = await _current_module_access(tid, mkey, payload.subject, payload.role)
+    return {"active": bool(current), "hub_access": current} if current else {"active": False}
+
+
+@api_router.post("/public/tenants/{tid}/modules/{mkey}/access")
+async def module_access(tid: str, mkey: str, payload: ModuleAccessIn, request: Request, response: Response):
+    """Authoritative, uncached check. Caller caches only a bounded positive lease."""
+    require_module_key(mkey, request)
+    response.headers["Cache-Control"] = "no-store"
+    denied = {"active": False}
+    current = await _current_module_access(tid, mkey, payload.subject, payload.role)
+    if current is None:
         return denied
-    current = {"user": user.get("token_version", 0), "tenant": tenant.get("access_version", 0),
-               "module": activation.get("access_version", 0)}
     return {"active": current == payload.hub_access.model_dump()}
 
 
@@ -1509,6 +1629,7 @@ async def startup():
         HANDOFF_VERSION, MODULE_ACCESS_KEYS,
     )
     if os.environ.get("APP_ENV", "production").strip().lower() == "production":
+        _orders_frontend_url()
         orders_template = next(m["launch_url_template"] for m in DEFAULT_MODULES if m["key"] == "orders")
         validate_launch_url(orders_template.replace("{slug}", "startup-check"), "orders")
     await db.hub_users.create_index("email", unique=True)
