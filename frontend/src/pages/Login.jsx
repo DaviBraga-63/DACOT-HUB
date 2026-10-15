@@ -1,7 +1,55 @@
 import { useState } from "react";
 import { useNavigate, Link } from "react-router-dom";
 import { Eye, EyeOff } from "lucide-react";
+import { motion, useReducedMotion } from "framer-motion";
 import { useAuth } from "@/context/AuthContext";
+
+const FLOATING_PATHS = [
+  "M-80 115 C 120 16, 260 244, 560 118 S 930 28, 1100 148",
+  "M-120 260 C 110 86, 330 390, 610 238 S 910 108, 1160 260",
+  "M-65 430 C 190 235, 330 570, 655 395 S 945 260, 1120 455",
+  "M-160 585 C 60 405, 340 700, 590 545 S 905 405, 1190 570",
+];
+
+function FloatingPaths() {
+  const reduceMotion = useReducedMotion();
+
+  return (
+    <svg
+      aria-hidden="true"
+      className="pointer-events-none absolute inset-0 h-full w-full text-[var(--dh-accent-light)]"
+      viewBox="0 0 1080 720"
+      preserveAspectRatio="none"
+    >
+      {FLOATING_PATHS.map((path, index) => (
+        <motion.path
+          key={path}
+          d={path}
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.25"
+          initial={reduceMotion ? false : { opacity: 0, pathLength: 0 }}
+          animate={reduceMotion
+            ? { opacity: 0.22, pathLength: 1 }
+            : {
+                opacity: [0, 0.34, 0.16],
+                pathLength: [0, 0.72, 1],
+                x: [0, index % 2 === 0 ? 12 : -12, 0],
+              }}
+          transition={reduceMotion
+            ? { duration: 0 }
+            : {
+                duration: 8 + index * 1.3,
+                delay: index * 0.22,
+                ease: "easeInOut",
+                repeat: Infinity,
+                repeatType: "mirror",
+              }}
+        />
+      ))}
+    </svg>
+  );
+}
 
 export default function Login() {
   const { login, error, setError } = useAuth();
@@ -100,12 +148,14 @@ export default function Login() {
       </div>
 
       {/* Right */}
-      <div className="hidden lg:flex relative overflow-hidden items-center justify-center">
+      <div className="hidden lg:flex dh-login-hero relative overflow-hidden items-center justify-center" aria-hidden="true">
         <img
           src="/image0.jpg"
           alt="DACOT Hub - Plataforma modular"
-          className="absolute inset-0 w-full h-full object-cover"
+          className="absolute inset-0 w-full h-full object-cover opacity-35"
         />
+        <FloatingPaths />
+        <div className="dh-login-hero-glow" />
       </div>
     </div>
   );
