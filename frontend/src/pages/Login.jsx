@@ -60,7 +60,7 @@ export default function Login() {
             <div>
               <div className="flex items-center justify-between mb-2">
                 <label className="text-[13px] font-semibold text-slate-700">Senha</label>
-                <Link to="/forgot-password" className="text-[13px] font-semibold text-[var(--dh-accent)] hover:text-[var(--dh-accent-hover)] transition-colors" data-testid="forgot-link">
+                <Link to="/forgot-password" className="notranslate text-[13px] font-semibold text-[var(--dh-accent)] hover:text-[var(--dh-accent-hover)] transition-colors" translate="no" data-testid="forgot-link">
                   Esqueci a senha
                 </Link>
               </div>
