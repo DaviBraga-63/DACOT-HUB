@@ -1,11 +1,13 @@
 import { useState } from "react";
 import { useNavigate, Link } from "react-router-dom";
+import { Eye, EyeOff } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 
 export default function Login() {
   const { login, error, setError } = useAuth();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [busy, setBusy] = useState(false);
   const navigate = useNavigate();
 
@@ -30,7 +32,6 @@ export default function Login() {
           </div>
           <div className="leading-tight">
             <div className="font-bold text-sm tracking-tight text-slate-900" style={{fontFamily:"Cabinet Grotesk"}}>DACOT</div>
-            <div className="text-[9px] text-slate-400 uppercase tracking-widest font-semibold">Hub</div>
           </div>
         </div>
 
@@ -62,12 +63,23 @@ export default function Login() {
                   Esqueci a senha
                 </Link>
               </div>
-              <input
-                type="password" required
-                value={password} onChange={(e) => setPassword(e.target.value)}
-                className="dh-input" placeholder="••••••••"
-                data-testid="login-password"
-              />
+              <div className="relative">
+                <button
+                  type="button"
+                  onClick={() => setShowPassword((visible) => !visible)}
+                  className="absolute inset-y-0 left-0 flex w-10 items-center justify-center text-[var(--dh-muted)] transition-colors hover:text-[var(--dh-accent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--dh-accent)] focus-visible:ring-inset"
+                  aria-label={showPassword ? "Ocultar senha" : "Mostrar senha"}
+                  data-testid="toggle-password-visibility"
+                >
+                  {showPassword ? <EyeOff size={18} aria-hidden="true" /> : <Eye size={18} aria-hidden="true" />}
+                </button>
+                <input
+                  type={showPassword ? "text" : "password"} required
+                  value={password} onChange={(e) => setPassword(e.target.value)}
+                  className="dh-input pl-10" placeholder="••••••••"
+                  data-testid="login-password"
+                />
+              </div>
             </div>
 
             {error && (
@@ -82,10 +94,6 @@ export default function Login() {
               {busy ? "Entrando…" : "Entrar no Hub"}
             </button>
           </form>
-        </div>
-
-        <div className="text-[12px] text-slate-400">
-          © {new Date().getFullYear()} DACOT • Sistemas para restaurantes
         </div>
       </div>
 
