@@ -118,7 +118,7 @@ export default function Login() {
                   aria-label={showPassword ? "Ocultar senha" : "Mostrar senha"}
                   data-testid="toggle-password-visibility"
                 >
-                  {showPassword ? <EyeOff size={18} aria-hidden="true" /> : <Eye size={18} aria-hidden="true" />}
+                  {showPassword ? <Eye size={18} aria-hidden="true" /> : <EyeOff size={18} aria-hidden="true" />}
                 </button>
                 <input
                   type={showPassword ? "text" : "password"} required
