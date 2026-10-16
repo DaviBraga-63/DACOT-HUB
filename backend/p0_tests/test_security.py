@@ -210,11 +210,24 @@ def test_revocation_bound_reactivation_and_hub_outage(services):
     s.call("POST", f"/hub/tenants/{b['tid']}/modules/orders/deactivate").raise_for_status()
     s.call("PATCH", f"/hub/tenants/{c['tid']}/users/{c['uid']}", json={"status": "inactive"}).raise_for_status()
     s.call("PATCH", f"/hub/tenants/{d['tid']}/users/{d['uid']}", json={"role": "waiter"}).raise_for_status()
+    # /auth/me is intentionally fresh so the client can discover a revocation
+    # while idle. Exercise the bounded positive lease through an ordinary
+    # protected route instead, which is the behavior this outage scenario is
+    # meant to validate.
+    current_restaurant = lambda token: requests.get(
+        s.orders + "/api/restaurant/current",
+        headers={"Authorization": "Bearer " + token},
+        timeout=10,
+    )
     s.stop("hub")
-    assert s.order_me(sessions[-1]).status_code == 200  # unexpired lease remains usable
-    time.sleep(61)  # real clock: validate configured production revocation bound
-    assert s.order_me(sessions[-1]).status_code == 503  # no stale-while-error authorization
-    s.restart_hub()
+    try:
+        assert current_restaurant(sessions[-1]).status_code == 200  # unexpired lease remains usable
+        time.sleep(61)  # real clock: validate configured production revocation bound
+        assert current_restaurant(sessions[-1]).status_code == 503  # no stale-while-error authorization
+    finally:
+        # A failed assertion must not leave the shared service fixture down for
+        # the remaining P0 cases.
+        s.restart_hub()
     for token in sessions[:-1]:
         assert s.order_me(token).status_code == 403
     assert s.order_me(sessions[-1]).status_code == 200
