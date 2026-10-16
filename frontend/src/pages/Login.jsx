@@ -79,20 +79,6 @@ export default function Login() {
         <FloatingPaths position={-1} />
       </div>
 
-      <header className="absolute left-6 top-8 z-10 sm:left-10 sm:top-12 lg:left-16 lg:top-10">
-        <div className="flex items-center gap-3">
-          <div 
-            className="w-10 h-10 rounded-lg flex items-center justify-center text-white font-bold shadow-md"
-            style={{background: 'var(--dh-accent-gradient)', fontFamily:"Cabinet Grotesk"}}
-          >
-            D
-          </div>
-          <div className="leading-tight">
-            <div className="font-bold text-sm tracking-tight text-white" style={{fontFamily:"Cabinet Grotesk"}}>DACOT</div>
-          </div>
-        </div>
-      </header>
-
       <main className="relative z-10 flex min-h-[100svh] items-center justify-center px-6 py-28 sm:px-10 sm:py-24 lg:px-16">
         <div className="max-w-md w-full py-10 lg:py-0">
           <div className="text-[11px] uppercase tracking-widest font-bold text-[var(--dh-accent)] mb-5">
