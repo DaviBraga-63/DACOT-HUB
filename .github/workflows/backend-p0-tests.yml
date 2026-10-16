@@ -113,7 +113,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          export E2E_ADMIN_EMAIL=admin-e2e@example.test
+          export E2E_ADMIN_EMAIL=admin-e2e@example.com
           export E2E_ADMIN_PASSWORD="$(openssl rand -hex 24)"
           export E2E_EMPLOYEE_PASSWORD="$(openssl rand -hex 24)"
           export APP_ENV=development DACOT_LOCAL_INTEGRATION=1 MONGO_URL=mongodb://127.0.0.1:27017
@@ -143,7 +143,7 @@ jobs:
       - name: Run real Chromium revocation E2E
         run: cd frontend && yarn playwright test
       - name: Verify logical deletion persisted in isolated MongoDB
-        if: always()
+        if: success()
         shell: bash
         run: |
           set -euo pipefail

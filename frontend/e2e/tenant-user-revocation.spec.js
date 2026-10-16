@@ -47,14 +47,14 @@ async function authenticatedHubApi(email, password) {
 }
 
 async function createRestaurant(admin, suffix) {
-  const email = `${tag}-${suffix}@example.test`;
+  const email = `${tag}-${suffix}@example.com`;
   const created = await admin.api.post("/api/hub/tenants", {
     headers: admin.headers,
     data: { name: `E2E ${suffix} ${tag}`, owner_name: "E2E Owner", email, status: "active" },
   });
   expect(created.status()).toBe(200);
   const tenant = await created.json();
-  const employeeEmail = `employee-${tag}-${suffix}@example.test`;
+  const employeeEmail = `employee-${tag}-${suffix}@example.com`;
   const employee = await admin.api.post(`/api/hub/tenants/${tenant.id}/users`, {
     headers: admin.headers,
     data: { name: `Employee ${suffix}`, email: employeeEmail, role: "admin", password: EMPLOYEE_PASSWORD },
