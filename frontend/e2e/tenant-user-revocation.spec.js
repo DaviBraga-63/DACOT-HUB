@@ -35,15 +35,16 @@ function tabHeaders(binding, tabId = crypto.randomUUID()) {
 
 async function authenticatedHubApi(email, password) {
   const api = await request.newContext({ baseURL: HUB_API, ignoreHTTPSErrors: true });
+  const tabId = crypto.randomUUID();
   const login = await api.post("/api/auth/login", {
-    headers: { "X-DACOT-Tab-Session": crypto.randomUUID() },
+    headers: { "X-DACOT-Tab-Session": tabId },
     data: { email, password },
   });
   expect(login.status(), "Hub login used to seed isolated E2E data").toBe(200);
   const cookie = login.headers()["set-cookie"] || "";
   const binding = /__Host-dacot_browser=([^;]+)/.exec(cookie)?.[1];
   expect(binding, "Hub must issue its HttpOnly browser binding").toBeTruthy();
-  return { api, headers: tabHeaders(binding) };
+  return { api, headers: tabHeaders(binding, tabId) };
 }
 
 async function createRestaurant(admin, suffix) {
