@@ -4,49 +4,51 @@ import { Eye, EyeOff } from "lucide-react";
 import { motion, useReducedMotion } from "framer-motion";
 import { useAuth } from "@/context/AuthContext";
 
-const FLOATING_PATHS = [
-  "M-80 115 C 120 16, 260 244, 560 118 S 930 28, 1100 148",
-  "M-120 260 C 110 86, 330 390, 610 238 S 910 108, 1160 260",
-  "M-65 430 C 190 235, 330 570, 655 395 S 945 260, 1120 455",
-  "M-160 585 C 60 405, 340 700, 590 545 S 905 405, 1190 570",
-];
+const FLOATING_PATHS = Array.from({ length: 36 }, (_, index) => {
+  const offset = index * 9;
+  const y = 80 + index * 15;
+  const depth = 155 + (index % 6) * 26;
+  return `M ${-380 + offset} ${y - 135} C ${-70 + offset} ${y - depth}, ${165 + offset} ${y + depth}, ${470 + offset} ${y} S ${835 + offset} ${y - depth}, ${1180 + offset} ${y + 118}`;
+});
 
-function FloatingPaths() {
+function FloatingPaths({ direction = 1 }) {
   const reduceMotion = useReducedMotion();
 
   return (
     <svg
       aria-hidden="true"
       className="pointer-events-none absolute inset-0 h-full w-full text-[var(--dh-accent-light)]"
-      viewBox="0 0 1080 720"
+      viewBox="0 0 960 720"
       preserveAspectRatio="none"
     >
-      {FLOATING_PATHS.map((path, index) => (
-        <motion.path
-          key={path}
-          d={path}
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="1.25"
-          initial={reduceMotion ? false : { opacity: 0, pathLength: 0 }}
-          animate={reduceMotion
-            ? { opacity: 0.22, pathLength: 1 }
-            : {
-                opacity: [0, 0.34, 0.16],
-                pathLength: [0, 0.72, 1],
-                x: [0, index % 2 === 0 ? 12 : -12, 0],
-              }}
-          transition={reduceMotion
-            ? { duration: 0 }
-            : {
-                duration: 8 + index * 1.3,
-                delay: index * 0.22,
-                ease: "easeInOut",
-                repeat: Infinity,
-                repeatType: "mirror",
-              }}
-        />
-      ))}
+      <g transform={direction === -1 ? "rotate(180 480 360)" : undefined}>
+        {FLOATING_PATHS.map((path, index) => (
+          <motion.path
+            key={`${direction}-${path}`}
+            d={path}
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1"
+            initial={reduceMotion ? false : { opacity: 0, pathLength: 0.35 }}
+            animate={reduceMotion
+              ? { opacity: 0.2, pathLength: 1 }
+              : {
+                  opacity: [0.04, 0.27, 0.08],
+                  pathLength: [0.2, 1, 0.42],
+                  x: [0, direction * (18 + (index % 4) * 4), 0],
+                }}
+            transition={reduceMotion
+              ? { duration: 0 }
+              : {
+                  duration: 13 + (index % 7) * 1.15,
+                  delay: index * 0.12,
+                  ease: "easeInOut",
+                  repeat: Infinity,
+                  repeatType: "mirror",
+                }}
+          />
+        ))}
+      </g>
     </svg>
   );
 }
@@ -69,7 +71,13 @@ export default function Login() {
 
   return (
     <div className="min-h-screen grid grid-cols-1 lg:grid-cols-2 bg-[var(--dh-bg)]">
-      {/* Left */}
+      {/* Decorative desktop panel */}
+      <div className="hidden lg:flex dh-login-hero relative overflow-hidden" aria-hidden="true">
+        <FloatingPaths direction={1} />
+        <FloatingPaths direction={-1} />
+      </div>
+
+      {/* DACOT form */}
       <div className="flex flex-col px-6 sm:px-10 lg:px-16 py-8 sm:py-12 lg:py-10">
         <div className="flex items-center gap-3">
           <div 
@@ -145,17 +153,6 @@ export default function Login() {
           </form>
         </div>
         </main>
-      </div>
-
-      {/* Right */}
-      <div className="hidden lg:flex dh-login-hero relative overflow-hidden items-center justify-center" aria-hidden="true">
-        <img
-          src="/image0.jpg"
-          alt="DACOT Hub - Plataforma modular"
-          className="absolute inset-0 w-full h-full object-cover opacity-35"
-        />
-        <FloatingPaths />
-        <div className="dh-login-hero-glow" />
       </div>
     </div>
   );
