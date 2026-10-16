@@ -609,6 +609,26 @@
     pointer-events: none;
     background: radial-gradient(ellipse 48% 62% at 50% 50%, rgba(9, 9, 9, .82), rgba(9, 9, 9, .42) 54%, transparent 82%);
 }
+.dh-floating-path {
+    stroke-dasharray: .72 .28;
+    stroke-dashoffset: 0;
+    animation: dhFloatingPath var(--dh-floating-duration) linear var(--dh-floating-delay) infinite;
+}
+.dh-login-input {
+    background: #161B22;
+    color: #F0F6FC;
+    border-color: #30363D;
+}
+.dh-login-input::placeholder { color: #8B949E; }
+@keyframes dhFloatingPath {
+    to { stroke-dashoffset: -1; }
+}
+@media (prefers-reduced-motion: reduce) {
+    .dh-floating-path {
+        animation: none;
+        stroke-dashoffset: 0;
+    }
+}
 
 .dh-drawer-overlay { background: rgba(12,18,34,.45); backdrop-filter: blur(2px); animation: dhOverlayIn .2s ease-out; }
 @keyframes dhOverlayIn { from { opacity: 0; } to { opacity: 1; } }

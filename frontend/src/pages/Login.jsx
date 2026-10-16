@@ -1,12 +1,12 @@
-import { useState } from "react";
+import { memo, useState } from "react";
 import { useNavigate, Link } from "react-router-dom";
 import { Eye, EyeOff } from "lucide-react";
-import { motion, useReducedMotion } from "framer-motion";
 import { useAuth } from "@/context/AuthContext";
 
-function FloatingPaths({ position }) {
-  const reduceMotion = useReducedMotion();
-  const paths = Array.from({ length: 36 }, (_, index) => ({
+const FLOATING_PATH_COUNT = 36;
+
+function createFloatingPaths(position) {
+  return Array.from({ length: FLOATING_PATH_COUNT }, (_, index) => ({
     id: index,
     d: `M-${380 - index * 5 * position} -${189 + index * 6}C-${
       380 - index * 5 * position
@@ -16,7 +16,21 @@ function FloatingPaths({ position }) {
       684 - index * 5 * position
     } ${875 - index * 6} ${684 - index * 5 * position} ${875 - index * 6}`,
     width: 0.5 + index * 0.03,
+    opacity: 0.08 + index * 0.0034,
+    style: {
+      "--dh-floating-duration": `${20 + ((index * 7 + (position === 1 ? 3 : 0)) % 10)}s`,
+      "--dh-floating-delay": `-${(index * 1.37 + (position === 1 ? 4.5 : 0)).toFixed(2)}s`,
+    },
   }));
+}
+
+const FLOATING_PATHS = {
+  1: createFloatingPaths(1),
+  "-1": createFloatingPaths(-1),
+};
+
+const FloatingPaths = memo(function FloatingPaths({ position }) {
+  const paths = FLOATING_PATHS[position];
 
   return (
     <div className="pointer-events-none absolute inset-0">
@@ -27,34 +41,22 @@ function FloatingPaths({ position }) {
         fill="none"
       >
         {paths.map((path) => (
-          <motion.path
-            key={`${position}-${path.id}`}
+          <path
+            key={path.id}
             d={path.d}
             fill="none"
             stroke="currentColor"
             strokeWidth={path.width}
-            strokeOpacity={0.1 + path.id * 0.03}
-            initial={reduceMotion ? false : { pathLength: 0.3, opacity: 0.6 }}
-            animate={reduceMotion
-              ? { pathLength: 1, opacity: 0.45, pathOffset: 0 }
-              : {
-                  pathLength: 1,
-                  opacity: [0.3, 0.6, 0.3],
-                  pathOffset: [0, 1, 0],
-                }}
-            transition={reduceMotion
-              ? { duration: 0 }
-              : {
-                  duration: 20 + ((path.id * 7 + (position === 1 ? 3 : 0)) % 10),
-                  repeat: Infinity,
-                  ease: "linear",
-                }}
+            strokeOpacity={path.opacity}
+            pathLength="1"
+            className="dh-floating-path"
+            style={path.style}
           />
         ))}
       </svg>
     </div>
   );
-}
+});
 
 export default function Login() {
   const { login, error, setError } = useAuth();
@@ -97,7 +99,7 @@ export default function Login() {
               <input
                 type="email" required autoFocus
                 value={email} onChange={(e) => setEmail(e.target.value)}
-                className="dh-input" placeholder="voce@dacot.com"
+                className="dh-input dh-login-input" placeholder="voce@dacot.com"
                 data-testid="login-email"
               />
             </div>
@@ -121,7 +123,7 @@ export default function Login() {
                 <input
                   type={showPassword ? "text" : "password"} required
                   value={password} onChange={(e) => setPassword(e.target.value)}
-                  className="dh-input pr-10" placeholder="••••••••"
+                  className="dh-input dh-login-input pr-10" placeholder="••••••••"
                   data-testid="login-password"
                 />
               </div>
