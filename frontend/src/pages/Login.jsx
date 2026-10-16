@@ -25,7 +25,6 @@ function FloatingPaths({ position }) {
         className="h-full w-full text-white"
         viewBox="0 0 696 316"
         fill="none"
-        preserveAspectRatio="xMidYMid slice"
       >
         {paths.map((path) => (
           <motion.path
@@ -74,15 +73,13 @@ export default function Login() {
   };
 
   return (
-    <div className="min-h-screen grid grid-cols-1 lg:grid-cols-2 bg-[var(--dh-bg)]">
-      {/* Decorative desktop panel */}
-      <div className="hidden lg:flex dh-login-hero relative overflow-hidden" aria-hidden="true">
+    <div className="relative min-h-[100svh] overflow-x-hidden bg-[#090909]">
+      <div className="dh-login-background absolute inset-0" aria-hidden="true">
         <FloatingPaths position={1} />
         <FloatingPaths position={-1} />
       </div>
 
-      {/* DACOT form */}
-      <div className="flex flex-col px-6 sm:px-10 lg:px-16 py-8 sm:py-12 lg:py-10">
+      <header className="absolute left-6 top-8 z-10 sm:left-10 sm:top-12 lg:left-16 lg:top-10">
         <div className="flex items-center gap-3">
           <div 
             className="w-10 h-10 rounded-lg flex items-center justify-center text-white font-bold shadow-md"
@@ -91,25 +88,26 @@ export default function Login() {
             D
           </div>
           <div className="leading-tight">
-            <div className="font-bold text-sm tracking-tight text-slate-900" style={{fontFamily:"Cabinet Grotesk"}}>DACOT</div>
+            <div className="font-bold text-sm tracking-tight text-white" style={{fontFamily:"Cabinet Grotesk"}}>DACOT</div>
           </div>
         </div>
+      </header>
 
-        <main className="flex flex-1 items-center justify-center">
+      <main className="relative z-10 flex min-h-[100svh] items-center justify-center px-6 py-28 sm:px-10 sm:py-24 lg:px-16">
         <div className="max-w-md w-full py-10 lg:py-0">
           <div className="text-[11px] uppercase tracking-widest font-bold text-[var(--dh-accent)] mb-5">
             Painel Administrativo
           </div>
-          <h1 className="text-5xl lg:text-[56px] font-bold tracking-tight text-slate-900 leading-[1.1] mb-4" style={{fontFamily:"Cabinet Grotesk"}}>
+          <h1 className="text-5xl lg:text-[56px] font-bold tracking-tight text-white leading-[1.1] mb-4" style={{fontFamily:"Cabinet Grotesk"}}>
             Bem-vindo ao DACOT Hub
           </h1>
-          <p className="text-[15px] text-slate-600 mb-8 leading-relaxed">
+          <p className="text-[15px] text-slate-300 mb-8 leading-relaxed">
             Gerencie restaurantes clientes, módulos disponibilizados e usuários — tudo num só lugar.
           </p>
 
           <form onSubmit={submit} className="space-y-5" data-testid="login-form">
             <div>
-              <label className="block text-[13px] font-semibold text-slate-700 mb-2">E-mail</label>
+              <label className="block text-[13px] font-semibold text-slate-200 mb-2">E-mail</label>
               <input
                 type="email" required autoFocus
                 value={email} onChange={(e) => setEmail(e.target.value)}
@@ -119,7 +117,7 @@ export default function Login() {
             </div>
             <div>
               <div className="flex items-center justify-between mb-2">
-                <label className="text-[13px] font-semibold text-slate-700">Senha</label>
+                <label className="text-[13px] font-semibold text-slate-200">Senha</label>
                 <Link to="/forgot-password" className="notranslate text-[13px] font-semibold text-[var(--dh-accent)] hover:text-[var(--dh-accent-hover)] transition-colors" translate="no" data-testid="forgot-link">
                   <span className="notranslate" translate="no">Esqueci a senha</span>
                 </Link>
@@ -156,8 +154,7 @@ export default function Login() {
             </button>
           </form>
         </div>
-        </main>
-      </div>
+      </main>
     </div>
   );
 }

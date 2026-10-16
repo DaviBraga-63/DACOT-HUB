@@ -596,11 +596,18 @@
         radial-gradient(circle at 80% 20%, color-mix(in srgb, var(--dh-accent) 5%, transparent) 0%, transparent 40%);
     pointer-events: none;
 }
-.dh-login-hero {
-    position: relative;
+.dh-login-background {
+    position: absolute;
     overflow: hidden;
     background: #090909;
-    border-right: 1px solid rgba(255, 255, 255, .1);
+    isolation: isolate;
+}
+.dh-login-background::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background: radial-gradient(ellipse 48% 62% at 50% 50%, rgba(9, 9, 9, .82), rgba(9, 9, 9, .42) 54%, transparent 82%);
 }
 
 .dh-drawer-overlay { background: rgba(12,18,34,.45); backdrop-filter: blur(2px); animation: dhOverlayIn .2s ease-out; }
