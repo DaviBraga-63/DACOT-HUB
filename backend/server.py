@@ -186,10 +186,14 @@ async def _user_for_session(session: dict) -> dict:
     user = await coll.find_one({"_id": ObjectId(session["user_id"])})
     if not user:
         raise HTTPException(401, "Usuário não encontrado")
-    if ut == "staff" and not user.get("active", True):
+    if ut == "staff" and (not user.get("active", True) or user.get("deleted_at")):
         raise HTTPException(401, "Usuário não encontrado")
-    if ut == "restaurant" and (user.get("status", "active") != "active" or user.get("password_reset_required")):
+    if ut == "restaurant" and (user.get("deleted_at") or user.get("status", "active") != "active" or user.get("password_reset_required")):
         raise HTTPException(401, "Usuário não encontrado")
+    if ut == "restaurant":
+        tenant = await db.tenants.find_one({"_id": ObjectId(user["tenant_id"])})
+        if not tenant or tenant.get("deleted_at"):
+            raise HTTPException(401, "Usuário não encontrado")
     if session.get("user_token_version", 0) != user.get("token_version", 0):
         raise HTTPException(401, "Sessão expirada")
     user["_id"] = str(user["_id"])
@@ -340,10 +344,14 @@ async def login(payload: LoginIn, request: Request, response: Response):
         user = await db.tenant_users.find_one({"email": email})
         ut = "restaurant"
     valid = bool(user) and bool(user.get("password_hash")) and verify_password(payload.password, user["password_hash"])
-    if valid and ut == "staff" and not user.get("active", True):
+    if valid and ut == "staff" and (not user.get("active", True) or user.get("deleted_at")):
         valid = False
-    if valid and ut == "restaurant" and (user.get("status", "active") != "active" or user.get("password_reset_required")):
+    if valid and ut == "restaurant" and (user.get("deleted_at") or user.get("status", "active") != "active" or user.get("password_reset_required")):
         valid = False
+    if valid and ut == "restaurant":
+        tenant = await db.tenants.find_one({"_id": ObjectId(user["tenant_id"])})
+        if not tenant or tenant.get("deleted_at"):
+            valid = False
     tenant = None
     if valid and ut == "restaurant":
         tenant = await db.tenants.find_one({"_id": ObjectId(user["tenant_id"])}) if user.get("tenant_id") else None
@@ -442,8 +450,12 @@ async def forgot(payload: ForgotIn, background_tasks: BackgroundTasks):
     if not user:
         user = await db.tenant_users.find_one({"email": email})
         ut = "restaurant"
-    if not user:
+    if not user or user.get("deleted_at"):
         return GENERIC_RESET_RESPONSE
+    if ut == "restaurant":
+        tenant = await db.tenants.find_one({"_id": ObjectId(user["tenant_id"])})
+        if not tenant or tenant.get("deleted_at"):
+            return GENERIC_RESET_RESPONSE
     raw = await _issue_password_reset(str(user["_id"]), email, ut)
     background_tasks.add_task(send_password_reset_email, user["email"], raw)
     return GENERIC_RESET_RESPONSE
@@ -459,11 +471,19 @@ async def reset(payload: ResetIn):
     if not doc:
         raise HTTPException(400, "Token inválido ou expirado")
     email = doc["email"]
-    coll = db.tenant_users if doc.get("user_type") == "restaurant" else db.hub_users
-    await coll.update_one(
-        {"_id": ObjectId(doc["user_id"])},
+    user_type = doc.get("user_type")
+    coll = db.tenant_users if user_type == "restaurant" else db.hub_users
+    if user_type == "restaurant":
+        restaurant_user = await db.tenant_users.find_one({"_id": ObjectId(doc["user_id"])})
+        tenant = await db.tenants.find_one({"_id": ObjectId(restaurant_user["tenant_id"])}) if restaurant_user else None
+        if not restaurant_user or restaurant_user.get("deleted_at") or not tenant or tenant.get("deleted_at"):
+            raise HTTPException(400, "Token inválido ou expirado")
+    changed = await coll.update_one(
+        {"_id": ObjectId(doc["user_id"]), "deleted_at": {"$exists": False}},
         {"$set": {"password_hash": hash_password(payload.password), "password_reset_required": False}, "$inc": {"token_version": 1}},
     )
+    if changed.matched_count != 1:
+        raise HTTPException(400, "Token inválido ou expirado")
     await revoke_user_sessions(
         db, user_id=doc["user_id"], user_type=doc.get("user_type", "staff"), reason="password_reset"
     )
@@ -519,7 +539,7 @@ TENANT_OPERATIONAL_STATUSES = {"active", "trial"}
 
 
 def _tenant_operational(tenant: dict) -> bool:
-    return tenant.get("status", "trial") in TENANT_OPERATIONAL_STATUSES
+    return not tenant.get("deleted_at") and tenant.get("status", "trial") in TENANT_OPERATIONAL_STATUSES
 
 
 def _slug(name: str) -> str:
@@ -565,7 +585,7 @@ def _new_tenant_doc(payload: TenantIn) -> dict:
 @api_router.get("/hub/tenants")
 async def list_tenants(status: Optional[str] = None, q: Optional[str] = None,
                        _u: dict = Depends(get_staff_user)):
-    query: dict = {}
+    query: dict = {"deleted_at": {"$exists": False}}
     if status and status != "all":
         query["status"] = status
     if q:
@@ -578,7 +598,7 @@ async def list_tenants(status: Optional[str] = None, q: Optional[str] = None,
         base = _tenant_out(d)
         tid = str(d["_id"])
         active_mods = await db.tenant_modules.count_documents({"tenant_id": tid, "active": True})
-        users = await db.tenant_users.count_documents({"tenant_id": tid})
+        users = await db.tenant_users.count_documents({"tenant_id": tid, "deleted_at": {"$exists": False}})
         base["active_modules"] = active_mods
         base["users_count"] = users
         out.append(base)
@@ -650,12 +670,12 @@ async def onboard_tenant(payload: TenantOnboardingIn, background_tasks: Backgrou
 async def get_tenant(tid: str, _u: dict = Depends(get_staff_user)):
     if not ObjectId.is_valid(tid):
         raise HTTPException(404, "Cliente não encontrado")
-    d = await db.tenants.find_one({"_id": ObjectId(tid)})
+    d = await db.tenants.find_one({"_id": ObjectId(tid), "deleted_at": {"$exists": False}})
     if not d:
         raise HTTPException(404, "Cliente não encontrado")
     base = _tenant_out(d)
     base["active_modules"] = await db.tenant_modules.count_documents({"tenant_id": tid, "active": True})
-    base["users_count"] = await db.tenant_users.count_documents({"tenant_id": tid})
+    base["users_count"] = await db.tenant_users.count_documents({"tenant_id": tid, "deleted_at": {"$exists": False}})
     return base
 
 
@@ -674,14 +694,14 @@ async def patch_tenant(tid: str, payload: TenantPatch, user: dict = Depends(get_
     mutation = {"$set": update}
     if "status" in update:
         mutation["$inc"] = {"access_version": 1}
-    r = await db.tenants.update_one({"_id": ObjectId(tid)}, mutation)
+    r = await db.tenants.update_one({"_id": ObjectId(tid), "deleted_at": {"$exists": False}}, mutation)
     if r.matched_count == 0:
         raise HTTPException(404, "Cliente não encontrado")
     if "status" in update:
         await log_activity(actor_id=user["_id"], actor_name=user.get("name", user["email"]),
                            action="tenant.status_changed", target_type="tenant",
                            target_id=tid, tenant_id=tid, metadata={"status": update["status"]})
-    d = await db.tenants.find_one({"_id": ObjectId(tid)})
+    d = await db.tenants.find_one({"_id": ObjectId(tid), "deleted_at": {"$exists": False}})
     return _tenant_out(d)
 
 
@@ -689,13 +709,24 @@ async def patch_tenant(tid: str, payload: TenantPatch, user: dict = Depends(get_
 async def delete_tenant(tid: str, user: dict = Depends(get_staff_write)):
     if not ObjectId.is_valid(tid):
         raise HTTPException(404, "Cliente não encontrado")
-    r = await db.tenants.delete_one({"_id": ObjectId(tid)})
-    if r.deleted_count == 0:
+    oid = ObjectId(tid)
+    tenant = await db.tenants.find_one({"_id": oid, "deleted_at": {"$exists": False}})
+    if not tenant:
         raise HTTPException(404, "Cliente não encontrado")
-    await db.tenant_modules.delete_many({"tenant_id": tid})
-    await db.tenant_users.delete_many({"tenant_id": tid})
+    now = now_utc().isoformat()
+    result = await db.tenants.update_one(
+        {"_id": oid, "deleted_at": {"$exists": False}},
+        {"$set": {"deleted_at": now, "deleted_by": user["_id"], "updated_at": now},
+         "$inc": {"access_version": 1}},
+    )
+    if result.matched_count != 1:
+        raise HTTPException(404, "Cliente não encontrado")
+    # Preserve every related record while immediately invalidating existing
+    # restaurant sessions through their security-version binding.
+    await db.tenant_users.update_many({"tenant_id": tid}, {"$inc": {"token_version": 1}})
     await log_activity(actor_id=user["_id"], actor_name=user.get("name", user["email"]),
-                       action="tenant.deleted", target_type="tenant", target_id=tid)
+                       action="tenant.deleted", target_type="tenant", target_id=tid,
+                       tenant_id=tid, metadata={"name": tenant.get("name", ""), "soft_delete": True})
     return {"ok": True}
 
 
@@ -760,7 +791,8 @@ class ModuleUserGrantIn(BaseModel):
 
 async def _orders_responsible_user(tid: str) -> Optional[dict]:
     return await db.tenant_users.find_one(
-        {"tenant_id": tid, "status": "active", "role": {"$in": ["admin", "manager"]}},
+        {"tenant_id": tid, "status": "active", "role": {"$in": ["admin", "manager"]},
+         "deleted_at": {"$exists": False}},
         sort=[("role", 1), ("created_at", 1)],
     )
 
@@ -831,7 +863,7 @@ async def _provision_orders_tenant(tid: str, tenant: dict, activation: dict) -> 
 async def tenant_modules(tid: str, _u: dict = Depends(get_staff_user)):
     if not ObjectId.is_valid(tid):
         raise HTTPException(404, "Cliente não encontrado")
-    tenant = await db.tenants.find_one({"_id": ObjectId(tid)})
+    tenant = await db.tenants.find_one({"_id": ObjectId(tid), "deleted_at": {"$exists": False}})
     if not tenant:
         raise HTTPException(404, "Cliente não encontrado")
     modules = await db.modules.find({}).to_list(200)
@@ -858,7 +890,7 @@ async def tenant_modules(tid: str, _u: dict = Depends(get_staff_user)):
 async def activate_module(tid: str, mkey: str, user: dict = Depends(get_staff_write)):
     if not ObjectId.is_valid(tid):
         raise HTTPException(404, "Cliente não encontrado")
-    tenant = await db.tenants.find_one({"_id": ObjectId(tid)})
+    tenant = await db.tenants.find_one({"_id": ObjectId(tid), "deleted_at": {"$exists": False}})
     if not tenant:
         raise HTTPException(404, "Cliente não encontrado")
     m = await db.modules.find_one({"key": mkey})
@@ -885,7 +917,7 @@ async def activate_module(tid: str, mkey: str, user: dict = Depends(get_staff_wr
 async def deactivate_module(tid: str, mkey: str, user: dict = Depends(get_staff_write)):
     if not ObjectId.is_valid(tid):
         raise HTTPException(404, "Cliente não encontrado")
-    tenant = await db.tenants.find_one({"_id": ObjectId(tid)})
+    tenant = await db.tenants.find_one({"_id": ObjectId(tid), "deleted_at": {"$exists": False}})
     if not tenant:
         raise HTTPException(404, "Cliente não encontrado")
     m = await db.modules.find_one({"key": mkey})
@@ -906,7 +938,7 @@ async def deactivate_module(tid: str, mkey: str, user: dict = Depends(get_staff_
 async def set_launch_url(tid: str, mkey: str, payload: LaunchUrlIn, _u: dict = Depends(get_staff_write)):
     if not ObjectId.is_valid(tid):
         raise HTTPException(404, "Cliente não encontrado")
-    if not await db.tenants.find_one({"_id": ObjectId(tid)}) or not await db.modules.find_one({"key": mkey}):
+    if not await db.tenants.find_one({"_id": ObjectId(tid), "deleted_at": {"$exists": False}}) or not await db.modules.find_one({"key": mkey}):
         raise HTTPException(404, "Recurso não encontrado")
     destination = validate_launch_url(payload.launch_url, mkey)
     await db.tenant_modules.update_one(
@@ -920,7 +952,7 @@ async def set_launch_url(tid: str, mkey: str, payload: LaunchUrlIn, _u: dict = D
 async def _orders_tenant_module(tid: str) -> tuple[dict, dict]:
     if not ObjectId.is_valid(tid):
         raise HTTPException(404, "Restaurante não encontrado")
-    tenant = await db.tenants.find_one({"_id": ObjectId(tid)})
+    tenant = await db.tenants.find_one({"_id": ObjectId(tid), "deleted_at": {"$exists": False}})
     module = await db.modules.find_one({"key": ORDERS_MODULE_KEY})
     if not tenant or not module:
         raise HTTPException(404, "Recurso não encontrado")
@@ -940,7 +972,9 @@ async def set_orders_user_access(tid: str, uid: str, payload: ModuleUserGrantIn,
     tenant, module = await _orders_tenant_module(tid)
     if not ObjectId.is_valid(uid):
         raise HTTPException(404, "Usuário não encontrado")
-    tenant_user = await db.tenant_users.find_one({"_id": ObjectId(uid), "tenant_id": tid})
+    tenant_user = await db.tenant_users.find_one(
+        {"_id": ObjectId(uid), "tenant_id": tid, "deleted_at": {"$exists": False}}
+    )
     if not tenant_user:
         raise HTTPException(404, "Usuário não pertence ao restaurante selecionado")
     if not _tenant_operational(tenant):
@@ -996,12 +1030,16 @@ class TenantUserPatch(BaseModel):
 async def tenant_users(tid: str, _u: dict = Depends(get_staff_user)):
     if not ObjectId.is_valid(tid):
         raise HTTPException(404, "Cliente não encontrado")
-    docs = await db.tenant_users.find({"tenant_id": tid}).sort("created_at", -1).to_list(500)
+    if not await db.tenants.find_one({"_id": ObjectId(tid), "deleted_at": {"$exists": False}}):
+        raise HTTPException(404, "Cliente não encontrado")
+    docs = await db.tenant_users.find(
+        {"tenant_id": tid, "deleted_at": {"$exists": False}}
+    ).sort("created_at", -1).to_list(500)
     return [_tenant_user_out(d) for d in docs]
 
 
 async def _create_tenant_user(tid: str, payload: TenantUserIn, actor: dict) -> dict:
-    tenant = await db.tenants.find_one({"_id": ObjectId(tid)})
+    tenant = await db.tenants.find_one({"_id": ObjectId(tid), "deleted_at": {"$exists": False}})
     if not tenant:
         raise HTTPException(404, "Cliente não encontrado")
     if payload.role not in VALID_HANDOFF_ROLES:
@@ -1071,7 +1109,7 @@ async def _acquire_tenant_admin_lock(tid: str) -> str:
     for _ in range(50):
         now = now_utc()
         tenant = await db.tenants.find_one_and_update(
-            {"_id": ObjectId(tid), "$or": [
+            {"_id": ObjectId(tid), "deleted_at": {"$exists": False}, "$or": [
                 {"tenant_user_lock_expires_at": {"$lte": now}},
                 {"tenant_user_lock_expires_at": {"$exists": False}},
             ]},
@@ -1096,8 +1134,12 @@ async def _apply_tenant_user_patch(tid: str, uid: str, payload: TenantUserPatch,
                                    actor: dict) -> dict:
     if not ObjectId.is_valid(tid) or not ObjectId.is_valid(uid):
         raise HTTPException(404, "Usuário não encontrado")
+    if not await db.tenants.find_one({"_id": ObjectId(tid), "deleted_at": {"$exists": False}}):
+        raise HTTPException(404, "Cliente não encontrado")
     oid = ObjectId(uid)
-    existing = await db.tenant_users.find_one({"_id": oid, "tenant_id": tid})
+    existing = await db.tenant_users.find_one(
+        {"_id": oid, "tenant_id": tid, "deleted_at": {"$exists": False}}
+    )
     if not existing:
         raise HTTPException(404, "Usuário não encontrado")
     update = {k: v for k, v in payload.model_dump(exclude_unset=True).items() if v is not None}
@@ -1126,14 +1168,17 @@ async def _apply_tenant_user_patch(tid: str, uid: str, payload: TenantUserPatch,
                               or update.get("role", existing.get("role")) != "admin"))
         if removes_admin:
             lock_owner = await _acquire_tenant_admin_lock(tid)
-            existing = await db.tenant_users.find_one({"_id": oid, "tenant_id": tid})
+            existing = await db.tenant_users.find_one(
+                {"_id": oid, "tenant_id": tid, "deleted_at": {"$exists": False}}
+            )
             still_removes_admin = (existing and existing.get("status", "active") == "active"
                                    and existing.get("role") == "admin"
                                    and (update.get("status", existing.get("status", "active")) != "active"
                                         or update.get("role", existing.get("role")) != "admin"))
             if still_removes_admin:
                 active_admins = await db.tenant_users.count_documents(
-                    {"tenant_id": tid, "status": "active", "role": "admin"})
+                    {"tenant_id": tid, "status": "active", "role": "admin",
+                     "deleted_at": {"$exists": False}})
                 if active_admins <= 1:
                     raise HTTPException(400, "O restaurante precisa manter pelo menos um administrador ativo")
 
@@ -1142,7 +1187,9 @@ async def _apply_tenant_user_patch(tid: str, uid: str, payload: TenantUserPatch,
             if "status" in update or "role" in update:
                 mutation["$inc"] = {"token_version": 1}
             try:
-                await db.tenant_users.update_one({"_id": oid, "tenant_id": tid}, mutation)
+                await db.tenant_users.update_one(
+                    {"_id": oid, "tenant_id": tid, "deleted_at": {"$exists": False}}, mutation
+                )
             except DuplicateKeyError:
                 raise HTTPException(409, "Já existe um usuário com este e-mail")
             if "status" in update or "role" in update:
@@ -1158,17 +1205,21 @@ async def _apply_tenant_user_patch(tid: str, uid: str, payload: TenantUserPatch,
                            action="tenant_user.updated", target_type="tenant_user",
                            target_id=uid, tenant_id=tid,
                            metadata={k: update[k] for k in ("name", "email", "role", "status") if k in update})
-    return _tenant_user_out(await db.tenant_users.find_one({"_id": oid, "tenant_id": tid}))
+    return _tenant_user_out(await db.tenant_users.find_one(
+        {"_id": oid, "tenant_id": tid, "deleted_at": {"$exists": False}}
+    ))
 
 
 async def _reset_tenant_user_password(tid: str, uid: str, actor: dict) -> dict:
     if not ObjectId.is_valid(tid) or not ObjectId.is_valid(uid):
         raise HTTPException(404, "Usuário não encontrado")
+    if not await db.tenants.find_one({"_id": ObjectId(tid), "deleted_at": {"$exists": False}}):
+        raise HTTPException(404, "Cliente não encontrado")
     if actor.get("user_type") == "restaurant" and actor["_id"] == uid:
         raise HTTPException(400, "Use a recuperação de senha para alterar sua própria senha")
     generated_password = secrets.token_urlsafe(12)
     result = await db.tenant_users.update_one(
-        {"_id": ObjectId(uid), "tenant_id": tid},
+        {"_id": ObjectId(uid), "tenant_id": tid, "deleted_at": {"$exists": False}},
         {"$set": {"password_hash": hash_password(generated_password),
                   "password_reset_required": False},
          "$inc": {"token_version": 1}},
@@ -1191,6 +1242,54 @@ async def patch_tenant_user(tid: str, uid: str, payload: TenantUserPatch,
 @api_router.post("/hub/tenants/{tid}/users/{uid}/reset-password")
 async def reset_tenant_user_password(tid: str, uid: str, user: dict = Depends(get_staff_write)):
     return await _reset_tenant_user_password(tid, uid, user)
+
+
+@api_router.delete("/hub/tenants/{tid}/users/{uid}")
+async def delete_tenant_user(tid: str, uid: str, user: dict = Depends(get_staff_write)):
+    """Logically remove one restaurant identity without erasing its history."""
+    if not ObjectId.is_valid(tid) or not ObjectId.is_valid(uid):
+        raise HTTPException(404, "Usuário não encontrado")
+    if not await db.tenants.find_one({"_id": ObjectId(tid), "deleted_at": {"$exists": False}}):
+        raise HTTPException(404, "Cliente não encontrado")
+    oid = ObjectId(uid)
+    existing = await db.tenant_users.find_one(
+        {"_id": oid, "tenant_id": tid, "deleted_at": {"$exists": False}}
+    )
+    if not existing:
+        raise HTTPException(404, "Usuário não encontrado")
+
+    lock_owner = None
+    try:
+        if existing.get("status", "active") == "active" and existing.get("role") == "admin":
+            lock_owner = await _acquire_tenant_admin_lock(tid)
+            existing = await db.tenant_users.find_one(
+                {"_id": oid, "tenant_id": tid, "deleted_at": {"$exists": False}}
+            )
+            active_admins = await db.tenant_users.count_documents(
+                {"tenant_id": tid, "status": "active", "role": "admin",
+                 "deleted_at": {"$exists": False}}
+            )
+            if existing and active_admins <= 1:
+                raise HTTPException(400, "O restaurante precisa manter pelo menos um administrador ativo")
+
+        now = now_utc().isoformat()
+        result = await db.tenant_users.update_one(
+            {"_id": oid, "tenant_id": tid, "deleted_at": {"$exists": False}},
+            {"$set": {"deleted_at": now, "deleted_by": user["_id"]}, "$inc": {"token_version": 1}},
+        )
+        if result.matched_count != 1:
+            raise HTTPException(404, "Usuário não encontrado")
+    finally:
+        if lock_owner:
+            await _release_tenant_admin_lock(tid, lock_owner)
+
+    await revoke_user_sessions(db, user_id=uid, user_type="restaurant", reason="account_deleted")
+    await log_activity(
+        actor_id=user["_id"], actor_name=user.get("name", user["email"]),
+        action="tenant_user.deleted", target_type="tenant_user", target_id=uid, tenant_id=tid,
+        metadata={"name": existing.get("name", ""), "email": existing.get("email", ""), "soft_delete": True},
+    )
+    return {"ok": True}
 
 
 # ─── Hub users (DACOT internal staff) ──────────────────────────────────────────
@@ -1220,7 +1319,14 @@ class HubUserPatch(BaseModel):
 
 
 async def _active_admin_count(exclude_id: Optional[ObjectId] = None) -> int:
-    query: dict = {"active": True, "role": {"$in": list(HUB_ADMIN_ROLES)}}
+    query: dict = {"active": True, "role": {"$in": list(HUB_ADMIN_ROLES)}, "deleted_at": {"$exists": False}}
+    if exclude_id is not None:
+        query["_id"] = {"$ne": exclude_id}
+    return await db.hub_users.count_documents(query)
+
+
+async def _active_super_admin_count(exclude_id: Optional[ObjectId] = None) -> int:
+    query: dict = {"active": True, "role": "super_admin", "deleted_at": {"$exists": False}}
     if exclude_id is not None:
         query["_id"] = {"$ne": exclude_id}
     return await db.hub_users.count_documents(query)
@@ -1228,7 +1334,7 @@ async def _active_admin_count(exclude_id: Optional[ObjectId] = None) -> int:
 
 @api_router.get("/hub/users")
 async def list_hub_users(_u: dict = Depends(get_staff_user)):
-    docs = await db.hub_users.find({}).sort("created_at", -1).to_list(500)
+    docs = await db.hub_users.find({"deleted_at": {"$exists": False}}).sort("created_at", -1).to_list(500)
     return [_hub_user_out(d) for d in docs]
 
 
@@ -1236,6 +1342,8 @@ async def list_hub_users(_u: dict = Depends(get_staff_user)):
 async def create_hub_user(payload: HubUserIn, user: dict = Depends(get_staff_write)):
     if payload.role not in VALID_HUB_ROLES:
         raise HTTPException(400, "Papel inválido")
+    if payload.role == "super_admin" and user.get("role") != "super_admin":
+        raise HTTPException(403, "Apenas super administradores podem criar outro super administrador")
     email = payload.email.lower()
     if await _email_in_use(email):
         raise HTTPException(409, "Já existe um usuário com este e-mail")
@@ -1260,7 +1368,7 @@ async def create_hub_user(payload: HubUserIn, user: dict = Depends(get_staff_wri
 async def patch_hub_user(uid: str, payload: HubUserPatch, user: dict = Depends(get_staff_write)):
     if not ObjectId.is_valid(uid):
         raise HTTPException(404, "Usuário não encontrado")
-    existing = await db.hub_users.find_one({"_id": ObjectId(uid)})
+    existing = await db.hub_users.find_one({"_id": ObjectId(uid), "deleted_at": {"$exists": False}})
     if not existing:
         raise HTTPException(404, "Usuário não encontrado")
     update = {k: v for k, v in payload.model_dump(exclude_unset=True).items() if v is not None}
@@ -1273,6 +1381,10 @@ async def patch_hub_user(uid: str, payload: HubUserPatch, user: dict = Depends(g
         update["email"] = email
     if "role" in update and update["role"] not in VALID_HUB_ROLES:
         raise HTTPException(400, "Papel inválido")
+    if existing.get("role") == "super_admin" and user.get("role") != "super_admin":
+        raise HTTPException(403, "Apenas super administradores podem alterar outro super administrador")
+    if update.get("role") == "super_admin" and user.get("role") != "super_admin":
+        raise HTTPException(403, "Apenas super administradores podem promover outro super administrador")
 
     # Self-lockout / "last admin standing" guard: never let a change strip
     # admin capability from a currently-active admin/super_admin when it
@@ -1288,27 +1400,60 @@ async def patch_hub_user(uid: str, payload: HubUserPatch, user: dict = Depends(g
             raise HTTPException(400, "Essa alteração deixaria o sistema sem nenhum administrador ativo.")
 
     if update:
-        await db.hub_users.update_one({"_id": ObjectId(uid)}, {"$set": update})
+        await db.hub_users.update_one({"_id": ObjectId(uid), "deleted_at": {"$exists": False}}, {"$set": update})
     if "active" in update or "role" in update:
         await revoke_user_sessions(db, user_id=uid, user_type="staff", reason="account_security_changed")
     if "active" in update or "role" in update:
         await log_activity(actor_id=user["_id"], actor_name=user.get("name", user["email"]),
                            action="hub_user.updated", target_type="hub_user", target_id=uid,
                            metadata={k: update[k] for k in ("active", "role") if k in update})
-    d = await db.hub_users.find_one({"_id": ObjectId(uid)})
+    d = await db.hub_users.find_one({"_id": ObjectId(uid), "deleted_at": {"$exists": False}})
     return _hub_user_out(d)
+
+
+@api_router.delete("/hub/users/{uid}")
+async def delete_hub_user(uid: str, user: dict = Depends(get_staff_write)):
+    if not ObjectId.is_valid(uid):
+        raise HTTPException(404, "Usuário não encontrado")
+    if uid == user["_id"]:
+        raise HTTPException(400, "Você não pode excluir sua própria conta")
+    oid = ObjectId(uid)
+    existing = await db.hub_users.find_one({"_id": oid, "deleted_at": {"$exists": False}})
+    if not existing:
+        raise HTTPException(404, "Usuário não encontrado")
+    if existing.get("role") == "super_admin":
+        if user.get("role") != "super_admin":
+            raise HTTPException(403, "Apenas super administradores podem excluir outro super administrador")
+        if await _active_super_admin_count(exclude_id=oid) == 0:
+            raise HTTPException(400, "O sistema precisa manter pelo menos um super administrador ativo")
+    now = now_utc().isoformat()
+    result = await db.hub_users.update_one(
+        {"_id": oid, "deleted_at": {"$exists": False}},
+        {"$set": {"active": False, "deleted_at": now, "deleted_by": user["_id"]},
+         "$inc": {"token_version": 1}},
+    )
+    if result.matched_count != 1:
+        raise HTTPException(404, "Usuário não encontrado")
+    await revoke_user_sessions(db, user_id=uid, user_type="staff", reason="account_deleted")
+    await log_activity(
+        actor_id=user["_id"], actor_name=user.get("name", user["email"]),
+        action="hub_user.deleted", target_type="hub_user", target_id=uid,
+        metadata={"email": existing.get("email", ""), "role": existing.get("role", ""), "soft_delete": True},
+    )
+    return {"ok": True}
 
 
 # ─── Dashboard ─────────────────────────────────────────────────────────────────
 @api_router.get("/hub/dashboard/stats")
 async def dashboard_stats(_u: dict = Depends(get_staff_user)):
-    active = await db.tenants.count_documents({"status": "active"})
-    trial = await db.tenants.count_documents({"status": "trial"})
-    suspended = await db.tenants.count_documents({"status": "suspended"})
-    inactive = await db.tenants.count_documents({"status": "inactive"})
-    total = await db.tenants.count_documents({})
+    visible_tenants = {"deleted_at": {"$exists": False}}
+    active = await db.tenants.count_documents({**visible_tenants, "status": "active"})
+    trial = await db.tenants.count_documents({**visible_tenants, "status": "trial"})
+    suspended = await db.tenants.count_documents({**visible_tenants, "status": "suspended"})
+    inactive = await db.tenants.count_documents({**visible_tenants, "status": "inactive"})
+    total = await db.tenants.count_documents(visible_tenants)
     active_mods = await db.tenant_modules.count_documents({"active": True})
-    total_users = await db.tenant_users.count_documents({})
+    total_users = await db.tenant_users.count_documents({"deleted_at": {"$exists": False}})
     # per-module activation counts
     modules = await db.modules.find({}).to_list(200)
     per_module = []
@@ -1398,7 +1543,9 @@ async def _current_module_access(tid: str, mkey: str, subject: str, role: str) -
     tenant = await db.tenants.find_one({"_id": ObjectId(tid)})
     module = await db.modules.find_one({"key": mkey})
     activation = await db.tenant_modules.find_one({"tenant_id": tid, "module_key": mkey, "active": True})
-    user = await db.tenant_users.find_one({"_id": ObjectId(uid), "tenant_id": tid})
+    user = await db.tenant_users.find_one(
+        {"_id": ObjectId(uid), "tenant_id": tid, "deleted_at": {"$exists": False}}
+    )
     grant = await db.module_user_grants.find_one(
         {"tenant_id": tid, "user_id": uid, "module_key": ORDERS_MODULE_KEY, "active": True}
     )
@@ -1508,7 +1655,9 @@ async def portal_revenue(response: Response, user: dict = Depends(get_restaurant
 
 @api_router.get("/portal/users")
 async def portal_users(user: dict = Depends(get_restaurant_admin)):
-    docs = await db.tenant_users.find({"tenant_id": user["tenant_id"]}).sort("created_at", -1).to_list(500)
+    docs = await db.tenant_users.find(
+        {"tenant_id": user["tenant_id"], "deleted_at": {"$exists": False}}
+    ).sort("created_at", -1).to_list(500)
     return [_tenant_user_out(d) for d in docs]
 
 

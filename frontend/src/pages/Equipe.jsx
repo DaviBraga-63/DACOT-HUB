@@ -1,9 +1,13 @@
 import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
-import { Users as UsersIcon, UserPlus } from "lucide-react";
+import { Users as UsersIcon, UserPlus, Trash2 } from "lucide-react";
 import StatusBadge from "@/components/StatusBadge";
 import { toast } from "sonner";
+import {
+  AlertDialog, AlertDialogCancel, AlertDialogContent, AlertDialogDescription,
+  AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 
 const ROLE_OPTS = [
   { v: "super_admin", l: "Super Admin" },
@@ -16,6 +20,7 @@ export default function Equipe() {
   const [users, setUsers] = useState(null);
   const [adding, setAdding] = useState(false);
   const canWrite = user?.role !== "viewer";
+  const canManageSuperAdmins = user?.role === "super_admin";
 
   const load = () => api.get("/hub/users").then((r) => setUsers(r.data));
 
@@ -37,7 +42,8 @@ export default function Equipe() {
       </div>
 
       {adding && canWrite && (
-        <NewStaffForm onDone={() => { setAdding(false); load(); }} onCancel={() => setAdding(false)} />
+        <NewStaffForm onDone={() => { setAdding(false); load(); }} onCancel={() => setAdding(false)}
+                      canManageSuperAdmins={canManageSuperAdmins} />
       )}
 
       <div className="dh-card overflow-hidden">
@@ -64,7 +70,7 @@ export default function Equipe() {
               )}
               {users?.map((u) => (
                 <StaffRow key={u.id} staffUser={u} isSelf={u.id === user?.id}
-                          canWrite={canWrite} reload={load} />
+                          canWrite={canWrite} reload={load} canManageSuperAdmins={canManageSuperAdmins} />
               ))}
             </tbody>
           </table>
@@ -74,12 +80,14 @@ export default function Equipe() {
   );
 }
 
-function StaffRow({ staffUser, isSelf, canWrite, reload }) {
+function StaffRow({ staffUser, isSelf, canWrite, reload, canManageSuperAdmins }) {
   const [editing, setEditing] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
   // A user can never change their own role or active status here — always
   // routed through another admin account, mirroring the backend guard.
-  const rowLocked = !canWrite || isSelf;
+  const protectedSuperAdmin = staffUser.role === "super_admin" && !canManageSuperAdmins;
+  const rowLocked = !canWrite || isSelf || protectedSuperAdmin;
 
   const changeRole = async (role) => {
     setBusy(true);
@@ -103,6 +111,18 @@ function StaffRow({ staffUser, isSelf, canWrite, reload }) {
     } finally { setBusy(false); }
   };
 
+  const deleteStaffUser = async () => {
+    setBusy(true);
+    try {
+      await api.delete(`/hub/users/${staffUser.id}`);
+      toast.success("Usuário removido com segurança");
+      setConfirmingDelete(false);
+      reload();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Não foi possível remover o usuário.");
+    } finally { setBusy(false); }
+  };
+
   return (
     <tr data-testid={`staff-row-${staffUser.id}`}>
       <td className="font-semibold text-slate-900">
@@ -114,7 +134,8 @@ function StaffRow({ staffUser, isSelf, canWrite, reload }) {
           <select value={staffUser.role} disabled={busy} onChange={(e) => changeRole(e.target.value)}
                   className="dh-input w-auto py-1.5 pl-2 pr-7 text-[12px]"
                   data-testid={`staff-role-select-${staffUser.id}`}>
-            {ROLE_OPTS.map((r) => <option key={r.v} value={r.v}>{r.l}</option>)}
+            {ROLE_OPTS.filter((r) => canManageSuperAdmins || r.v !== "super_admin")
+              .map((r) => <option key={r.v} value={r.v}>{r.l}</option>)}
           </select>
         ) : (
           <span className="dh-chip dh-chip-neutral">{ROLE_OPTS.find((r) => r.v === staffUser.role)?.l || staffUser.role}</span>
@@ -125,7 +146,7 @@ function StaffRow({ staffUser, isSelf, canWrite, reload }) {
         <td className="text-right">
           {rowLocked ? (
             <span className="text-[11px] text-slate-400" title="Peça a outro administrador para alterar sua própria conta">
-              {isSelf ? "sua conta" : ""}
+              {isSelf ? "sua conta" : protectedSuperAdmin ? "super admin protegido" : ""}
             </span>
           ) : (
             <div className="flex items-center justify-end gap-2">
@@ -137,6 +158,32 @@ function StaffRow({ staffUser, isSelf, canWrite, reload }) {
                       data-testid={`staff-toggle-active-${staffUser.id}`}>
                 {staffUser.active ? "Desativar" : "Ativar"}
               </button>
+              <AlertDialog open={confirmingDelete} onOpenChange={(open) => {
+                if (!busy) setConfirmingDelete(open);
+              }}>
+                <button type="button" className="p-2 rounded-md text-slate-400 hover:text-red-500 hover:bg-red-500/10 transition-colors"
+                        onClick={() => setConfirmingDelete(true)} disabled={busy}
+                        aria-label={`Remover ${staffUser.name}`} title="Remover usuário"
+                        data-testid={`delete-staff-${staffUser.id}`}>
+                  <Trash2 size={16} strokeWidth={1.8} />
+                </button>
+                <AlertDialogContent>
+                  <AlertDialogHeader>
+                    <AlertDialogTitle>Remover usuário da equipe?</AlertDialogTitle>
+                    <AlertDialogDescription>
+                      {`${staffUser.name} perderá o acesso ao Hub e deixará de aparecer na equipe. O histórico será preservado.`}
+                    </AlertDialogDescription>
+                  </AlertDialogHeader>
+                  <AlertDialogFooter>
+                    <AlertDialogCancel disabled={busy}>Cancelar</AlertDialogCancel>
+                    <button type="button" className="dh-btn bg-red-600 text-white hover:bg-red-700"
+                            onClick={deleteStaffUser} disabled={busy}
+                            data-testid={`confirm-delete-staff-${staffUser.id}`}>
+                      {busy ? "Removendo…" : "Remover usuário"}
+                    </button>
+                  </AlertDialogFooter>
+                </AlertDialogContent>
+              </AlertDialog>
             </div>
           )}
         </td>
@@ -145,7 +192,7 @@ function StaffRow({ staffUser, isSelf, canWrite, reload }) {
   );
 }
 
-function NewStaffForm({ onDone, onCancel }) {
+function NewStaffForm({ onDone, onCancel, canManageSuperAdmins }) {
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [role, setRole] = useState("viewer");
@@ -183,7 +230,8 @@ function NewStaffForm({ onDone, onCancel }) {
         <label className="text-[11px] uppercase tracking-wider font-semibold text-slate-400">Função</label>
         <select value={role} onChange={(e) => setRole(e.target.value)}
                 className="dh-input mt-1" data-testid="new-staff-role">
-          {ROLE_OPTS.map((r) => <option key={r.v} value={r.v}>{r.l}</option>)}
+          {ROLE_OPTS.filter((r) => canManageSuperAdmins || r.v !== "super_admin")
+            .map((r) => <option key={r.v} value={r.v}>{r.l}</option>)}
         </select>
       </div>
       <div className="flex gap-2">

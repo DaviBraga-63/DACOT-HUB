@@ -3,9 +3,13 @@ import { useParams, Link } from "react-router-dom";
 import { api } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
 import { isReleasedModule } from "@/lib/releasedModules";
-import { ArrowLeft, ExternalLink, Mail, Phone, MapPin, Calendar, Settings2, Users as UsersIcon, UserPlus } from "lucide-react";
+import { ArrowLeft, ExternalLink, Mail, Phone, MapPin, Calendar, Settings2, Trash2, Users as UsersIcon, UserPlus } from "lucide-react";
 import StatusBadge from "@/components/StatusBadge";
 import { toast } from "sonner";
+import {
+  AlertDialog, AlertDialogCancel, AlertDialogContent, AlertDialogDescription,
+  AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 
 const TABS = [
   { key: "overview", label: "Visão geral" },
@@ -138,7 +142,7 @@ export default function ClienteDetalhes() {
         <ModulesTab tenantId={id} tenantSlug={tenant.slug} modules={modules} reload={load} canWrite={canWrite} />
       )}
 
-      {tab === "users" && <UsersTab tenantId={id} users={users} reload={load} canWrite={canWrite} />}
+      {tab === "users" && <UsersTab tenantId={id} tenantName={tenant.name} users={users} reload={load} canWrite={canWrite} />}
     </div>
   );
 }
@@ -288,7 +292,7 @@ const ROLE_OPTS = [
   { v: "kitchen", l: "Cozinha" },
 ];
 
-function UsersTab({ tenantId, users, reload, canWrite }) {
+function UsersTab({ tenantId, tenantName, users, reload, canWrite }) {
   const [adding, setAdding] = useState(false);
 
   return (
@@ -329,7 +333,7 @@ function UsersTab({ tenantId, users, reload, canWrite }) {
                 </td></tr>
               )}
               {users.map((u) => (
-                <UserRow key={u.id} tenantId={tenantId} user={u} reload={reload} canWrite={canWrite} />
+                <UserRow key={u.id} tenantId={tenantId} tenantName={tenantName} user={u} reload={reload} canWrite={canWrite} />
               ))}
             </tbody>
           </table>
@@ -339,9 +343,10 @@ function UsersTab({ tenantId, users, reload, canWrite }) {
   );
 }
 
-function UserRow({ tenantId, user, reload, canWrite }) {
+function UserRow({ tenantId, tenantName, user, reload, canWrite }) {
   const [editing, setEditing] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
 
   const changeRole = async (role) => {
     setBusy(true);
@@ -363,6 +368,18 @@ function UserRow({ tenantId, user, reload, canWrite }) {
       reload();
     } catch (e) {
       toast.error(e.response?.data?.detail || "Não foi possível atualizar o status.");
+    } finally { setBusy(false); }
+  };
+
+  const deleteUser = async () => {
+    setBusy(true);
+    try {
+      await api.delete(`/hub/tenants/${tenantId}/users/${user.id}`);
+      toast.success("Funcionário removido com segurança");
+      setConfirmingDelete(false);
+      reload();
+    } catch (e) {
+      toast.error(e.response?.data?.detail || "Não foi possível excluir o funcionário.");
     } finally { setBusy(false); }
   };
 
@@ -393,6 +410,32 @@ function UserRow({ tenantId, user, reload, canWrite }) {
                     data-testid={`user-toggle-status-${user.id}`}>
               {user.status === "active" ? "Desativar" : "Ativar"}
             </button>
+            <AlertDialog open={confirmingDelete} onOpenChange={(open) => {
+              if (!busy) setConfirmingDelete(open);
+            }}>
+              <button type="button" className="p-2 rounded-md text-slate-400 hover:text-red-500 hover:bg-red-500/10 transition-colors"
+                      onClick={() => setConfirmingDelete(true)} disabled={busy}
+                      aria-label={`Excluir ${user.name}`} title="Excluir funcionário"
+                      data-testid={`delete-tenant-user-${user.id}`}>
+                <Trash2 size={16} strokeWidth={1.8} />
+              </button>
+              <AlertDialogContent>
+                <AlertDialogHeader>
+                  <AlertDialogTitle>Excluir funcionário?</AlertDialogTitle>
+                  <AlertDialogDescription>
+                    {`Você está prestes a remover ${user.name} do restaurante ${tenantName}. O funcionário perderá o acesso aos módulos vinculados a este restaurante. Seus dados e históricos serão preservados.`}
+                  </AlertDialogDescription>
+                </AlertDialogHeader>
+                <AlertDialogFooter>
+                  <AlertDialogCancel disabled={busy}>Cancelar</AlertDialogCancel>
+                  <button type="button" className="dh-btn bg-red-600 text-white hover:bg-red-700"
+                          onClick={deleteUser} disabled={busy}
+                          data-testid={`confirm-delete-tenant-user-${user.id}`}>
+                    {busy ? "Excluindo…" : "Excluir funcionário"}
+                  </button>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
           </div>
         </td>
       )}

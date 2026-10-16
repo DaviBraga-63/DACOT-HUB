@@ -2,8 +2,13 @@ import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { api } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
-import { Plus, Search, Building2, ChevronRight } from "lucide-react";
+import { Plus, Building2, ChevronRight, Trash2 } from "lucide-react";
 import StatusBadge from "@/components/StatusBadge";
+import { toast } from "sonner";
+import {
+  AlertDialog, AlertDialogCancel, AlertDialogContent, AlertDialogDescription,
+  AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 
 const FILTERS = [
   { key: "all", label: "Todos" },
@@ -20,6 +25,8 @@ export default function Clientes() {
   const [status, setStatus] = useState("all");
   const [q, setQ] = useState("");
   const [loading, setLoading] = useState(true);
+  const [tenantToDelete, setTenantToDelete] = useState(null);
+  const [deleting, setDeleting] = useState(false);
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -37,6 +44,21 @@ export default function Clientes() {
     rows.forEach((r) => { c[r.status] = (c[r.status] || 0) + 1; });
     return c;
   }, [rows]);
+
+  const deleteTenant = async () => {
+    if (!tenantToDelete) return;
+    setDeleting(true);
+    try {
+      await api.delete(`/hub/tenants/${tenantToDelete.id}`);
+      setRows((current) => current.filter((tenant) => tenant.id !== tenantToDelete.id));
+      toast.success("Restaurante removido com segurança");
+      setTenantToDelete(null);
+    } catch (error) {
+      toast.error(error.response?.data?.detail || "Não foi possível remover o restaurante.");
+    } finally {
+      setDeleting(false);
+    }
+  };
 
   return (
     <div className="space-y-6" data-testid="clientes-page">
@@ -70,12 +92,11 @@ export default function Clientes() {
               </button>
             ))}
           </div>
-          <div className="relative w-full sm:max-w-xs">
-            <Search size={15} strokeWidth={1.8} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+          <div className="w-full sm:max-w-xs">
             <input
               value={q} onChange={(e) => setQ(e.target.value)}
               placeholder="Buscar restaurante…"
-              className="dh-input pl-10"
+              className="dh-input"
               data-testid="search-input"
             />
           </div>
@@ -92,7 +113,7 @@ export default function Clientes() {
                 <th className="text-right">Módulos</th>
                 <th className="text-right">Usuários</th>
                 <th>Cadastro</th>
-                <th className="w-8"></th>
+                <th className="w-20"></th>
               </tr>
             </thead>
             <tbody>
@@ -141,7 +162,23 @@ export default function Clientes() {
                   <td className="text-[12px] text-slate-400">
                     {t.created_at ? new Date(t.created_at).toLocaleDateString("pt-BR") : "—"}
                   </td>
-                  <td><ChevronRight size={16} strokeWidth={1.8} className="text-slate-300" /></td>
+                  <td>
+                    <div className="flex items-center justify-end gap-2">
+                      {canWrite && (
+                        <button
+                          type="button"
+                          className="p-1.5 rounded-md text-slate-400 hover:text-red-500 hover:bg-red-500/10 transition-colors"
+                          onClick={(event) => { event.stopPropagation(); setTenantToDelete(t); }}
+                          aria-label={`Remover ${t.name}`}
+                          title="Remover restaurante"
+                          data-testid={`delete-tenant-${t.id}`}
+                        >
+                          <Trash2 size={16} strokeWidth={1.8} />
+                        </button>
+                      )}
+                      <ChevronRight size={16} strokeWidth={1.8} className="text-slate-300" />
+                    </div>
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -152,6 +189,25 @@ export default function Clientes() {
           <span>Total: {counts.all}</span>
         </div>
       </div>
+      <AlertDialog open={Boolean(tenantToDelete)} onOpenChange={(open) => {
+        if (!open && !deleting) setTenantToDelete(null);
+      }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Remover restaurante?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {tenantToDelete ? `O restaurante ${tenantToDelete.name} deixará de aparecer nas operações normais e os acessos vinculados serão bloqueados. Os dados e o histórico serão preservados.` : ""}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={deleting}>Cancelar</AlertDialogCancel>
+            <button type="button" className="dh-btn bg-red-600 text-white hover:bg-red-700" onClick={deleteTenant}
+                    disabled={deleting} data-testid="confirm-delete-tenant">
+              {deleting ? "Removendo…" : "Remover restaurante"}
+            </button>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

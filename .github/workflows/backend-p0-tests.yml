@@ -2,6 +2,12 @@ name: Backend P0 tests
 
 on:
   workflow_dispatch:
+    inputs:
+      pedidos_ref:
+        description: "Branch, tag ou SHA do DACOT-PEDIDOS para validar"
+        required: true
+        default: "validation/tenant-user-revocation"
+        type: string
 
 permissions:
   contents: read
@@ -24,7 +30,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: 12345juniormen-glitch/DACOT-PEDIDOS
-          ref: main
+          ref: ${{ inputs.pedidos_ref }}
           path: DACOT-PEDIDOS
           persist-credentials: false
 
