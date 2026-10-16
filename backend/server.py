@@ -38,7 +38,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 from pymongo import ReturnDocument
-from pymongo.errors import DuplicateKeyError
+from pymongo.errors import DuplicateKeyError, PyMongoError
 from pydantic import BaseModel, Field, EmailStr, BeforeValidator, ConfigDict
 
 # ─── Setup ─────────────────────────────────────────────────────────────────────
@@ -47,7 +47,15 @@ logger = logging.getLogger("dacot-hub")
 
 MONGO_URL = os.environ["MONGO_URL"]
 DB_NAME = os.environ["DB_NAME"]
-client = AsyncIOMotorClient(MONGO_URL)
+# The application cannot operate without MongoDB.  Bound initial server
+# selection so an unreachable database fails deployment promptly instead of
+# keeping Uvicorn in its startup phase until the platform port scan expires.
+MONGO_STARTUP_TIMEOUT_SECONDS = 15
+client = AsyncIOMotorClient(
+    MONGO_URL,
+    serverSelectionTimeoutMS=MONGO_STARTUP_TIMEOUT_SECONDS * 1000,
+    connectTimeoutMS=MONGO_STARTUP_TIMEOUT_SECONDS * 1000,
+)
 db = client[DB_NAME]
 
 JWT_ALGORITHM = "HS256"
@@ -1632,6 +1640,12 @@ async def startup():
         _orders_frontend_url()
         orders_template = next(m["launch_url_template"] for m in DEFAULT_MODULES if m["key"] == "orders")
         validate_launch_url(orders_template.replace("{slug}", "startup-check"), "orders")
+    logger.info("Verificando conexão com MongoDB durante a inicialização")
+    try:
+        await asyncio.wait_for(db.command("ping"), timeout=MONGO_STARTUP_TIMEOUT_SECONDS)
+    except (asyncio.TimeoutError, PyMongoError) as exc:
+        raise RuntimeError("MongoDB não ficou disponível durante a inicialização") from exc
+    logger.info("MongoDB disponível; criando índices e aplicando migrações de startup")
     await db.hub_users.create_index("email", unique=True)
     await db.tenants.create_index("email")
     await db.tenants.create_index("slug", unique=True)
@@ -1703,17 +1717,18 @@ async def startup():
     # Maps legacy roles/metadata only. Never invent or overwrite credentials.
     ROLE_MAP = {"Proprietário": "admin", "Proprietária": "admin",
                 "Gerente": "manager", "Caixa": "waiter", "Chef": "kitchen"}
-    async for tu in db.tenant_users.find({}):
-        updates: dict = {}
-        if tu.get("role") in ROLE_MAP:
-            updates["role"] = ROLE_MAP[tu["role"]]
-        if "user_type" not in tu:
-            updates["user_type"] = "restaurant"
-        if "token_version" not in tu:
-            updates["token_version"] = 0
-        if updates:
-            await db.tenant_users.update_one({"_id": tu["_id"]}, {"$set": updates})
+    for legacy_role, role in ROLE_MAP.items():
+        await db.tenant_users.update_many(
+            {"role": legacy_role}, {"$set": {"role": role}},
+        )
+    await db.tenant_users.update_many(
+        {"user_type": {"$exists": False}}, {"$set": {"user_type": "restaurant"}},
+    )
+    await db.tenant_users.update_many(
+        {"token_version": {"$exists": False}}, {"$set": {"token_version": 0}},
+    )
     await bootstrap_orders_user_grants(db, VALID_HANDOFF_ROLES, TENANT_OPERATIONAL_STATUSES)
+    logger.info("Índices e migrações de startup concluídos")
 
 
 app.include_router(api_router)
