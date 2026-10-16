@@ -1,0 +1,156 @@
+name: Browser E2E validation
+
+on:
+  workflow_dispatch:
+    inputs:
+      pedidos_ref:
+        description: "Branch, tag ou SHA do DACOT-PEDIDOS para validar"
+        required: true
+        default: "validation/tenant-user-revocation"
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  p0-tests:
+    name: Isolated backend P0 tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      P0_ORDERS_BACKEND: ${{ github.workspace }}/DACOT-PEDIDOS/backend
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: 12345juniormen-glitch/DACOT-PEDIDOS
+          ref: ${{ inputs.pedidos_ref }}
+          path: DACOT-PEDIDOS
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: ankane/setup-mongodb@v1
+        with:
+          mongodb-version: "8.0"
+      - name: Configure isolated P0 paths
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "P0_MONGOD=$(command -v mongod)" >> "$GITHUB_ENV"
+      - name: Install backend dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r backend/requirements.txt
+          python -m pip install -r "$P0_ORDERS_BACKEND/requirements.txt"
+      - name: Run isolated P0 tests
+        run: python -m pytest -c backend/pytest.ini backend/p0_tests
+
+  browser-e2e:
+    name: Browser revocation E2E
+    needs: p0-tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      HUB_API: http://localhost:8443
+      HUB_UI: http://localhost:3000
+      ORDERS_API: http://localhost:8444
+      ORDERS_UI: http://localhost:3001
+      E2E_HUB_API: http://localhost:8443
+      E2E_HUB_UI: http://localhost:3000
+      E2E_ORDERS_API: http://localhost:8444
+      E2E_ORDERS_UI: http://localhost:3001
+      E2E_RESULTS_FILE: ${{ github.workspace }}/e2e-results.json
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: 12345juniormen-glitch/DACOT-PEDIDOS
+          ref: ${{ inputs.pedidos_ref }}
+          path: DACOT-PEDIDOS
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: yarn
+          cache-dependency-path: frontend/yarn.lock
+      - uses: ankane/setup-mongodb@v1
+        with:
+          mongodb-version: "8.0"
+      - name: Install backend and frontend dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          corepack enable
+          python -m pip install --upgrade pip
+          python -m pip install -r backend/requirements.txt
+          python -m pip install -r DACOT-PEDIDOS/backend/requirements.txt
+          (cd frontend && yarn install --frozen-lockfile)
+          (cd DACOT-PEDIDOS/frontend && yarn install --frozen-lockfile)
+          (cd frontend && yarn playwright install --with-deps chromium)
+      - name: Start isolated HUB, PEDIDOS and frontends
+        shell: bash
+        run: |
+          set -euo pipefail
+          export E2E_ADMIN_EMAIL=admin-e2e@example.test
+          export E2E_ADMIN_PASSWORD="$(openssl rand -hex 24)"
+          export E2E_EMPLOYEE_PASSWORD="$(openssl rand -hex 24)"
+          export APP_ENV=development DACOT_LOCAL_INTEGRATION=1 MONGO_URL=mongodb://127.0.0.1:27017
+          export JWT_SECRET="$(openssl rand -hex 32)"
+          export HANDOFF_JWT_SECRET="$(openssl rand -hex 32)"
+          export MODULE_API_KEY="$(openssl rand -hex 32)"
+          export HANDOFF_ISSUER=dacot-hub HANDOFF_AUDIENCE=dacot-orders HANDOFF_VERSION=1 HANDOFF_MODULE_ID=orders
+          export HANDOFF_ALLOWED_ORIGINS_JSON='{"orders":["http://localhost:3001"]}'
+          export HUB_BASE_URL="$HUB_API" ORDERS_BACKEND_URL="$ORDERS_API" ORDERS_FRONTEND_URL="$ORDERS_UI"
+          export FRONTEND_URL="$HUB_UI" CORS_ORIGINS="$ORDERS_UI"
+          export ADMIN_EMAIL="$E2E_ADMIN_EMAIL" ADMIN_PASSWORD="$E2E_ADMIN_PASSWORD"
+          printf '%s\n' "$JWT_SECRET" "$HANDOFF_JWT_SECRET" "$MODULE_API_KEY" "$E2E_ADMIN_PASSWORD" "$E2E_EMPLOYEE_PASSWORD" | sed 's/^/::add-mask::/'
+          printf 'E2E_ADMIN_EMAIL=%s\nE2E_ADMIN_PASSWORD=%s\nE2E_EMPLOYEE_PASSWORD=%s\n' "$E2E_ADMIN_EMAIL" "$E2E_ADMIN_PASSWORD" "$E2E_EMPLOYEE_PASSWORD" >> "$GITHUB_ENV"
+          (cd backend && DB_NAME=hub_e2e python -m uvicorn server:app --host 0.0.0.0 --port 8443 > "$RUNNER_TEMP/hub-e2e.log" 2>&1 & echo $! > "$RUNNER_TEMP/hub-e2e.pid")
+          (cd DACOT-PEDIDOS/backend && DB_NAME=orders_e2e python -m uvicorn server:app --host 0.0.0.0 --port 8444 > "$RUNNER_TEMP/orders-e2e.log" 2>&1 & echo $! > "$RUNNER_TEMP/orders-e2e.pid")
+          (cd frontend && HOST=0.0.0.0 PORT=3000 BROWSER=none REACT_APP_BACKEND_URL="$HUB_API" yarn start > "$RUNNER_TEMP/hub-frontend-e2e.log" 2>&1 & echo $! > "$RUNNER_TEMP/hub-frontend-e2e.pid")
+          (cd DACOT-PEDIDOS/frontend && HOST=0.0.0.0 PORT=3001 BROWSER=none REACT_APP_BACKEND_URL="$ORDERS_API" yarn start > "$RUNNER_TEMP/orders-frontend-e2e.log" 2>&1 & echo $! > "$RUNNER_TEMP/orders-frontend-e2e.pid")
+      - name: Wait for local services
+        shell: bash
+        run: |
+          set -euo pipefail
+          wait_for() { for _ in $(seq 1 120); do curl --fail --silent --show-error "$1" >/dev/null && return 0; sleep 1; done; return 1; }
+          wait_for "$HUB_API/openapi.json"
+          wait_for "$ORDERS_API/api/health"
+          wait_for "$HUB_UI/login"
+          wait_for "$ORDERS_UI/login"
+      - name: Run real Chromium revocation E2E
+        run: cd frontend && yarn playwright test
+      - name: Verify logical deletion persisted in isolated MongoDB
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f "$E2E_RESULTS_FILE"
+          tenant_id="$(jq -r '.tenant.id // empty' "$E2E_RESULTS_FILE")"
+          user_id="$(jq -r '.tenant.user_id // empty' "$E2E_RESULTS_FILE")"
+          test -n "$tenant_id" && test -n "$user_id"
+          mongosh 'mongodb://127.0.0.1:27017/hub_e2e' --quiet --eval "const user=db.tenant_users.findOne({_id:ObjectId('$user_id')}); if(!user || !user.deleted_at){quit(1)}; const tenant=db.tenants.findOne({_id:ObjectId('$tenant_id')}); if(!tenant || tenant.deleted_at){quit(2)}; print('logical deletion verified')"
+      - name: Upload browser evidence on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-e2e-failure-evidence
+          path: |
+            frontend/test-results
+            frontend/playwright-report
+            ${{ env.E2E_RESULTS_FILE }}
+          if-no-files-found: ignore
+          retention-days: 7
+      - name: Stop local services
+        if: always()
+        shell: bash
+        run: |
+          for file in "$RUNNER_TEMP"/*-e2e.pid; do test -f "$file" && kill "$(cat "$file")" 2>/dev/null || true; done
