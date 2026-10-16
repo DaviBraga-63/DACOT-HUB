@@ -599,8 +599,8 @@
 .dh-login-hero {
     position: relative;
     overflow: hidden;
-    background: #0D1117;
-    border-right: 1px solid color-mix(in srgb, var(--dh-accent-light) 15%, transparent);
+    background: #090909;
+    border-right: 1px solid rgba(255, 255, 255, .1);
 }
 
 .dh-drawer-overlay { background: rgba(12,18,34,.45); backdrop-filter: blur(2px); animation: dhOverlayIn .2s ease-out; }

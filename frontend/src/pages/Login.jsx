@@ -4,52 +4,56 @@ import { Eye, EyeOff } from "lucide-react";
 import { motion, useReducedMotion } from "framer-motion";
 import { useAuth } from "@/context/AuthContext";
 
-const FLOATING_PATHS = Array.from({ length: 36 }, (_, index) => {
-  const offset = index * 9;
-  const y = 80 + index * 15;
-  const depth = 155 + (index % 6) * 26;
-  return `M ${-380 + offset} ${y - 135} C ${-70 + offset} ${y - depth}, ${165 + offset} ${y + depth}, ${470 + offset} ${y} S ${835 + offset} ${y - depth}, ${1180 + offset} ${y + 118}`;
-});
-
-function FloatingPaths({ direction = 1 }) {
+function FloatingPaths({ position }) {
   const reduceMotion = useReducedMotion();
+  const paths = Array.from({ length: 36 }, (_, index) => ({
+    id: index,
+    d: `M-${380 - index * 5 * position} -${189 + index * 6}C-${
+      380 - index * 5 * position
+    } -${189 + index * 6} -${312 - index * 5 * position} ${216 - index * 6} ${
+      152 - index * 5 * position
+    } ${343 - index * 6}C${616 - index * 5 * position} ${470 - index * 6} ${
+      684 - index * 5 * position
+    } ${875 - index * 6} ${684 - index * 5 * position} ${875 - index * 6}`,
+    width: 0.5 + index * 0.03,
+  }));
 
   return (
-    <svg
-      aria-hidden="true"
-      className="pointer-events-none absolute inset-0 h-full w-full text-[var(--dh-accent-light)]"
-      viewBox="0 0 960 720"
-      preserveAspectRatio="none"
-    >
-      <g transform={direction === -1 ? "rotate(180 480 360)" : undefined}>
-        {FLOATING_PATHS.map((path, index) => (
+    <div className="pointer-events-none absolute inset-0">
+      <svg
+        aria-hidden="true"
+        className="h-full w-full text-white"
+        viewBox="0 0 696 316"
+        fill="none"
+        preserveAspectRatio="xMidYMid slice"
+      >
+        {paths.map((path) => (
           <motion.path
-            key={`${direction}-${path}`}
-            d={path}
+            key={`${position}-${path.id}`}
+            d={path.d}
             fill="none"
             stroke="currentColor"
-            strokeWidth="1"
-            initial={reduceMotion ? false : { opacity: 0, pathLength: 0.35 }}
+            strokeWidth={path.width}
+            strokeOpacity={0.1 + path.id * 0.03}
+            initial={reduceMotion ? false : { pathLength: 0.3, opacity: 0.6 }}
             animate={reduceMotion
-              ? { opacity: 0.2, pathLength: 1 }
+              ? { pathLength: 1, opacity: 0.45, pathOffset: 0 }
               : {
-                  opacity: [0.04, 0.27, 0.08],
-                  pathLength: [0.2, 1, 0.42],
-                  x: [0, direction * (18 + (index % 4) * 4), 0],
+                  pathLength: 1,
+                  opacity: [0.3, 0.6, 0.3],
+                  pathOffset: [0, 1, 0],
                 }}
             transition={reduceMotion
               ? { duration: 0 }
               : {
-                  duration: 13 + (index % 7) * 1.15,
-                  delay: index * 0.12,
-                  ease: "easeInOut",
+                  duration: 20 + ((path.id * 7 + (position === 1 ? 3 : 0)) % 10),
                   repeat: Infinity,
-                  repeatType: "mirror",
+                  ease: "linear",
                 }}
           />
         ))}
-      </g>
-    </svg>
+      </svg>
+    </div>
   );
 }
 
@@ -73,8 +77,8 @@ export default function Login() {
     <div className="min-h-screen grid grid-cols-1 lg:grid-cols-2 bg-[var(--dh-bg)]">
       {/* Decorative desktop panel */}
       <div className="hidden lg:flex dh-login-hero relative overflow-hidden" aria-hidden="true">
-        <FloatingPaths direction={1} />
-        <FloatingPaths direction={-1} />
+        <FloatingPaths position={1} />
+        <FloatingPaths position={-1} />
       </div>
 
       {/* DACOT form */}
