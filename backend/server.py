@@ -9,6 +9,7 @@ load_dotenv(ROOT_DIR / ".env")
 import os
 import asyncio
 import logging
+import re
 import secrets
 import hashlib
 from datetime import datetime, timezone, timedelta
@@ -1745,9 +1746,33 @@ async def api_not_found(api_path: str = ""):
 
 # CRA writes hashed JavaScript and CSS under /static. Mounting that directory
 # before the SPA fallback lets real files retain their normal content type and
-# cache headers.
+# cache headers. HTML and unhashed files must be revalidated so a browser never
+# keeps an old document that points to an earlier frontend release.
+FRONTEND_REVALIDATE_CACHE_CONTROL = "no-cache, max-age=0, must-revalidate"
+FRONTEND_IMMUTABLE_CACHE_CONTROL = "public, max-age=31536000, immutable"
+_FRONTEND_HASHED_ASSET = re.compile(r".+\.[0-9a-f]{8,}\.[^./]+$", re.IGNORECASE)
+
+
+def frontend_asset_cache_control(asset_path: str) -> str:
+    """Cache CRA content-addressed assets long; revalidate every other file."""
+    filename = Path(asset_path).name
+    if _FRONTEND_HASHED_ASSET.fullmatch(filename):
+        return FRONTEND_IMMUTABLE_CACHE_CONTROL
+    return FRONTEND_REVALIDATE_CACHE_CONTROL
+
+
+class FrontendStaticFiles(StaticFiles):
+    """Give cache semantics to the generated React assets mounted at /static."""
+
+    async def get_response(self, path, scope):
+        response = await super().get_response(path, scope)
+        if response.status_code == 200:
+            response.headers["Cache-Control"] = frontend_asset_cache_control(path)
+        return response
+
+
 if (FRONTEND_BUILD_DIR / "static").is_dir():
-    app.mount("/static", StaticFiles(directory=FRONTEND_BUILD_DIR / "static"), name="frontend-static")
+    app.mount("/static", FrontendStaticFiles(directory=FRONTEND_BUILD_DIR / "static"), name="frontend-static")
 
 
 def frontend_file_or_index(requested_path: str) -> FileResponse:
@@ -1771,8 +1796,10 @@ def frontend_file_or_index(requested_path: str) -> FileResponse:
         pass
     else:
         if candidate.is_file():
-            return FileResponse(candidate)
-    return FileResponse(index_file)
+            return FileResponse(candidate, headers={
+                "Cache-Control": frontend_asset_cache_control(candidate.name),
+            })
+    return FileResponse(index_file, headers={"Cache-Control": FRONTEND_REVALIDATE_CACHE_CONTROL})
 
 
 @app.api_route("/", methods=["GET", "HEAD"], include_in_schema=False)
