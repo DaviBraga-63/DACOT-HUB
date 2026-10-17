@@ -160,6 +160,9 @@ async function deleteEmployeeThroughHubUi(browser, tenant, user, timing) {
   await expect(page.getByTestId(`user-row-${user.id}`)).toBeVisible();
   await page.getByTestId(`delete-tenant-user-${user.id}`).click();
   await expect(page.getByText("Excluir funcionário?")).toBeVisible();
+  if (timing.backgroundPage) {
+    await expect.poll(() => timing.backgroundPage.evaluate(() => document.visibilityState)).toBe("hidden");
+  }
   timing.startedAt = Date.now();
   await page.getByTestId(`confirm-delete-tenant-user-${user.id}`).click();
   await expect(page.getByTestId(`user-row-${user.id}`)).toHaveCount(0);
@@ -243,14 +246,16 @@ test("revoga sessão ao recuperar conexão após exclusão", async ({ browser })
     await employee.setOffline(true);
     await expect.poll(() => page.evaluate(() => navigator.onLine)).toBe(false);
 
-    const timing = { startedAt: null };
+    const timing = { startedAt: null, backgroundPage: page };
     await deleteEmployeeThroughHubUi(browser, restaurant.tenant, restaurant.user, timing);
     const disconnect = waitForLogin(page, "offline_reconnected", timing);
     await employee.setOffline(false);
     await page.bringToFront();
     await expect.poll(() => page.evaluate(() => navigator.onLine)).toBe(true);
+    await expect.poll(() => page.evaluate(() => document.visibilityState)).toBe("visible");
     await disconnect;
     evidence.backend.offline_reconnected = true;
+    evidence.backend.background_and_focus = true;
   } finally {
     if (employee) await employee.close();
     await admin.api.dispose();
