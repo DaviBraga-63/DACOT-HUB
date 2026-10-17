@@ -201,6 +201,9 @@ test("revoga funcionário em Dashboard, Pedidos e Cozinha sem afetar outro resta
       const rejected = await oldToken.get("/api/auth/me", { headers: { Authorization: `Bearer ${tokenA}` } });
       expect([401, 403]).toContain(rejected.status());
       evidence.backend.old_token_status = rejected.status();
+      const otherSession = await oldToken.get("/api/auth/me", { headers: { Authorization: `Bearer ${tokenB}` } });
+      expect(otherSession.status()).toBe(200);
+      evidence.backend.other_tenant_status = otherSession.status();
     } finally {
       await oldToken.dispose();
     }
@@ -211,6 +214,34 @@ test("revoga funcionário em Dashboard, Pedidos e Cozinha sem afetar outro resta
     await employee.context.close();
     await unaffected.close();
   } finally {
+    await admin.api.dispose();
+    fs.writeFileSync(RESULTS_FILE, JSON.stringify(evidence, null, 2));
+  }
+});
+
+test("revoga sessão ao recuperar conexão após exclusão", async ({ browser }) => {
+  const admin = await authenticatedHubApi(ADMIN_EMAIL, ADMIN_PASSWORD);
+  let employee;
+  try {
+    const restaurant = await createRestaurant(admin, "offline");
+    const token = await exchangeOrdersSession(restaurant.user);
+    employee = await ordersBrowserContext(browser, token);
+    const page = await employee.newPage();
+    await page.goto(`${ORDERS_UI}/`);
+    await expect(page.getByTestId("nav-dashboard")).toBeVisible();
+    await employee.setOffline(true);
+    await expect.poll(() => page.evaluate(() => navigator.onLine)).toBe(false);
+
+    const timing = { startedAt: null };
+    await deleteEmployeeThroughHubUi(browser, restaurant.tenant, restaurant.user, timing);
+    const disconnect = waitForLogin(page, "offline_reconnected", timing);
+    await employee.setOffline(false);
+    await page.bringToFront();
+    await expect.poll(() => page.evaluate(() => navigator.onLine)).toBe(true);
+    await disconnect;
+    evidence.backend.offline_reconnected = true;
+  } finally {
+    if (employee) await employee.close();
     await admin.api.dispose();
     fs.writeFileSync(RESULTS_FILE, JSON.stringify(evidence, null, 2));
   }
