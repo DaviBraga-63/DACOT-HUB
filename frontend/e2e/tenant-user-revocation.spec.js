@@ -55,6 +55,16 @@ async function createRestaurant(admin, suffix) {
   });
   expect(created.status()).toBe(200);
   const tenant = await created.json();
+  const responsible = await admin.api.post(`/api/hub/tenants/${tenant.id}/users`, {
+    headers: admin.headers,
+    data: { name: `Responsible ${suffix}`, email: `responsible-${tag}-${suffix}@example.com`, role: "admin", password: EMPLOYEE_PASSWORD },
+  });
+  expect(responsible.status()).toBe(200);
+
+  const activation = await admin.api.post(`/api/hub/tenants/${tenant.id}/modules/orders/activate`, {
+    headers: admin.headers,
+  });
+  expect(activation.status(), "Pedidos activation must use the local isolated backend").toBe(200);
   const employeeEmail = `employee-${tag}-${suffix}@example.com`;
   const employee = await admin.api.post(`/api/hub/tenants/${tenant.id}/users`, {
     headers: admin.headers,
@@ -62,11 +72,6 @@ async function createRestaurant(admin, suffix) {
   });
   expect(employee.status()).toBe(200);
   const user = await employee.json();
-
-  const activation = await admin.api.post(`/api/hub/tenants/${tenant.id}/modules/orders/activate`, {
-    headers: admin.headers,
-  });
-  expect(activation.status(), "Pedidos activation must use the local isolated backend").toBe(200);
   const launchUrl = await admin.api.patch(`/api/hub/tenants/${tenant.id}/modules/orders`, {
     headers: admin.headers,
     data: { launch_url: `${ORDERS_UI}/${tenant.slug}` },
@@ -104,9 +109,12 @@ async function exchangeOrdersSession(employee) {
 
 async function ordersBrowserContext(browser, token) {
   const context = await browser.newContext({ ignoreHTTPSErrors: true });
-  await context.addInitScript((sessionToken) => {
+  const seedPage = await context.newPage();
+  await seedPage.goto(`${ORDERS_UI}/login`);
+  await seedPage.evaluate((sessionToken) => {
     window.localStorage.setItem("dacot.token", sessionToken);
   }, token);
+  await seedPage.close();
   return context;
 }
 
