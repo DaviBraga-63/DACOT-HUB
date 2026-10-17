@@ -134,7 +134,7 @@ async function openOrdersPages(browser, token) {
   return { context, dashboard, orders, kitchen };
 }
 
-async function deleteEmployeeThroughHubUi(browser, tenant, user) {
+async function deleteEmployeeThroughHubUi(browser, tenant, user, timing) {
   const context = await browser.newContext({ ignoreHTTPSErrors: true });
   const page = await context.newPage();
   page.on("response", (response) => {
@@ -160,15 +160,16 @@ async function deleteEmployeeThroughHubUi(browser, tenant, user) {
   await expect(page.getByTestId(`user-row-${user.id}`)).toBeVisible();
   await page.getByTestId(`delete-tenant-user-${user.id}`).click();
   await expect(page.getByText("Excluir funcionário?")).toBeVisible();
+  timing.startedAt = Date.now();
   await page.getByTestId(`confirm-delete-tenant-user-${user.id}`).click();
   await expect(page.getByTestId(`user-row-${user.id}`)).toHaveCount(0);
   await context.close();
 }
 
-async function waitForLogin(page, name, startedAt) {
+async function waitForLogin(page, name, timing) {
   await page.waitForURL(/\/login(?:\?|$)/, { timeout: 80_000 });
   await expect(page.getByText("Seu acesso ao DACOT foi encerrado.")).toBeVisible();
-  evidence.pages[name] = Date.now() - startedAt;
+  evidence.pages[name] = Date.now() - timing.startedAt;
 }
 
 test.describe.configure({ mode: "serial" });
@@ -186,13 +187,13 @@ test("revoga funcionário em Dashboard, Pedidos e Cozinha sem afetar outro resta
     await unaffectedPage.goto(`${ORDERS_UI}/`);
     await expect(unaffectedPage.getByTestId("nav-dashboard")).toBeVisible();
 
-    const startedAt = Date.now();
+    const timing = { startedAt: null };
     const disconnects = [
-      waitForLogin(employee.dashboard, "dashboard", startedAt),
-      waitForLogin(employee.orders, "orders", startedAt),
-      waitForLogin(employee.kitchen, "kitchen", startedAt),
+      waitForLogin(employee.dashboard, "dashboard", timing),
+      waitForLogin(employee.orders, "orders", timing),
+      waitForLogin(employee.kitchen, "kitchen", timing),
     ];
-    await deleteEmployeeThroughHubUi(browser, tenantA.tenant, tenantA.user);
+    await deleteEmployeeThroughHubUi(browser, tenantA.tenant, tenantA.user, timing);
     await Promise.all(disconnects);
 
     const oldToken = await request.newContext({ baseURL: ORDERS_API, ignoreHTTPSErrors: true });

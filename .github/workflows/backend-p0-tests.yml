@@ -109,6 +109,8 @@ jobs:
           (cd frontend && yarn install --frozen-lockfile)
           (cd DACOT-PEDIDOS/frontend && yarn install --frozen-lockfile)
           (cd frontend && yarn playwright install --with-deps chromium)
+      - name: Test Pedidos authentication context
+        run: cd DACOT-PEDIDOS/frontend && CI=true yarn test --watch=false --runInBand src/context/AuthContext.test.jsx
       - name: Start isolated HUB, PEDIDOS and frontends
         shell: bash
         run: |
