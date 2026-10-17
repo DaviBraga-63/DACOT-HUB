@@ -4,6 +4,7 @@ import secrets
 
 import requests
 import jwt
+import pytest
 from bson import ObjectId
 
 
@@ -15,6 +16,89 @@ def _create_staff(services, *, role="admin"):
     )
     assert response.status_code == 200, response.text
     return response.json()
+
+
+@pytest.mark.parametrize("deleted_value", ["missing", "null"])
+def test_legacy_empty_fields_keep_access_and_still_revoke(services, deleted_value):
+    """Only disposable P0 records are changed; deleted identities must stay revoked."""
+    restaurant = services.restaurant()
+    tenant_id, user_id = restaurant["tid"], restaurant["uid"]
+    operator = "$unset" if deleted_value == "missing" else "$set"
+    empty_value = "" if deleted_value == "missing" else None
+    tenant_update = {operator: {"deleted_at": empty_value}}
+    tenant_update.setdefault("$unset", {})["access_version"] = ""
+    user_update = {operator: {"deleted_at": empty_value}}
+    user_update.setdefault("$unset", {})["token_version"] = ""
+    services.db.tenants.update_one(
+        {"_id": ObjectId(tenant_id)},
+        tenant_update,
+    )
+    services.db.tenant_users.update_one(
+        {"_id": ObjectId(user_id)},
+        user_update,
+    )
+    services.db.tenant_modules.update_one(
+        {"tenant_id": tenant_id, "module_key": "orders"},
+        {"$unset": {"access_version": ""}},
+    )
+
+    assert services.call("GET", f"/hub/tenants/{tenant_id}").status_code == 200
+    assert services.call("GET", "/portal/context", headers=restaurant["headers"]).status_code == 200
+    token = services.exchange(services.handoff(restaurant))
+    assert token.status_code == 200, token.text
+    assert services.call("DELETE", f"/hub/tenants/{tenant_id}").status_code == 200
+    assert services.call("GET", "/portal/context", headers=restaurant["headers"]).status_code == 401
+    assert services.order_me(token.json()["token"]).status_code == 403
+    assert services.db.tenants.find_one({"_id": ObjectId(tenant_id)})["deleted_at"]
+    assert services.db.tenant_users.find_one({"_id": ObjectId(user_id)})
+
+
+@pytest.mark.parametrize("bad_version", [None, -1, "invalid", True])
+@pytest.mark.parametrize("target", ["user", "tenant", "module"])
+def test_invalid_security_versions_fail_closed_and_preserve_records(services, target, bad_version):
+    restaurant = services.restaurant()
+    tenant_id, user_id = restaurant["tid"], restaurant["uid"]
+    orders_token = services.exchange(services.handoff(restaurant)).json()["token"]
+    if target == "user":
+        collection, query, field = services.db.tenant_users, {"_id": ObjectId(user_id)}, "token_version"
+    elif target == "tenant":
+        collection, query, field = services.db.tenants, {"_id": ObjectId(tenant_id)}, "access_version"
+    else:
+        collection = services.db.tenant_modules
+        query, field = {"tenant_id": tenant_id, "module_key": "orders"}, "access_version"
+    collection.update_one(query, {"$set": {field: bad_version}})
+
+    if target == "user":
+        assert services.call("GET", "/auth/me", headers=restaurant["headers"]).status_code == 401
+        email = services.db.tenant_users.find_one({"_id": ObjectId(user_id)})["email"]
+        login = requests.post(
+            services.hub + "/api/auth/login", json={"email": email, "password": services.password},
+            headers={"X-DACOT-Tab-Session": secrets.token_hex(16)}, timeout=10,
+        )
+        assert login.status_code == 401
+    else:
+        assert services.call("POST", "/portal/modules/orders/launch-token", headers=restaurant["headers"]).status_code == 403
+    assert services.order_me(orders_token).status_code == 403
+    assert services.call("DELETE", f"/hub/tenants/{tenant_id}").status_code == 200
+    assert services.db.tenants.find_one({"_id": ObjectId(tenant_id)})["deleted_at"]
+    assert services.db.tenant_users.find_one({"_id": ObjectId(user_id)})
+    assert services.call("GET", "/auth/me", headers=restaurant["headers"]).status_code == 401
+
+
+@pytest.mark.parametrize("bad_version", [None, -1, "invalid", True])
+def test_invalid_staff_version_blocks_existing_and_new_sessions(services, bad_version):
+    staff = _create_staff(services)
+    identity = services.login(staff["email"], services.password)
+    services.db.hub_users.update_one({"_id": ObjectId(staff["id"])}, {"$set": {"token_version": bad_version}})
+    assert services.call("GET", "/auth/me", headers=identity).status_code == 401
+    login = requests.post(
+        services.hub + "/api/auth/login", json={"email": staff["email"], "password": services.password},
+        headers={"X-DACOT-Tab-Session": secrets.token_hex(16)}, timeout=10,
+    )
+    assert login.status_code == 401
+    assert services.call("DELETE", f"/hub/users/{staff['id']}").status_code == 200
+    stored = services.db.hub_users.find_one({"_id": ObjectId(staff["id"])})
+    assert stored["deleted_at"] and stored["token_version"] == bad_version
 
 
 def test_tenant_removal_preserves_records_and_blocks_access(services):
