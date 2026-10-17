@@ -258,7 +258,7 @@ test("revoga sessão ao recuperar conexão após exclusão", async ({ browser })
   }
 });
 
-test("evento sintetico de visibilidade visivel revalida sessao revogada", async ({ browser }) => {
+test("foco sintetico e evento de visibilidade visivel apos revogacao", async ({ browser }) => {
   const admin = await authenticatedHubApi(ADMIN_EMAIL, ADMIN_PASSWORD);
   let employee;
   try {
@@ -282,6 +282,13 @@ test("evento sintetico de visibilidade visivel revalida sessao revogada", async 
     await expect.poll(() => page.evaluate(() => document.visibilityState)).toBe("visible");
     const observed = await page.evaluate(() => ({ ...window.__e2eEvents, hasFocus: document.hasFocus(), visibility: document.visibilityState }));
     console.log(`Real browser events before synthetic visibilitychange: ${JSON.stringify(observed)}`);
+    const syntheticFocus = await page.evaluate(() => {
+      const event = new FocusEvent("focus");
+      const previous = window.__e2eEvents.focus;
+      window.dispatchEvent(event);
+      return { isTrusted: event.isTrusted, observed: window.__e2eEvents.focus === previous + 1 };
+    });
+    expect(syntheticFocus).toEqual({ isTrusted: false, observed: true });
     const revalidation = page.waitForResponse((response) => {
       const url = new URL(response.url());
       return url.origin === ORDERS_API && url.pathname === "/api/auth/me" && [401, 403].includes(response.status());
@@ -293,6 +300,7 @@ test("evento sintetico de visibilidade visivel revalida sessao revogada", async 
     await revalidation;
     await disconnect;
     evidence.backend.synthetic_visible_event_revalidated = true;
+    evidence.backend.synthetic_focus_event_observed = syntheticFocus.observed;
     evidence.backend.real_browser_events = observed;
   } finally {
     if (employee) await employee.close();
