@@ -160,9 +160,6 @@ async function deleteEmployeeThroughHubUi(browser, tenant, user, timing) {
   await expect(page.getByTestId(`user-row-${user.id}`)).toBeVisible();
   await page.getByTestId(`delete-tenant-user-${user.id}`).click();
   await expect(page.getByText("Excluir funcionário?")).toBeVisible();
-  if (timing.backgroundPage) {
-    await expect.poll(() => timing.backgroundPage.evaluate(() => document.visibilityState)).toBe("hidden");
-  }
   timing.startedAt = Date.now();
   await page.getByTestId(`confirm-delete-tenant-user-${user.id}`).click();
   await expect(page.getByTestId(`user-row-${user.id}`)).toHaveCount(0);
@@ -243,24 +240,98 @@ test("revoga sessão ao recuperar conexão após exclusão", async ({ browser })
     const page = await employee.newPage();
     await page.goto(`${ORDERS_UI}/`);
     await expect(page.getByTestId("nav-dashboard")).toBeVisible();
-    const foreground = await employee.newPage();
-    await foreground.bringToFront();
-    await expect.poll(() => page.evaluate(() => document.visibilityState)).toBe("hidden");
     await employee.setOffline(true);
     await expect.poll(() => page.evaluate(() => navigator.onLine)).toBe(false);
 
-    const timing = { startedAt: null, backgroundPage: page };
+    const timing = { startedAt: null };
     await deleteEmployeeThroughHubUi(browser, restaurant.tenant, restaurant.user, timing);
     const disconnect = waitForLogin(page, "offline_reconnected", timing);
     await employee.setOffline(false);
     await page.bringToFront();
     await expect.poll(() => page.evaluate(() => navigator.onLine)).toBe(true);
-    await expect.poll(() => page.evaluate(() => document.visibilityState)).toBe("visible");
     await disconnect;
     evidence.backend.offline_reconnected = true;
-    evidence.backend.background_and_focus = true;
   } finally {
     if (employee) await employee.close();
+    await admin.api.dispose();
+    fs.writeFileSync(RESULTS_FILE, JSON.stringify(evidence, null, 2));
+  }
+});
+
+test("evento sintetico de visibilidade visivel revalida sessao revogada", async ({ browser }) => {
+  const admin = await authenticatedHubApi(ADMIN_EMAIL, ADMIN_PASSWORD);
+  let employee;
+  try {
+    const restaurant = await createRestaurant(admin, "visibility-event");
+    const token = await exchangeOrdersSession(restaurant.user);
+    employee = await ordersBrowserContext(browser, token);
+    const page = await employee.newPage();
+    await page.goto(`${ORDERS_UI}/`);
+    await expect(page.getByTestId("nav-dashboard")).toBeVisible();
+    await page.evaluate(() => {
+      window.__e2eEvents = { blur: 0, focus: 0, visibilitychange: 0 };
+      window.addEventListener("blur", () => window.__e2eEvents.blur++);
+      window.addEventListener("focus", () => window.__e2eEvents.focus++);
+      document.addEventListener("visibilitychange", () => window.__e2eEvents.visibilitychange++);
+    });
+    const foreground = await employee.newPage();
+    await foreground.bringToFront();
+    const timing = { startedAt: null };
+    await deleteEmployeeThroughHubUi(browser, restaurant.tenant, restaurant.user, timing);
+    await page.bringToFront();
+    await expect.poll(() => page.evaluate(() => document.visibilityState)).toBe("visible");
+    const observed = await page.evaluate(() => ({ ...window.__e2eEvents, hasFocus: document.hasFocus(), visibility: document.visibilityState }));
+    console.log(`Real browser events before synthetic visibilitychange: ${JSON.stringify(observed)}`);
+    const revalidation = page.waitForResponse((response) => {
+      const url = new URL(response.url());
+      return url.origin === ORDERS_API && url.pathname === "/api/auth/me" && [401, 403].includes(response.status());
+    });
+    const disconnect = waitForLogin(page, "synthetic_visibility_event", timing);
+    // This dispatch tests the existing visible-page handler; it is not evidence
+    // that Chromium actually hid a tab or generated a trusted visibility event.
+    await page.evaluate(() => document.dispatchEvent(new Event("visibilitychange")));
+    await revalidation;
+    await disconnect;
+    evidence.backend.synthetic_visible_event_revalidated = true;
+    evidence.backend.real_browser_events = observed;
+  } finally {
+    if (employee) await employee.close();
+    await admin.api.dispose();
+    fs.writeFileSync(RESULTS_FILE, JSON.stringify(evidence, null, 2));
+  }
+});
+
+test.skip("aba realmente oculta: requer ambiente capaz de produzir visibilityState hidden", () => {});
+
+test("handoff pela interface do Portal estabelece sessão no Pedidos", async ({ browser }) => {
+  const admin = await authenticatedHubApi(ADMIN_EMAIL, ADMIN_PASSWORD);
+  let context;
+  try {
+    const restaurant = await createRestaurant(admin, "ui-handoff");
+    context = await browser.newContext({ ignoreHTTPSErrors: true });
+    const page = await context.newPage();
+    await page.goto(`${HUB_UI}/login`);
+    await page.getByTestId("login-email").fill(restaurant.user.email);
+    await page.getByTestId("login-password").fill(EMPLOYEE_PASSWORD);
+    await page.getByTestId("login-submit").click();
+    await expect(page).toHaveURL(/\/portal$/);
+    await page.goto(`${HUB_UI}/portal/modulos`);
+    await expect(page.getByTestId("portal-module-orders")).toBeVisible();
+    const popup = context.waitForEvent("page");
+    const exchange = context.waitForEvent("response", { predicate: (response) => {
+      const url = new URL(response.url());
+      return url.origin === ORDERS_API && url.pathname === "/api/orders/session/exchange" && response.request().method() === "POST";
+    } });
+    await page.getByTestId("portal-open-orders").click();
+    const orders = await popup;
+    expect((await exchange).status()).toBe(200);
+    await expect(orders.getByTestId("nav-dashboard")).toBeVisible({ timeout: 30_000 });
+    expect(await orders.evaluate(() => new URL(window.location.href).searchParams.has("handoff"))).toBe(false);
+    await orders.goto(`${ORDERS_UI}/cozinha`);
+    await expect(orders.getByTestId("nav-kitchen")).toBeVisible();
+    evidence.backend.ui_handoff_completed = true;
+  } finally {
+    if (context) await context.close();
     await admin.api.dispose();
     fs.writeFileSync(RESULTS_FILE, JSON.stringify(evidence, null, 2));
   }
