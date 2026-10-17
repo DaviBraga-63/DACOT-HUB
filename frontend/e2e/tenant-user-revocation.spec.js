@@ -166,6 +166,17 @@ async function deleteEmployeeThroughHubUi(browser, tenant, user, timing) {
   await context.close();
 }
 
+async function hubBrowserPage(browser, email = ADMIN_EMAIL, password = ADMIN_PASSWORD) {
+  const context = await browser.newContext({ ignoreHTTPSErrors: true });
+  const page = await context.newPage();
+  await page.goto(`${HUB_UI}/login`);
+  await page.getByTestId("login-email").fill(email);
+  await page.getByTestId("login-password").fill(password);
+  await page.getByTestId("login-submit").click();
+  await expect(page).toHaveURL(/\/painel$/);
+  return { context, page };
+}
+
 async function waitForLogin(page, name, timing) {
   await page.waitForURL(/\/login(?:\?|$)/, { timeout: 80_000 });
   await expect(page.getByText("Seu acesso ao DACOT foi encerrado.")).toBeVisible();
@@ -242,6 +253,80 @@ test("revoga sessão ao recuperar conexão após exclusão", async ({ browser })
     evidence.backend.offline_reconnected = true;
   } finally {
     if (employee) await employee.close();
+    await admin.api.dispose();
+    fs.writeFileSync(RESULTS_FILE, JSON.stringify(evidence, null, 2));
+  }
+});
+
+test("exclui restaurante pela interface e invalida sessão sem apagar dados", async ({ browser }) => {
+  const admin = await authenticatedHubApi(ADMIN_EMAIL, ADMIN_PASSWORD);
+  let employee;
+  let hub;
+  try {
+    const restaurant = await createRestaurant(admin, "deleted-tenant");
+    const token = await exchangeOrdersSession(restaurant.user);
+    employee = await ordersBrowserContext(browser, token);
+    const page = await employee.newPage();
+    await page.goto(`${ORDERS_UI}/`);
+    await expect(page.getByTestId("nav-dashboard")).toBeVisible();
+    hub = await hubBrowserPage(browser);
+    await hub.page.goto(`${HUB_UI}/clientes`);
+    await expect(hub.page.getByTestId(`tenant-row-${restaurant.tenant.id}`)).toBeVisible();
+    await hub.page.getByTestId(`delete-tenant-${restaurant.tenant.id}`).click();
+    const timing = { startedAt: Date.now() };
+    const disconnect = waitForLogin(page, "deleted_tenant", timing);
+    await hub.page.getByTestId("confirm-delete-tenant").click();
+    await expect(hub.page.getByTestId(`tenant-row-${restaurant.tenant.id}`)).toHaveCount(0);
+    await disconnect;
+    const orders = await request.newContext({ baseURL: ORDERS_API });
+    try {
+      const result = await orders.get("/api/auth/me", { headers: { Authorization: `Bearer ${token}` } });
+      expect([401, 403]).toContain(result.status());
+    } finally { await orders.dispose(); }
+    evidence.deleted_tenant = { id: restaurant.tenant.id, user_id: restaurant.user.id };
+  } finally {
+    if (hub) await hub.context.close();
+    if (employee) await employee.close();
+    await admin.api.dispose();
+    fs.writeFileSync(RESULTS_FILE, JSON.stringify(evidence, null, 2));
+  }
+});
+
+test("exclui usuário interno pela interface e protege o próprio super admin", async ({ browser }) => {
+  const admin = await authenticatedHubApi(ADMIN_EMAIL, ADMIN_PASSWORD);
+  let hub;
+  let staff;
+  let identity;
+  try {
+    const email = `staff-${tag}@example.com`;
+    const created = await admin.api.post("/api/hub/users", {
+      headers: admin.headers,
+      data: { name: `E2E Staff ${tag}`, email, role: "admin", password: EMPLOYEE_PASSWORD },
+    });
+    expect(created.status()).toBe(200);
+    const user = await created.json();
+    identity = await authenticatedHubApi(email, EMPLOYEE_PASSWORD);
+    staff = await hubBrowserPage(browser, email, EMPLOYEE_PASSWORD);
+    hub = await hubBrowserPage(browser);
+    const self = await admin.api.get("/api/auth/me", { headers: admin.headers });
+    expect(self.status()).toBe(200);
+    const selfUser = await self.json();
+    await hub.page.goto(`${HUB_UI}/equipe`);
+    await expect(hub.page.getByTestId(`staff-row-${user.id}`)).toBeVisible();
+    await expect(hub.page.getByTestId(`delete-staff-${selfUser.id}`)).toHaveCount(0);
+    await hub.page.getByTestId(`delete-staff-${user.id}`).click();
+    await hub.page.getByTestId(`confirm-delete-staff-${user.id}`).click();
+    await expect(hub.page.getByTestId(`staff-row-${user.id}`)).toHaveCount(0);
+    const rejected = await identity.api.get("/api/auth/me", { headers: identity.headers });
+    expect(rejected.status()).toBe(401);
+    await staff.page.reload();
+    await expect(staff.page).toHaveURL(/\/login(?:\?|$)/);
+    evidence.deleted_staff = { id: user.id };
+    evidence.backend.staff_session_status = rejected.status();
+  } finally {
+    if (hub) await hub.context.close();
+    if (staff) await staff.context.close();
+    if (identity) await identity.api.dispose();
     await admin.api.dispose();
     fs.writeFileSync(RESULTS_FILE, JSON.stringify(evidence, null, 2));
   }

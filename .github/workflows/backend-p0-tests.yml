@@ -157,6 +157,11 @@ jobs:
           user_id="$(jq -r '.tenant.user_id // empty' "$E2E_RESULTS_FILE")"
           test -n "$tenant_id" && test -n "$user_id"
           mongosh 'mongodb://127.0.0.1:27017/hub_e2e' --quiet --eval "const user=db.tenant_users.findOne({_id:ObjectId('$user_id')}); if(!user || !user.deleted_at){quit(1)}; const tenant=db.tenants.findOne({_id:ObjectId('$tenant_id')}); if(!tenant || tenant.deleted_at){quit(2)}; print('logical deletion verified')"
+          deleted_tenant_id="$(jq -r '.deleted_tenant.id // empty' "$E2E_RESULTS_FILE")"
+          deleted_tenant_user_id="$(jq -r '.deleted_tenant.user_id // empty' "$E2E_RESULTS_FILE")"
+          deleted_staff_id="$(jq -r '.deleted_staff.id // empty' "$E2E_RESULTS_FILE")"
+          test -n "$deleted_tenant_id" && test -n "$deleted_tenant_user_id" && test -n "$deleted_staff_id"
+          mongosh 'mongodb://127.0.0.1:27017/hub_e2e' --quiet --eval "const tenant=db.tenants.findOne({_id:ObjectId('$deleted_tenant_id')}); const user=db.tenant_users.findOne({_id:ObjectId('$deleted_tenant_user_id')}); const staff=db.hub_users.findOne({_id:ObjectId('$deleted_staff_id')}); if(!tenant || !tenant.deleted_at || !user || !staff || !staff.deleted_at){quit(1)}; print('tenant, employee and staff records preserved')"
           jq '{pages, backend}' "$E2E_RESULTS_FILE"
       - name: Upload sanitized E2E evidence
         if: success()
