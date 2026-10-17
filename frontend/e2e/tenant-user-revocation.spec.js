@@ -137,10 +137,22 @@ async function openOrdersPages(browser, token) {
 async function deleteEmployeeThroughHubUi(browser, tenant, user) {
   const context = await browser.newContext({ ignoreHTTPSErrors: true });
   const page = await context.newPage();
+  page.on("response", (response) => {
+    const url = new URL(response.url());
+    if (url.origin === HUB_API && url.pathname.startsWith("/api/")) {
+      console.log(`Hub browser response: ${url.pathname} ${response.status()}`);
+    }
+  });
   await page.goto(`${HUB_UI}/login`);
   await page.getByTestId("login-email").fill(ADMIN_EMAIL);
   await page.getByTestId("login-password").fill(ADMIN_PASSWORD);
+  const loginResponse = page.waitForResponse((response) =>
+    response.url() === `${HUB_API}/api/auth/login` && response.request().method() === "POST"
+  );
   await page.getByTestId("login-submit").click();
+  expect((await loginResponse).status()).toBe(200);
+  const browserCookies = await context.cookies(HUB_API);
+  console.log(`Hub browser binding present: ${browserCookies.some((cookie) => cookie.name === "__Host-dacot_browser")}`);
   await expect(page).toHaveURL(/\/painel$/);
   await page.goto(`${HUB_UI}/clientes/${tenant.id}`);
   await expect(page.getByTestId("tenant-detail-page")).toBeVisible();
