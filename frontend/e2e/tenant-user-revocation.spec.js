@@ -139,7 +139,7 @@ async function deleteEmployeeThroughHubUi(browser, tenant, user) {
   const page = await context.newPage();
   page.on("response", (response) => {
     const url = new URL(response.url());
-    if (url.origin === HUB_API && url.pathname.startsWith("/api/")) {
+    if (url.origin === HUB_UI && url.pathname.startsWith("/api/")) {
       console.log(`Hub browser response: ${url.pathname} ${response.status()}`);
     }
   });
@@ -147,11 +147,11 @@ async function deleteEmployeeThroughHubUi(browser, tenant, user) {
   await page.getByTestId("login-email").fill(ADMIN_EMAIL);
   await page.getByTestId("login-password").fill(ADMIN_PASSWORD);
   const loginResponse = page.waitForResponse((response) =>
-    response.url() === `${HUB_API}/api/auth/login` && response.request().method() === "POST"
+    response.url() === `${HUB_UI}/api/auth/login` && response.request().method() === "POST"
   );
   await page.getByTestId("login-submit").click();
   expect((await loginResponse).status()).toBe(200);
-  const browserCookies = await context.cookies(HUB_API);
+  const browserCookies = await context.cookies(HUB_UI);
   console.log(`Hub browser binding present: ${browserCookies.some((cookie) => cookie.name === "__Host-dacot_browser")}`);
   await expect(page).toHaveURL(/\/painel$/);
   await page.goto(`${HUB_UI}/clientes/${tenant.id}`);
