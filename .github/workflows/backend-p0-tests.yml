@@ -146,7 +146,7 @@ jobs:
           wait_for "$HUB_UI/login"
           wait_for "$ORDERS_UI/login"
       - name: Run real Chromium revocation E2E
-        run: cd frontend && yarn playwright test
+        run: cd frontend && E2E_HEADED=1 xvfb-run -a yarn playwright test
       - name: Verify logical deletion persisted in isolated MongoDB
         if: success()
         shell: bash

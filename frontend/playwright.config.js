@@ -10,7 +10,7 @@ module.exports = defineConfig({
   reporter: [["list"], ["html", { outputFolder: "playwright-report", open: "never" }]],
   use: {
     browserName: "chromium",
-    headless: true,
+    headless: !process.env.E2E_HEADED,
     ignoreHTTPSErrors: true,
     screenshot: "only-on-failure",
     // Browser requests carry the ephemeral Pedidos bearer session. Keep failure
