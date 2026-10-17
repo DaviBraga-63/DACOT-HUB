@@ -243,6 +243,9 @@ test("revoga sessão ao recuperar conexão após exclusão", async ({ browser })
     const page = await employee.newPage();
     await page.goto(`${ORDERS_UI}/`);
     await expect(page.getByTestId("nav-dashboard")).toBeVisible();
+    const foreground = await employee.newPage();
+    await foreground.bringToFront();
+    await expect.poll(() => page.evaluate(() => document.visibilityState)).toBe("hidden");
     await employee.setOffline(true);
     await expect.poll(() => page.evaluate(() => navigator.onLine)).toBe(false);
 
