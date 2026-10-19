@@ -19,6 +19,7 @@ async def send_password_reset_email(
     resend_api_key: str,
     email_from_address: str,
     email_from_name: str,
+    validity_hours: int = 1,
 ) -> bool:
     """Ask Resend to deliver a one-time password definition/reset link.
 
@@ -40,11 +41,12 @@ async def send_password_reset_email(
         return False
     link = f"{base}/reset-password?token={token}"
     brand = escape(from_name)
+    validity_text = "30 dias" if validity_hours == 720 else ("1 hora" if validity_hours == 1 else f"{validity_hours} horas")
     html = (
         '<table role="presentation" width="100%"><tr><td style="padding:24px;font-family:Arial,sans-serif">'
         f'<p>Defina ou redefina sua senha do {brand}.</p>'
         f'<p><a href="{escape(link)}">Definir minha senha</a></p>'
-        '<p>Este link expira em 1 hora e pode ser usado apenas uma vez. '
+        f'<p>Este link expira em {validity_text} e pode ser usado apenas uma vez. '
         'Se você não solicitou, ignore este e-mail.</p>'
         f'<p style="font-size:12px;color:#888">Enviado por {brand}.</p>'
         '</td></tr></table>'

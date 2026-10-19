@@ -55,9 +55,11 @@ class Services:
         self.mongo = None
         data = self.temp / "db"
         data.mkdir()
-        self.start("mongo", [str(mongod), "--bind_ip", "127.0.0.1", "--port", str(mp), "--dbpath", str(data), "--quiet"], self.temp, env)
+        self.start("mongo", [str(mongod), "--bind_ip", "127.0.0.1", "--port", str(mp), "--dbpath", str(data), "--replSet", "p0", "--quiet"], self.temp, env)
         self.mongo = MongoClient(env["MONGO_URL"], serverSelectionTimeoutMS=200)
         self.wait(lambda: self.mongo.admin.command("ping"), "mongo")
+        self.mongo.admin.command("replSetInitiate", {"_id": "p0", "members": [{"_id": 0, "host": f"127.0.0.1:{mp}"}]})
+        self.wait(lambda: self.mongo.admin.command("hello").get("isWritablePrimary") or (_ for _ in ()).throw(RuntimeError("not primary")), "mongo")
         self.db = self.mongo.hub_p0
         self.odb = self.mongo.orders_p0
         self.hport, self.oport = hp, op
@@ -99,7 +101,7 @@ class Services:
 
     def restart_hub(self):
         self.stop("hub")
-        self.start("hub", [sys.executable, "-m", "uvicorn", "server:app", "--host", "127.0.0.1", "--port", str(self.hport)], self.hub_backend, self.env)
+        self.start("hub", [sys.executable, "-m", "uvicorn", "server:app", "--host", "127.0.0.1", "--port", str(self.hport), "--no-proxy-headers"], self.hub_backend, self.env)
         self.wait(lambda: requests.get(self.hub + "/api/", timeout=1).raise_for_status(), "hub")
 
     def login(self, email, password, *, browser_binding=None, tab_session_id=None):
