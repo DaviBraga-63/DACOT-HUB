@@ -11,6 +11,9 @@ export function openStore(path, key) {
   const db = new DatabaseSync(path);
   try { chmodSync(path, 0o600); } catch { /* Windows ACLs are managed externally. */ }
   db.exec('PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; CREATE TABLE IF NOT EXISTS auth (id TEXT PRIMARY KEY, value BLOB NOT NULL); CREATE TABLE IF NOT EXISTS sends (id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, status TEXT NOT NULL, created_at INTEGER NOT NULL, recipient TEXT NOT NULL);');
+  // Retain longer than the longest link lifetime (30 days), including replay
+  // tolerance. Pending/indeterminate records remain protected throughout it.
+  db.exec('CREATE INDEX IF NOT EXISTS sends_created_at ON sends(created_at); CREATE INDEX IF NOT EXISTS sends_recipient_time ON sends(recipient, created_at);');
   const seal = (value) => {
     const nonce = randomBytes(12);
     const cipher = createCipheriv('aes-256-gcm', key, nonce);
@@ -57,6 +60,9 @@ export function openStore(path, key) {
     complete(id, status) {
       const keyHash = digest('request', id);
       db.prepare('UPDATE sends SET status=? WHERE id=?').run(status, keyHash);
+    },
+    cleanup(now = Date.now()) {
+      return db.prepare('DELETE FROM sends WHERE created_at < ?').run(now - 35 * 86400000).changes;
     },
     close() { db.close(); },
   };

@@ -73,3 +73,35 @@ def test_missing_tls_ca_does_not_break_completed_onboarding():
                                                 ca_file="missing-test-ca.pem")
     result = asyncio.run(provider.send(number="11912345678", token="synthetic-token", purpose="first_access", request_id="r"))
     assert result == module.DeliveryResult.UNAVAILABLE
+
+
+def test_public_https_uses_default_certificate_validation_and_signed_body():
+    import hashlib
+    import hmac
+    import json
+    options = {}
+    client = FakeClient()
+    def factory(**kwargs):
+        options.update(kwargs)
+        return client
+    provider = module.WhatsAppDeliveryProvider(
+        service_url="https://sender.example.test", service_key="x" * 32,
+        frontend_url="https://hub.example.test", client_factory=factory)
+    assert asyncio.run(provider.send(number="11912345678", token="synthetic-token",
+                                    purpose="recovery", request_id="r")) == module.DeliveryResult.ACCEPTED
+    assert "verify" not in options  # httpx default verifies CA and hostname.
+    assert options["follow_redirects"] is False
+    assert options["timeout"] == 10.0
+    _, headers, body = client.calls[0]
+    raw = json.dumps(body, separators=(",", ":"), ensure_ascii=True).encode()
+    signed = hmac.new(b"x" * 32, headers["X-DACOT-Timestamp"].encode() + b"." + raw, hashlib.sha256).hexdigest()
+    assert headers["X-DACOT-Signature"] == signed
+
+
+def test_tls_failure_is_unavailable_without_leaking_credentials(caplog):
+    client = FakeClient(error=httpx.ConnectError("synthetic certificate verification failure"))
+    provider = module.WhatsAppDeliveryProvider(service_url="https://sender.example.test", service_key="x" * 32,
+        frontend_url="https://hub.example.test", client_factory=lambda **_: client)
+    assert asyncio.run(provider.send(number="11912345678", token="synthetic-token",
+                                    purpose="recovery", request_id="r")) == module.DeliveryResult.UNAVAILABLE
+    assert not caplog.text

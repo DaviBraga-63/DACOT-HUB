@@ -407,12 +407,8 @@ async def _send_whatsapp_reset(number: str, token: str, purpose: str):
 
 # ─── Auth endpoints ────────────────────────────────────────────────────────────
 def _client_ip(request: Request) -> str:
-    # Behind the k8s ingress, request.client.host is the proxy pod IP — use the
-    # first X-Forwarded-For hop (set by the edge proxy) for the real client.
-    xff = request.headers.get("x-forwarded-for", "")
-    if xff:
-        return xff.split(",")[0].strip()
-    return request.client.host if request.client else "unknown"
+    # Login and recovery must apply the same explicit proxy trust policy.
+    return _recovery_client_ip(request)
 
 
 @api_router.post("/auth/login")

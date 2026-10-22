@@ -87,6 +87,20 @@ test('storage failure stops the connection without reconnecting', () => {
   assert.equal(scheduled.length, 0);
 });
 
+test('retention preserves auth and replay records beyond all valid link lifetimes', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dacot-wa-'));
+  const store = openStore(join(dir, 'state.sqlite'), randomBytes(32));
+  try {
+    store.setMany({ creds: 'synthetic-session' });
+    store.reserve('old-request', 'payload', '+5511912345678');
+    store.complete('old-request', 'indeterminate');
+    assert.equal(store.cleanup(Date.now() + 34 * 86400000), 0);
+    assert.equal(store.reserve('old-request', 'payload', '+5511912345678'), 'indeterminate');
+    assert.equal(store.cleanup(Date.now() + 36 * 86400000), 1);
+    assert.equal(store.get('creds'), 'synthetic-session');
+  } finally { store.close(); removeTestDirectory(dir); }
+});
+
 test('connection enters pairing, opens, reconnects, and stops on logout', async () => {
   const sockets = [], scheduled = [];
   const makeSocket = () => { const ev = new EventEmitter(); const socket = { ev, end() {}, sendMessage: async () => {} }; sockets.push(socket); return socket; };
