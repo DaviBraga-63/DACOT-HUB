@@ -237,3 +237,82 @@ def test_pairing_code_fails_closed_for_bad_origin_or_bad_gateway_response():
     provider = module.WhatsAppPairingProvider(service_url="http://gateway.example.test:3002",
         service_transport="speedtrail-private-http", service_key="p" * 32)
     assert asyncio.run(provider.request_code(number="11912345678", request_id="r")).code is None
+
+
+def test_integration_status_uses_signed_private_request_and_exposes_only_safe_fields():
+    import hashlib
+    import hmac
+
+    class StatusClient:
+        def __init__(self): self.calls = []
+        async def __aenter__(self): return self
+        async def __aexit__(self, *_): return False
+        async def get(self, url, *, headers):
+            self.calls.append((url, headers))
+            return httpx.Response(200, json={"connection_state": "open", "pairing_self_service_enabled": False})
+
+    client, options = StatusClient(), {}
+    def factory(**kwargs):
+        options.update(kwargs)
+        return client
+    provider = module.WhatsAppStatusProvider(
+        service_url="http://dacot-whatsapp:3002", service_transport="speedtrail-private-http",
+        service_key="s" * 32, client_factory=factory,
+    )
+    result = asyncio.run(provider.get_status(request_id="status-request-unique-123"))
+    assert result.gateway_reachable is True
+    assert result.connection_state == "open"
+    assert result.pairing_self_service_enabled is False
+    url, headers = client.calls[0]
+    assert url == "http://dacot-whatsapp:3002/internal/integration-status"
+    signed = f"GET\\n/internal/integration-status\\n{headers['X-DACOT-Timestamp']}\\n{headers['Idempotency-Key']}".encode()
+    assert headers["X-DACOT-Signature"] == hmac.new(b"s" * 32, signed, hashlib.sha256).hexdigest()
+    assert options == {"timeout": 3.0, "follow_redirects": False, "trust_env": False}
+
+
+@pytest.mark.parametrize("status, payload", [
+    (503, {}),
+    (200, {"connection_state": "unknown", "pairing_self_service_enabled": False}),
+    (200, {"connection_state": "open", "pairing_self_service_enabled": "true"}),
+    (200, []),
+])
+def test_integration_status_timeout_or_invalid_response_is_unavailable(status, payload):
+    class StatusClient:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *_): return False
+        async def get(self, *_args, **_kwargs): return httpx.Response(status, json=payload)
+
+    provider = module.WhatsAppStatusProvider(service_url="https://sender.example.test", service_key="s" * 32,
+                                               client_factory=lambda **_: StatusClient())
+    result = asyncio.run(provider.get_status(request_id="status-request-unique-123"))
+    assert result.gateway_reachable is False
+    assert result.connection_state == "unavailable"
+    assert result.pairing_self_service_enabled is False
+
+
+def test_integration_status_rejects_untrusted_http_destination_without_request():
+    called = False
+    def factory(**_):
+        nonlocal called
+        called = True
+        raise AssertionError("client should not be created")
+    provider = module.WhatsAppStatusProvider(service_url="http://gateway.example.test:3002",
+        service_transport="speedtrail-private-http", service_key="s" * 32, client_factory=factory)
+    result = asyncio.run(provider.get_status(request_id="status-request-unique-123"))
+    assert result.gateway_reachable is False
+    assert called is False
+
+
+def test_integration_status_timeout_is_unavailable_without_logging_credentials(caplog):
+    class TimeoutClient:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *_): return False
+        async def get(self, *_args, **_kwargs):
+            raise httpx.ReadTimeout("synthetic status timeout")
+
+    provider = module.WhatsAppStatusProvider(service_url="https://sender.example.test", service_key="s" * 32,
+                                               client_factory=lambda **_: TimeoutClient())
+    result = asyncio.run(provider.get_status(request_id="status-request-unique-123"))
+    assert result.gateway_reachable is False
+    assert result.connection_state == "unavailable"
+    assert "s" * 32 not in caplog.text

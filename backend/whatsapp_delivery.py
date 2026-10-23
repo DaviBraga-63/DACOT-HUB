@@ -30,6 +30,16 @@ class PairingCodeResult:
         self.code = code
 
 
+class IntegrationStatusResult:
+    """Sanitized operational state returned by the WhatsApp gateway only."""
+
+    def __init__(self, *, connection_state: str = "unavailable", gateway_reachable: bool = False,
+                 pairing_self_service_enabled: bool = False):
+        self.connection_state = connection_state
+        self.gateway_reachable = gateway_reachable
+        self.pairing_self_service_enabled = pairing_self_service_enabled
+
+
 def _https_origin(value: str) -> bool:
     try:
         parsed = urlsplit(value)
@@ -141,3 +151,54 @@ class WhatsAppPairingProvider:
             return PairingCodeResult(code if isinstance(code, str) and re.fullmatch(r"[A-Z0-9]{4}-?[A-Z0-9]{4}", code) else None)
         except (httpx.HTTPError, ValueError, OSError, json.JSONDecodeError):
             return PairingCodeResult()
+
+
+class WhatsAppStatusProvider:
+    """Read the narrow, non-sensitive gateway status through the private service path."""
+
+    _KNOWN_CONNECTION_STATES = {
+        "open", "connecting", "pairing", "disconnected", "logged_out", "error", "stopped", "disabled",
+    }
+
+    def __init__(self, *, service_url: str, service_key: str, client_factory=None,
+                 ca_file=None, service_transport: str = "https"):
+        self.configured_service_url = service_url
+        self.service_url = service_url.rstrip("/")
+        self.service_transport = service_transport
+        self.service_key = service_key
+        self.client_factory = client_factory or httpx.AsyncClient
+        self.ca_file = ca_file
+
+    async def get_status(self, *, request_id: str) -> IntegrationStatusResult:
+        if (not _service_origin(self.configured_service_url, self.service_transport)
+                or len(self.service_key) < 32 or not request_id or len(request_id) > 128):
+            return IntegrationStatusResult()
+        try:
+            timestamp = str(int(time.time()))
+            signed = f"GET\\n/internal/integration-status\\n{timestamp}\\n{request_id}".encode()
+            signature = hmac.new(self.service_key.encode(), signed, hashlib.sha256).hexdigest()
+            options = {"timeout": 3.0, "follow_redirects": False, "trust_env": False}
+            if self.ca_file:
+                options["verify"] = self.ca_file
+            async with self.client_factory(**options) as client:
+                response = await client.get(
+                    f"{self.service_url}/internal/integration-status",
+                    headers={"Authorization": f"Bearer {self.service_key}", "Idempotency-Key": request_id,
+                             "X-DACOT-Timestamp": timestamp, "X-DACOT-Signature": signature},
+                )
+            if response.status_code != 200:
+                return IntegrationStatusResult()
+            data = response.json()
+            if not isinstance(data, dict):
+                return IntegrationStatusResult()
+            state = data.get("connection_state")
+            pairing_enabled = data.get("pairing_self_service_enabled")
+            if state not in self._KNOWN_CONNECTION_STATES or not isinstance(pairing_enabled, bool):
+                return IntegrationStatusResult()
+            return IntegrationStatusResult(
+                connection_state=state,
+                gateway_reachable=True,
+                pairing_self_service_enabled=pairing_enabled,
+            )
+        except (httpx.HTTPError, ValueError, OSError, json.JSONDecodeError):
+            return IntegrationStatusResult()

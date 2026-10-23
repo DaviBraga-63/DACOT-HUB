@@ -21,7 +21,7 @@ from handoff_policy import validate_handoff_configuration, validate_launch_url, 
 from orders_launch_urls import ORDERS_LAUNCH_URL_TEMPLATE, migrate_legacy_orders_launch_urls
 from orders_user_grants import ORDERS_MODULE_KEY, bootstrap_orders_user_grants
 from whatsapp_numbers import normalize_brazilian_number
-from whatsapp_delivery import WhatsAppDeliveryProvider, WhatsAppPairingProvider
+from whatsapp_delivery import WhatsAppDeliveryProvider, WhatsAppPairingProvider, WhatsAppStatusProvider
 from email_delivery import (
     send_orders_first_access_email as _send_orders_first_access_email,
     send_password_reset_email as _send_password_reset_email,
@@ -451,6 +451,16 @@ async def _request_gateway_pairing_code(number: str, request_id: str) -> Optiona
     return (await provider.request_code(number=number, request_id=request_id)).code
 
 
+async def _get_whatsapp_integration_status():
+    provider = WhatsAppStatusProvider(
+        service_url=os.environ.get("WHATSAPP_SERVICE_URL", ""),
+        service_key=os.environ.get("WHATSAPP_SERVICE_SECRET", ""),
+        ca_file=os.environ.get("WHATSAPP_SERVICE_CA_FILE") or None,
+        service_transport=os.environ.get("WHATSAPP_SERVICE_TRANSPORT", "https"),
+    )
+    return await provider.get_status(request_id=secrets.token_urlsafe(24))
+
+
 # ─── Auth endpoints ────────────────────────────────────────────────────────────
 def _client_ip(request: Request) -> str:
     # Login and recovery must apply the same explicit proxy trust policy.
@@ -719,6 +729,21 @@ async def request_whatsapp_pairing_code(payload: WhatsAppPairingCodeIn, response
     response.headers["Cache-Control"] = "no-store"
     response.headers["Referrer-Policy"] = "no-referrer"
     return {"code": code}
+
+
+@api_router.get("/hub/whatsapp/status")
+async def whatsapp_integration_status(response: Response, _user: dict = Depends(get_super_admin)):
+    """Expose only the sanitized gateway state to authenticated super-admins."""
+    status = await _get_whatsapp_integration_status()
+    pairing_enabled = bool(status.gateway_reachable and status.pairing_self_service_enabled
+                           and _pairing_self_service_enabled())
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    return {
+        "connection_state": status.connection_state if status.gateway_reachable else "unavailable",
+        "gateway_reachable": status.gateway_reachable,
+        "pairing_self_service_enabled": pairing_enabled,
+    }
 
 
 # ─── Activity log helper ───────────────────────────────────────────────────────

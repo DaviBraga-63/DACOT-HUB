@@ -77,6 +77,40 @@ test('gateway rejects unauthenticated requests and does not resend accepted or i
   } finally { removeTestDirectory(dir); }
 });
 
+test('integration status is authenticated, replay-safe, and exposes only sanitized state', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dacot-wa-'));
+  try {
+    const store = openStore(join(dir, 'state.sqlite'), randomBytes(32));
+    const secret = 'x'.repeat(32), adminSecret = 'y'.repeat(32), pairingSecret = 'z'.repeat(32);
+    const connection = { state: 'open' };
+    const gateway = createGateway({ secret, adminSecret, pairingSecret, pairingEnabled: false,
+      frontendOrigin: 'https://hub.example.test', connection, store });
+    const request = (id) => {
+      const timestamp = String(Math.floor(Date.now() / 1000));
+      const signed = `GET\n/internal/integration-status\n${timestamp}\n${id}`;
+      return { method: 'GET', path: '/internal/integration-status', authorization: `Bearer ${secret}`,
+        id, rawBody: Buffer.alloc(0), timestamp,
+        signature: createHmac('sha256', secret).update(signed).digest('hex') };
+    };
+    const first = request('integration-status-request-one');
+    assert.equal((await gateway.handle({ ...first, authorization: `Bearer ${adminSecret}` })).status, 401);
+    assert.equal((await gateway.handle({ ...first, signature: '0'.repeat(64) })).status, 401);
+    assert.equal((await gateway.handle({ ...first, method: 'POST' })).status, 400);
+    assert.deepEqual(await gateway.handle(first), {
+      status: 200,
+      body: { connection_state: 'open', pairing_self_service_enabled: false },
+    });
+    assert.equal((await gateway.handle(first)).status, 409);
+    for (const [index, state] of ['connecting', 'pairing', 'disconnected', 'logged_out', 'error', 'stopped', 'disabled'].entries()) {
+      connection.state = state;
+      const response = await gateway.handle(request(`integration-status-request-${index + 20}`));
+      assert.deepEqual(response.body, { connection_state: state, pairing_self_service_enabled: false });
+      assert.equal(Object.keys(response.body).length, 2);
+    }
+    store.close();
+  } finally { removeTestDirectory(dir); }
+});
+
 test('pairing-code delegation is opt-in, separately signed, replay-safe, and never needs the admin secret', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'dacot-wa-'));
   try {

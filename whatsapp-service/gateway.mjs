@@ -14,14 +14,41 @@ export function createGateway({ secret, adminSecret, pairingSecret, pairingEnabl
   if (Buffer.byteLength(adminSecret || '') < 32 || sameSecret(secret, adminSecret)) throw new Error('Invalid administrative secret');
   if (pairingEnabled && (Buffer.byteLength(pairingSecret || '') < 32 || sameSecret(secret, pairingSecret) || sameSecret(adminSecret, pairingSecret)))
     throw new Error('Invalid pairing secret');
+  const recentStatusRequests = new Map();
+
+  function reserveStatusRequest(id, timestamp) {
+    const nowSeconds = Math.floor(now() / 1000);
+    for (const [key, seenAt] of recentStatusRequests) {
+      if (seenAt < nowSeconds - 125) recentStatusRequests.delete(key);
+    }
+    const key = createHash('sha256').update(id).digest('hex');
+    if (recentStatusRequests.has(key)) return false;
+    recentStatusRequests.set(key, timestamp);
+    return true;
+  }
+
   return {
     async handle({ method, path, authorization, id, body, rawBody, timestamp, signature }) {
       const administrative = ['/internal/status', '/internal/pairing', '/internal/pairing/reset'].includes(path);
       const pairing = path === '/internal/pairing/code';
+      const integrationStatus = path === '/internal/integration-status';
       if (pairing && !pairingEnabled) return { status: 404 };
       const expected = administrative ? adminSecret : (pairing ? pairingSecret : secret);
       if (!authorization?.startsWith('Bearer ') || !sameSecret(authorization.slice(7), expected)) return { status: 401 };
       if (method === 'GET' && path === '/internal/status') return { status: 200, body: { state: connection.state } };
+      if (integrationStatus) {
+        if (method !== 'GET' || !/^[A-Za-z0-9_-]{16,128}$/.test(id || '') || !/^[a-f0-9]{64}$/.test(signature || '')
+            || !Buffer.isBuffer(rawBody) || rawBody.length !== 0 || !/^\d{10}$/.test(timestamp || '')
+            || Math.abs(Math.floor(now() / 1000) - Number(timestamp)) > 120) return { status: 400 };
+        const signed = `GET\n/internal/integration-status\n${timestamp}\n${id}`;
+        const expectedSignature = createHmac('sha256', secret).update(signed).digest('hex');
+        if (!sameSecret(signature, expectedSignature)) return { status: 401 };
+        if (!reserveStatusRequest(id, Number(timestamp))) return { status: 409 };
+        return { status: 200, body: {
+          connection_state: connection.state,
+          pairing_self_service_enabled: pairingEnabled,
+        } };
+      }
       if (method === 'GET' && path === '/internal/pairing') {
         return connection.qr ? { status: 200, body: { qr: connection.qr } } : { status: 404 };
       }

@@ -42,10 +42,14 @@ test('public listener health contains no private state and all administrative ro
       assert.equal(r.status, 404);
     }
     assert.equal(calls, 0);
+    assert.equal((await fetch(`${base}/internal/integration-status`, {
+      headers: { Authorization: 'Bearer synthetic', 'Idempotency-Key': 'integration-status-request' },
+    })).status, 401);
+    assert.equal(calls, 1);
     assert.equal((await fetch(`${base}/internal/auth-messages`, { method: 'POST', body: '{}' })).status, 401);
-    assert.equal(calls, 1);
+    assert.equal(calls, 2);
     assert.equal((await fetch(`${base}/internal/auth-messages`, { method: 'POST', body: 'x'.repeat(4097) })).status, 413);
-    assert.equal(calls, 1);
+    assert.equal(calls, 2);
   });
 });
 
