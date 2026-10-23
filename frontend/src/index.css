@@ -301,6 +301,11 @@
     border-radius: var(--dh-radius-md); box-shadow: var(--dh-shadow-lg);
     animation: dhFadeIn .14s ease-out;
 }
+.dh-settings-menu { left: auto; right: 0; min-width: 220px; }
+.dh-settings-menu-label {
+    padding: 8px 10px 5px; color: var(--dh-muted); font-size: 10px;
+    font-weight: 700; letter-spacing: .08em; text-transform: uppercase;
+}
 .dh-modules-menu-item,
 .dh-modules-menu-manage {
     width: 100%; display: flex; align-items: center; gap: 10px;
