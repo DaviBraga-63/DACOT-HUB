@@ -10,10 +10,10 @@ export function openStore(path, key) {
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   const db = new DatabaseSync(path);
   try { chmodSync(path, 0o600); } catch { /* Windows ACLs are managed externally. */ }
-  db.exec('PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; CREATE TABLE IF NOT EXISTS auth (id TEXT PRIMARY KEY, value BLOB NOT NULL); CREATE TABLE IF NOT EXISTS sends (id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, status TEXT NOT NULL, created_at INTEGER NOT NULL, recipient TEXT NOT NULL);');
+  db.exec('PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; CREATE TABLE IF NOT EXISTS auth (id TEXT PRIMARY KEY, value BLOB NOT NULL); CREATE TABLE IF NOT EXISTS sends (id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, status TEXT NOT NULL, created_at INTEGER NOT NULL, recipient TEXT NOT NULL); CREATE TABLE IF NOT EXISTS pairing_requests (id TEXT PRIMARY KEY, phone TEXT NOT NULL, status TEXT NOT NULL, created_at INTEGER NOT NULL);');
   // Retain longer than the longest link lifetime (30 days), including replay
   // tolerance. Pending/indeterminate records remain protected throughout it.
-  db.exec('CREATE INDEX IF NOT EXISTS sends_created_at ON sends(created_at); CREATE INDEX IF NOT EXISTS sends_recipient_time ON sends(recipient, created_at);');
+  db.exec('CREATE INDEX IF NOT EXISTS sends_created_at ON sends(created_at); CREATE INDEX IF NOT EXISTS sends_recipient_time ON sends(recipient, created_at); CREATE INDEX IF NOT EXISTS pairing_requests_phone_time ON pairing_requests(phone, created_at);');
   const seal = (value) => {
     const nonce = randomBytes(12);
     const cipher = createCipheriv('aes-256-gcm', key, nonce);
@@ -61,8 +61,28 @@ export function openStore(path, key) {
       const keyHash = digest('request', id);
       db.prepare('UPDATE sends SET status=? WHERE id=?').run(status, keyHash);
     },
+    reservePairing(id, phone) {
+      const keyHash = digest('pairing-request', id);
+      const phoneHash = digest('pairing-phone', phone);
+      db.exec('BEGIN IMMEDIATE');
+      try {
+        if (db.prepare('SELECT id FROM pairing_requests WHERE id=?').get(keyHash)) {
+          db.exec('COMMIT'); return 'duplicate';
+        }
+        const since = Date.now() - 900000;
+        const count = db.prepare('SELECT COUNT(*) AS n FROM pairing_requests WHERE phone=? AND created_at>?').get(phoneHash, since).n;
+        if (count >= 3) { db.exec('COMMIT'); return 'limited'; }
+        db.prepare('INSERT INTO pairing_requests VALUES (?, ?, ?, ?)').run(keyHash, phoneHash, 'pending', Date.now());
+        db.exec('COMMIT'); return 'new';
+      } catch (error) { db.exec('ROLLBACK'); throw error; }
+    },
+    completePairing(id, status) {
+      db.prepare('UPDATE pairing_requests SET status=? WHERE id=?').run(status, digest('pairing-request', id));
+    },
     cleanup(now = Date.now()) {
-      return db.prepare('DELETE FROM sends WHERE created_at < ?').run(now - 35 * 86400000).changes;
+      const sendChanges = db.prepare('DELETE FROM sends WHERE created_at < ?').run(now - 35 * 86400000).changes;
+      const pairingChanges = db.prepare('DELETE FROM pairing_requests WHERE created_at < ?').run(now - 900000).changes;
+      return sendChanges + pairingChanges;
     },
     close() { db.close(); },
   };

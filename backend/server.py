@@ -21,7 +21,7 @@ from handoff_policy import validate_handoff_configuration, validate_launch_url, 
 from orders_launch_urls import ORDERS_LAUNCH_URL_TEMPLATE, migrate_legacy_orders_launch_urls
 from orders_user_grants import ORDERS_MODULE_KEY, bootstrap_orders_user_grants
 from whatsapp_numbers import normalize_brazilian_number
-from whatsapp_delivery import WhatsAppDeliveryProvider
+from whatsapp_delivery import WhatsAppDeliveryProvider, WhatsAppPairingProvider
 from email_delivery import (
     send_orders_first_access_email as _send_orders_first_access_email,
     send_password_reset_email as _send_password_reset_email,
@@ -106,7 +106,7 @@ api_router = APIRouter(prefix="/api")
 @app.middleware("http")
 async def protect_reset_response(request: Request, call_next):
     response = await call_next(request)
-    if request.url.path in {"/reset-password", "/api/auth/reset-password"}:
+    if request.url.path in {"/reset-password", "/api/auth/reset-password", "/api/hub/whatsapp/pairing-code"}:
         response.headers["Referrer-Policy"] = "no-referrer"
         response.headers["Cache-Control"] = "no-store"
     return response
@@ -364,6 +364,12 @@ class ResetIn(BaseModel):
     password: str = Field(min_length=6)
 
 
+class WhatsAppPairingCodeIn(BaseModel):
+    """Confirmation is deliberately required for this high-impact operation."""
+    phone: str = Field(min_length=10, max_length=32)
+    password: str = Field(min_length=1, max_length=256)
+
+
 async def _issue_password_reset(user_id: str, email: str, user_type: str, *, first_access: bool = False,
                                 whatsapp_version: Optional[str] = None) -> str:
     """Create the existing one-time reset credential without exposing it."""
@@ -404,6 +410,45 @@ async def _send_whatsapp_reset(number: str, token: str, purpose: str):
     if result.value != "accepted":
         logger.warning("whatsapp_delivery_unavailable purpose=%s", purpose)
     return result
+
+
+def _pairing_self_service_enabled() -> bool:
+    # Default-off: leave this emergency control unavailable after pairing unless
+    # founders explicitly enable it again through the deployment environment.
+    return os.environ.get("WHATSAPP_PAIRING_SELF_SERVICE_ENABLED", "false") == "true"
+
+
+async def _allow_pairing_code_request(actor_id: str) -> bool:
+    """Shared bounded admission for a super-admin pairing-code request.
+
+    Counters contain only HMAC-like hashes of scope/actor identifiers; neither
+    the phone nor the returned pairing code is retained.
+    """
+    now = now_utc()
+    bucket = int(now.timestamp()) // 900
+    try:
+        for scope, identity, limit in (("global", "all", 6), ("actor", actor_id, 2)):
+            key = hashlib.sha256(f"whatsapp-pairing:{scope}:{identity}:{bucket}".encode()).hexdigest()
+            doc = await db.whatsapp_pairing_requests.find_one_and_update(
+                {"_id": key}, {"$inc": {"count": 1}, "$setOnInsert": {"created_at": now}},
+                upsert=True, return_document=ReturnDocument.AFTER,
+            )
+            if doc["count"] > limit:
+                return False
+        return True
+    except PyMongoError:
+        logger.warning("whatsapp_pairing_rate_limiter_unavailable")
+        return False
+
+
+async def _request_gateway_pairing_code(number: str, request_id: str) -> Optional[str]:
+    provider = WhatsAppPairingProvider(
+        service_url=os.environ.get("WHATSAPP_SERVICE_URL", ""),
+        service_key=os.environ.get("WHATSAPP_PAIRING_SERVICE_SECRET", ""),
+        ca_file=os.environ.get("WHATSAPP_SERVICE_CA_FILE") or None,
+        service_transport=os.environ.get("WHATSAPP_SERVICE_TRANSPORT", "https"),
+    )
+    return (await provider.request_code(number=number, request_id=request_id)).code
 
 
 # ─── Auth endpoints ────────────────────────────────────────────────────────────
@@ -642,6 +687,38 @@ async def reset(payload: ResetIn):
     )
     await db.login_attempts.delete_many({"email": email})
     return {"ok": True}
+
+
+@api_router.post("/hub/whatsapp/pairing-code")
+async def request_whatsapp_pairing_code(payload: WhatsAppPairingCodeIn, response: Response,
+                                         user: dict = Depends(get_super_admin)):
+    """Return one ephemeral pairing code to a re-authenticated super-admin.
+
+    The browser never receives gateway credentials and the HUB never receives
+    WHATSAPP_ADMIN_SECRET.  This endpoint is deliberately default-off and is
+    meant only for a controlled pairing window.
+    """
+    if not _pairing_self_service_enabled():
+        raise HTTPException(404, "Indisponível")
+    if not await _allow_pairing_code_request(user["_id"]):
+        raise HTTPException(429, "Tente novamente mais tarde")
+    current = await db.hub_users.find_one({"_id": ObjectId(user["_id"]), "active": True, "deleted_at": None},
+                                          {"password_hash": 1, "name": 1})
+    if not current or not verify_password(payload.password, current.get("password_hash", "")):
+        raise HTTPException(401, "Não foi possível confirmar a identidade")
+    try:
+        number = normalize_brazilian_number(payload.phone)
+    except ValueError:
+        raise HTTPException(400, "Número de WhatsApp inválido") from None
+    code = await _request_gateway_pairing_code(number, secrets.token_urlsafe(32))
+    if not code:
+        raise HTTPException(503, "Pareamento temporariamente indisponível")
+    await log_activity(actor_id=user["_id"], actor_name=current.get("name", ""),
+                       action="whatsapp_gateway.pairing_code_requested",
+                       target_type="whatsapp_gateway", metadata={"channel": "pairing_code"})
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    return {"code": code}
 
 
 # ─── Activity log helper ───────────────────────────────────────────────────────
@@ -2095,6 +2172,7 @@ async def startup():
     await db.password_reset_requests.create_index("email")
     await db.password_reset_requests.create_index("created_at", expireAfterSeconds=900)
     await db.password_reset_cooldowns.create_index("last_allowed", expireAfterSeconds=3600)
+    await db.whatsapp_pairing_requests.create_index("created_at", expireAfterSeconds=900)
     await ensure_indexes(db)
 
     # Seed admin

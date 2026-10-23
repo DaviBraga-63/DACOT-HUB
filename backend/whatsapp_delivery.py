@@ -9,6 +9,7 @@ from enum import Enum
 import hashlib
 import hmac
 import json
+import re
 import time
 from urllib.parse import quote, urlsplit
 
@@ -20,6 +21,13 @@ from whatsapp_numbers import normalize_brazilian_number
 class DeliveryResult(str, Enum):
     ACCEPTED = "accepted"
     UNAVAILABLE = "unavailable"
+
+
+class PairingCodeResult:
+    """A one-time WhatsApp linking code, intentionally never persisted here."""
+
+    def __init__(self, code: str | None = None):
+        self.code = code
 
 
 def _https_origin(value: str) -> bool:
@@ -86,3 +94,50 @@ class WhatsAppDeliveryProvider:
             return DeliveryResult.ACCEPTED if response.status_code in (200, 202) else DeliveryResult.UNAVAILABLE
         except (httpx.HTTPError, ValueError, OSError):
             return DeliveryResult.UNAVAILABLE
+
+
+class WhatsAppPairingProvider:
+    """Narrow, separately-authenticated delegation for an emergency pairing code.
+
+    This is deliberately distinct from both the delivery credential and the
+    loopback-only administrative credential.  It cannot read QR/state or reset
+    the session, and it never writes the returned code to disk or logs.
+    """
+
+    def __init__(self, *, service_url: str, service_key: str, client_factory=None,
+                 ca_file=None, service_transport: str = "https"):
+        self.configured_service_url = service_url
+        self.service_url = service_url.rstrip("/")
+        self.service_transport = service_transport
+        self.service_key = service_key
+        self.client_factory = client_factory or httpx.AsyncClient
+        self.ca_file = ca_file
+
+    async def request_code(self, *, number: str, request_id: str) -> PairingCodeResult:
+        if (not _service_origin(self.configured_service_url, self.service_transport)
+                or len(self.service_key) < 32 or not request_id or len(request_id) > 128):
+            return PairingCodeResult()
+        try:
+            # Baileys accepts country code plus digits, without a plus sign.
+            destination = normalize_brazilian_number(number).lstrip("+")
+            body = json.dumps({"destination": destination}, separators=(",", ":"),
+                              ensure_ascii=True).encode("utf-8")
+            timestamp = str(int(time.time()))
+            signature = hmac.new(self.service_key.encode(), timestamp.encode() + b"." + body,
+                                 hashlib.sha256).hexdigest()
+            options = {"timeout": 10.0, "follow_redirects": False, "trust_env": False}
+            if self.ca_file:
+                options["verify"] = self.ca_file
+            async with self.client_factory(**options) as client:
+                response = await client.post(
+                    f"{self.service_url}/internal/pairing/code",
+                    headers={"Authorization": f"Bearer {self.service_key}", "Idempotency-Key": request_id,
+                             "X-DACOT-Timestamp": timestamp, "X-DACOT-Signature": signature,
+                             "Content-Type": "application/json"}, content=body,
+                )
+            if response.status_code != 202:
+                return PairingCodeResult()
+            code = response.json().get("code")
+            return PairingCodeResult(code if isinstance(code, str) and re.fullmatch(r"[A-Z0-9]{4}-?[A-Z0-9]{4}", code) else None)
+        except (httpx.HTTPError, ValueError, OSError, json.JSONDecodeError):
+            return PairingCodeResult()

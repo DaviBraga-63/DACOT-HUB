@@ -46,7 +46,8 @@ test('gateway rejects unauthenticated requests and does not resend accepted or i
     const connection = { state: 'open', send: async () => { sends++; } };
     const secret = 'x'.repeat(32);
     const adminSecret = 'y'.repeat(32);
-    const gateway = createGateway({ secret, adminSecret, frontendOrigin: 'https://hub.example.test', connection, store });
+    const pairingSecret = 'z'.repeat(32);
+    const gateway = createGateway({ secret, adminSecret, pairingSecret, frontendOrigin: 'https://hub.example.test', connection, store });
     const token = 'a'.repeat(43);
     const request = { method: 'POST', path: '/internal/auth-messages', authorization: `Bearer ${secret}`, id: createHash('sha256').update(token).digest('hex'),
       body: { destination: '+5511912345678', purpose: 'recovery', link: `https://hub.example.test/reset-password?token=${'a'.repeat(43)}` } };
@@ -72,6 +73,34 @@ test('gateway rejects unauthenticated requests and does not resend accepted or i
     assert.equal(sends, 2);
     connection.state = 'disconnected';
     assert.equal((await gateway.handle({ ...request })).status, 503);
+    store.close();
+  } finally { removeTestDirectory(dir); }
+});
+
+test('pairing-code delegation is opt-in, separately signed, replay-safe, and never needs the admin secret', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dacot-wa-'));
+  try {
+    const store = openStore(join(dir, 'state.sqlite'), randomBytes(32));
+    const secret = 'x'.repeat(32), adminSecret = 'y'.repeat(32), pairingSecret = 'z'.repeat(32);
+    let calls = 0;
+    const connection = { state: 'pairing', requestPairingCode: async () => { calls++; return 'ABCD1234'; } };
+    const gateway = createGateway({ secret, adminSecret, pairingSecret, pairingEnabled: true,
+      frontendOrigin: 'https://hub.example.test', connection, store });
+    const body = { destination: '5511912345678' };
+    const rawBody = Buffer.from(JSON.stringify(body));
+    const timestamp = String(Math.floor(Date.now() / 1000));
+    const request = { method: 'POST', path: '/internal/pairing/code', authorization: `Bearer ${pairingSecret}`,
+      id: 'pairing-request-one', body, rawBody, timestamp,
+      signature: createHmac('sha256', pairingSecret).update(timestamp + '.').update(rawBody).digest('hex') };
+    assert.equal((await gateway.handle({ ...request, authorization: `Bearer ${adminSecret}` })).status, 401);
+    assert.equal((await gateway.handle({ ...request, signature: '0'.repeat(64) })).status, 401);
+    const accepted = await gateway.handle(request);
+    assert.deepEqual(accepted, { status: 202, body: { code: 'ABCD1234' } });
+    assert.equal((await gateway.handle(request)).status, 409);
+    assert.equal(calls, 1);
+    const disabled = createGateway({ secret, adminSecret, pairingEnabled: false,
+      frontendOrigin: 'https://hub.example.test', connection, store });
+    assert.equal((await disabled.handle(request)).status, 404);
     store.close();
   } finally { removeTestDirectory(dir); }
 });

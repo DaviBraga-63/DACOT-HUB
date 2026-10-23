@@ -75,11 +75,13 @@ ou novo deploy controlado, não recompilação React.
 | WHATSAPP_STORAGE_KEY | 32 bytes aleatórios em Base64, estáveis | Sim | Sim |
 | WHATSAPP_SERVICE_SECRET | Aleatório >=32 bytes, compartilhado só com HUB | Sim | Sim |
 | WHATSAPP_ADMIN_SECRET | Outro segredo aleatório >=32 bytes | Sim | Sim |
+| WHATSAPP_PAIRING_SERVICE_SECRET | Segredo novo e distinto >=32 bytes, compartilhado apenas com o HUB | Condicional | Sim |
+| WHATSAPP_PAIRING_SELF_SERVICE_ENABLED | `false` por padrão; `true` apenas para gerar o código | Condicional | Não |
 | WHATSAPP_FRONTEND_ORIGIN | `https://dacot-frontend.speedtrail.com.br` | Sim | Não |
 | WHATSAPP_TLS_KEY_FILE | Caminho PEM privado; só no modo `https` | Condicional | Arquivo privado |
 | WHATSAPP_TLS_CERT_FILE | Caminho do certificado correspondente, só `https` | Condicional | Não |
 
-Gerar os três segredos com um gerenciador seguro/CSPRNG, salvar diretamente no
+Gerar os quatro segredos com um gerenciador seguro/CSPRNG, salvar diretamente no
 cofre da plataforma, sem terminal gravado, chat ou Git. Para STORAGE_KEY gerar
 exatamente 32 bytes e codificar Base64; os demais podem codificar 32 ou mais bytes
 em Base64/hex. Nunca reutilizar JWT_SECRET, HANDOFF_JWT_SECRET ou MODULE_API_KEY.
@@ -107,6 +109,8 @@ SQLite não é criptografado integralmente: proteger volume e backups também.
 | HUB WHATSAPP_SERVICE_URL | `http://dacot-whatsapp:3002` | Para WhatsApp; não secreta | Reiniciar HUB |
 | HUB WHATSAPP_SERVICE_TRANSPORT | `speedtrail-private-http`; padrão `https` | Obrigatória para habilitar a exceção HTTP | Reiniciar HUB |
 | HUB WHATSAPP_SERVICE_SECRET | Mesmo segredo de envio do gateway | Sim; secreta | Reiniciar HUB |
+| HUB WHATSAPP_PAIRING_SERVICE_SECRET | Segredo novo, aleatório e distinto (>=32 bytes), igual apenas ao segredo de delegação do gateway | Condicional; secreta | Somente durante pareamento controlado |
+| HUB WHATSAPP_PAIRING_SELF_SERVICE_ENABLED | `false` por padrão; `true` somente durante a janela controlada | Condicional; não secreta | Reiniciar HUB |
 | HUB WHATSAPP_SERVICE_CA_FILE | Omitir no HTTP privado e HTTPS público confiável; caminho de CA privada somente com HTTPS próprio | Condicional; CA pública | Reiniciar HUB |
 | HUB FRONTEND_URL | `https://dacot-frontend.speedtrail.com.br` | Sim; não secreta | Reiniciar HUB |
 | HUB RECOVERY_TRUSTED_PROXY_CIDRS | Somente CIDRs de proxies verificados; vazio até comprovação | Opcional; não secreta | Reiniciar HUB |
@@ -189,6 +193,35 @@ HTTP existe apenas no loopback local ou dentro do túnel SSH criptografado.
 Não executar pelo pipeline/log de deploy nem salvar saída ou captura do QR.
 Sem `--reset` inicialmente; reset somente para conta desconectada definitivamente.
 Consultar estado somente na porta administrativa com autenticação.
+
+### Código de vinculação controlado pelo HUB
+
+Caso a SpeedTrail não disponibilize shell/túnel privado, o QR continua proibido
+na web pública. Há uma alternativa estritamente temporária: o código de
+vinculação do WhatsApp. Ela só existe quando **as duas** aplicações recebem
+`WHATSAPP_PAIRING_SELF_SERVICE_ENABLED=true` e deve ser desligada logo após o
+pareamento.
+
+- Somente uma sessão de `super_admin` do HUB pode solicitar o código em
+  `/administracao/whatsapp`; a senha atual é confirmada a cada pedido.
+- O navegador recebe apenas o código efêmero, em resposta `no-store`; não recebe
+  `WHATSAPP_ADMIN_SECRET`, QR, estado administrativo ou credenciais da sessão.
+- O HUB usa `WHATSAPP_PAIRING_SERVICE_SECRET`, exclusivo para esse único pedido.
+  Ele é diferente de `WHATSAPP_SERVICE_SECRET` e de `WHATSAPP_ADMIN_SECRET`.
+  A credencial administrativa continua somente no gateway.
+- A chamada HUB → gateway usa Bearer, HMAC-SHA256, timestamp de 120 segundos,
+  idempotência e sem redirects/proxies de ambiente. O gateway guarda somente
+  hashes para anti-replay/limite; nunca o código ou número em logs/auditoria.
+- Limites: duas tentativas por superadministrador e seis globais por 15 minutos
+  no HUB; três por número no gateway. Erros genéricos não revelam estado da
+  sessão. A ação é auditada sem telefone ou código.
+
+Para uso controlado: configurar `WHATSAPP_ENABLED=true` apenas no gateway,
+preencher o novo segredo idêntico no HUB/gateway e manter a restrição pública
+por IP. No WhatsApp da conta de serviço, usar **Dispositivos conectados →
+Vincular com número de telefone** e digitar o código exibido. Após conexão
+confirmada, voltar a variável `WHATSAPP_PAIRING_SELF_SERVICE_ENABLED=false` nos
+dois serviços e reiniciá-los. Não é necessário — nem permitido — expor 3003.
 
 ## Implantação autorizada em etapas e rollback
 
