@@ -1,23 +1,43 @@
 # WhatsApp do HUB na SpeedTrail
 
-Preparação na branch `feature/whatsapp-speedtrail`, baseada em `9b8fc559`.
+Preparação na branch `feature/whatsapp-speedtrail`, com adaptação de rede privada
+sobre o commit publicado `a32ce22deb2d6788f9aa80b543d06c5472209649`.
 Este documento não autoriza deploy, pareamento ou envio. Não modifica Pedidos.
 
 ## Arquitetura e contrato de proxy
 
-O HUB acessa `https://dacot-whatsapp.speedtrail.com.br` com TLS validado,
-Bearer, HMAC SHA-256, timestamp de 120 segundos e idempotência persistente.
-O gateway pode receber HTTP interno exclusivamente atrás de um proxy HTTPS,
-selecionado explicitamente por `WHATSAPP_TRANSPORT=proxy-http`. Ele não confia
-em X-Forwarded-For/Proto nem os usa como prova de segurança. A plataforma deve
-garantir que a porta 3002 não seja acessível diretamente pela internet e que
-HTTP público seja recusado ou redirecionado ANTES de chegar à aplicação.
-Não enviar credenciais em HTTP mesmo se houver redirecionamento.
+Conforme resposta do suporte fornecida pelos fundadores, a rede privada existe
+entre aplicações do MESMO projeto, ambiente e região. Endereços confirmados:
+`http://dacot-principal:8000`, `http://dacot-frontend:3000` e
+`http://dacot-whatsapp:3002`. O tráfego privado é HTTP, sem proxy público ou TLS.
+HTTPS público termina no proxy da SpeedTrail e chega como HTTP ao container.
 
-Confirmar esse contrato na SpeedTrail antes de habilitar envios. A referência
-de outro gateway é indicativa, não comprova a configuração deste serviço.
-Se não houver terminação TLS segura, manter `https` e fornecer certificados
-ao Node ou parar a ativação; nunca desativar verificação no cliente HUB.
+O HUB usa `WHATSAPP_SERVICE_URL=http://dacot-whatsapp:3002` SOMENTE com
+`WHATSAPP_SERVICE_TRANSPORT=speedtrail-private-http`. O padrão `https` continua
+exigindo HTTPS. A exceção compara a origem exata, com porta explícita 3002:
+não admite outros hosts, IPs, caminhos, portas, credenciais ou query strings.
+Uma barra final simples é aceita. Links de primeiro acesso/recuperação continuam
+HTTPS no frontend PÚBLICO, nunca nos hostnames privados.
+
+Bearer, HMAC SHA-256, timestamp de 120 segundos, idempotência e timeout de 10s
+permanecem. Nenhum redirecionamento é seguido, nem mesmo para outro destino
+privado. O cliente usa `trust_env=False`: HTTP_PROXY/HTTPS_PROXY/ALL_PROXY não
+podem encaminhar a chamada e credenciais por outro host. URLs públicas HTTPS
+continuam válidas em ambos os modos, com validação de certificado habilitada;
+não configurar CA de testes para o domínio público.
+
+RISCO ACEITO DE TRANSPORTE: HTTP privado não oferece confidencialidade. Quem
+conseguir observar essa rede pode ler destinatário, link e Bearer. Como a chave
+HMAC é o próprio segredo de envio, sua captura também permite forjar mensagens;
+HMAC não resolve esse risco. O isolamento da plataforma/projeto e os controles de
+acesso às aplicações são parte da fronteira de confiança. Uma aplicação
+comprometida no mesmo ambiente é um risco residual. Não hospedar aplicações não
+confiáveis nele. Se for exigida confidencialidade ponta a ponta dentro da rede,
+usar o modo HTTPS próprio com CA/certificado interno adequado em outra etapa.
+
+A URL pública do gateway permanece, mas deve ser restringida por IP na aba Rede.
+Segundo o suporte, isso não interfere na rota privada. Nunca enviar segredos
+para HTTP público, nem para testar um redirecionamento.
 
 Administração fica em listener separado, FIXO em 127.0.0.1, porta 3003 por
 padrão. A porta pública nunca encaminha status, QR ou reset, mesmo com o
@@ -48,7 +68,7 @@ ou novo deploy controlado, não recompilação React.
 | --- | --- | --- | --- |
 | HOST | `0.0.0.0` (também padrão) | Recomendada explícita | Não |
 | PORT | `3002` (padrão) | Recomendada explícita | Não |
-| WHATSAPP_TRANSPORT | `proxy-http` atrás do proxy; padrão `https` | Sim para proxy | Não |
+| WHATSAPP_TRANSPORT | `proxy-http` para HTTP privado e terminação HTTPS pública; padrão `https` | Sim nesta arquitetura | Não |
 | WHATSAPP_ENABLED | `false` inicialmente; `true` só após autorização | Opt-in; padrão desativado | Não |
 | WHATSAPP_ADMIN_PORT | `3003`, somente loopback | Não | Não |
 | WHATSAPP_DB_PATH | `/var/data/whatsapp.sqlite` (também padrão) | Recomendada explícita | Não |
@@ -84,9 +104,10 @@ SQLite não é criptografado integralmente: proteger volume e backups também.
 
 | Aplicação/KEY | Preenchimento | Obrigatória/secreta | Aplicação da mudança |
 | --- | --- | --- | --- |
-| HUB WHATSAPP_SERVICE_URL | `https://dacot-whatsapp.speedtrail.com.br` | Para WhatsApp; não secreta | Reiniciar HUB |
+| HUB WHATSAPP_SERVICE_URL | `http://dacot-whatsapp:3002` | Para WhatsApp; não secreta | Reiniciar HUB |
+| HUB WHATSAPP_SERVICE_TRANSPORT | `speedtrail-private-http`; padrão `https` | Obrigatória para habilitar a exceção HTTP | Reiniciar HUB |
 | HUB WHATSAPP_SERVICE_SECRET | Mesmo segredo de envio do gateway | Sim; secreta | Reiniciar HUB |
-| HUB WHATSAPP_SERVICE_CA_FILE | Omitir com certificado público confiável; caminho de CA privada nos demais ambientes | Condicional; CA pública | Reiniciar HUB |
+| HUB WHATSAPP_SERVICE_CA_FILE | Omitir no HTTP privado e HTTPS público confiável; caminho de CA privada somente com HTTPS próprio | Condicional; CA pública | Reiniciar HUB |
 | HUB FRONTEND_URL | `https://dacot-frontend.speedtrail.com.br` | Sim; não secreta | Reiniciar HUB |
 | HUB RECOVERY_TRUSTED_PROXY_CIDRS | Somente CIDRs de proxies verificados; vazio até comprovação | Opcional; não secreta | Reiniciar HUB |
 | Frontend REACT_APP_BACKEND_URL | `https://dacot-api.speedtrail.com.br` sem `/api` | Para implantação separada; não secreta | REBUILD frontend |
@@ -102,6 +123,52 @@ Login e recuperação agora usam a mesma política: sem proxy confiável, ignora
 X-Forwarded-For. Isso pode agregar vários usuários no mesmo limite por origem.
 Não resolver com 0.0.0.0/0. Confirmar se o proxy sobrescreve ou anexa cabeçalhos,
 se a porta do backend aceita conexões diretas e quais são seus endereços.
+
+### Verificação da cadeia de proxies
+
+IPs de borda informados: 45.234.95.183 e 45.234.93.242. Cabeçalhos informados:
+X-Forwarded-For, X-Forwarded-Proto, X-Forwarded-Host e X-Real-IP. Isso NÃO prova
+que esses IPs sejam os pares TCP vistos pelo container. Não copiar esses dois
+endereços automaticamente para RECOVERY_TRUSTED_PROXY_CIDRS.
+
+Antes de configurar: pedir ao suporte o par/intervalo exato do último salto,
+a ordem da cadeia e se o proxy descarta cabeçalhos fornecidos pelo cliente.
+Em homologação, com Uvicorn --no-proxy-headers, observar apenas o par TCP e a
+cadeia de IPs de requisições sintéticas, sem cookies, Authorization, corpos,
+query strings ou contas reais. Não criar endpoint público de diagnóstico.
+Comparar requisição pública normal, outra com X-Forwarded-For forjado e uma
+requisição interna autorizada. Confiar somente em /32 ou /128 observados e
+confirmados como estáveis pelo suporte, ou CIDR mínimo oficialmente garantido.
+Verificar que o backend não aceita bypass público direto. Se os pares forem
+dinâmicos e não documentados, manter vazio e registrar a agregação do limite
+por IP do proxy; não ampliar confiança por tentativa. Remover instrumentação
+temporária de homologação após a análise. Não usar X-Real-IP como atalho.
+
+### Rede privada nas três aplicações e restrição pública
+
+1. Conferir no painel o mesmo projeto, ambiente e região das três aplicações.
+   Não foi confirmada a existência/necessidade de um botão de ativação; se
+   houver associação de rede, usar somente a configuração documentada do painel.
+2. Confirmar os aliases e portas: principal:8000, frontend:3000, whatsapp:3002
+   com os hostnames completos listados no início. Manter a administração em
+   127.0.0.1:3003 sem publicação de porta, domínio ou regra de proxy para ela.
+3. Com gateway em manutenção e acesso privado autorizado, confirmar no ambiente
+   do HUB a resolução do alias pelo DNS privado da plataforma e testar
+   GET http://dacot-whatsapp:3002/health. O nome exato permitido pelo código não
+   comprova sozinho a rota/DNS privado. Não enviar mensagens de teste.
+4. Não alterar URLs dos navegadores: frontend/API continuam nos domínios HTTPS
+   públicos existentes. O frontend não precisa consumir hostname privado.
+5. Na aba Rede do gateway, aplicar bloqueio público por padrão e permitir apenas
+   IPs de saída administrativos/monitoramento conhecidos, se a interface exigir
+   uma lista de permitidos. Confirmar a semântica da regra com o suporte antes
+   de salvar; uma lista vazia não deve ser presumida como bloqueio total.
+6. Não liberar os IPs de borda por conveniência: verificar se o controle avalia
+   o cliente original ou o proxy. Liberar um proxy compartilhado pode liberar
+   todos os visitantes. Nunca usar 0.0.0.0/0.
+7. Testar acesso público de uma origem autorizada e outra não autorizada e,
+   separadamente, o health privado do HUB. Verificar também health checks da
+   plataforma para não bloquear sua avaliação de disponibilidade por engano.
+8. Registrar regra anterior e procedimento de reversão antes da mudança.
 
 Frontend: Yarn 1.22.22, `yarn install --frozen-lockfile --production=false`
 e `yarn build`; servir `build/` com fallback SPA sem capturar `/api`.
@@ -127,17 +194,20 @@ Consultar estado somente na porta administrativa com autenticação.
 
 1. Revisar diff, resultados de testes e variáveis. Sem tocar docs/WHATSAPP_DEV.md.
 2. Após autorização explícita, commit/push da branch de trabalho; sem merge main.
-3. Confirmar contrato de proxy, persistência, única instância, shell e versão Node.
+3. Confirmar projeto/ambiente/região, regra pública por IP, única instância,
+   shell privado e versão Node. Validar rede e backup antes de alterações reais.
 4. PONTO DE PARADA: autorizar alteração da aplicação SpeedTrail e secrets.
 5. Configurar gateway completo, WHATSAPP_ENABLED=false; publicar em manutenção.
-6. Validar HTTPS público com verificação normal, health, 401 para envio sem auth,
+6. Validar health privado do HUB e HTTPS público a partir de IP permitido,
+   401 para envio sem auth,
    404 público para status/QR/reset mesmo com credencial, métodos e tamanho.
    Não usar credenciais em comandos gravados. Nunca testar senhas reais.
 7. Reiniciar em manutenção, confirmar persistência com dados sintéticos e excluir
    somente esses dados de teste por procedimento revisado. Não copiar banco WAL
    em uso: backup SQLite consistente ou parada controlada antes de copiar arquivos.
 8. PONTO DE PARADA: autorização coordenada para publicar HUB/frontend da feature
-   e suas variáveis; branches atuais main não contêm toda a integração.
+   e suas variáveis; branches atuais main não contêm toda a integração. Usar
+   URL privada e modo explícito no HUB; preservar URLs públicas no frontend.
 9. Testar login, e-mail, CORS, cookies e isolamento com contas descartáveis.
 10. PONTO DE PARADA: autorização de ativação WHATSAPP_ENABLED=true e pareamento
     no terminal privado. Nunca conectar a sessão local de testes por acidente.
@@ -154,13 +224,27 @@ Erro HUB: restaurar commit/configuração anteriores sem desfazer banco por cóp
 antiga; tokens novos podem ficar inválidos, reemitir depois pelo fluxo autorizado.
 Frontend: restaurar build anterior com URL API compatível; coordenar com backend.
 Nenhum passo requer exclusão de coleções, índices ou alteração manual de usuários.
+Rollback do transporte HUB: antes de voltar a a32ce22 ou anterior, restaurar a
+URL HTTPS pública (ela rejeita HTTP) e a política de IP necessária para o HUB
+somente após confirmação; alternativamente deixar WhatsApp indisponível e manter
+e-mail enquanto se recupera. Nunca reabrir irrestritamente o gateway para isso.
+Backups de volume: suporte informa cópias diárias com retenção de sete dias;
+confirmar no painel um backup real e o procedimento de restauração antes de
+depender dele. Restaurar SQLite de forma consistente, sem trocar STORAGE_KEY;
+um snapshot antigo pode perder deduplicação recente. Não repetir envios de estado
+incerto automaticamente. Registrar horário do último backup/restauração.
 
 ## Limitações a registrar
 
-Railpack/HTTPS/firewall/shell/rede direta/cabeçalhos/proteção de logs/recursos e
-backups da SpeedTrail não foram confirmados por documentação oficial disponível.
-HMAC+TLS não protege disponibilidade contra saturação pública; pedir limites no
-ingress quando disponíveis. Baileys não é API oficial e pode sofrer bloqueios.
+Suporte confirmou HTTP privado, escopo projeto/ambiente/região, TLS no proxy,
+restrição pública por IP e backup diário com retenção de sete dias. Permanecem
+pendentes shell/túnel privado, pares TCP efetivos, sanitização de cabeçalhos,
+isolamento das portas, comportamento do deploy em instância única e evidência
+de restauração de backup. Acesso privado ao namespace de rede do container é
+necessário para parear: console interativo não gravado ou SSH com port forwarding
+até 127.0.0.1:3003. Sem esse recurso, manter WHATSAPP_ENABLED=false. Não expor a
+administração em 0.0.0.0 nem criar rota pública de QR para contornar o bloqueio.
+HMAC não protege disponibilidade contra saturação; Baileys não é API oficial.
 Rotação da chave STORAGE exige procedimento próprio, não alteração direta.
 
 ## Evidências locais — 22/10/2026
@@ -190,3 +274,20 @@ Rotação da chave STORAGE exige procedimento próprio, não alteração direta.
   não comprovam recebimento gracioso de SIGTERM em Linux.
 - Nenhum teste envia mensagens reais ou conecta Baileys; conexão é mockada ou
   desativada. Builds gerados permanecem ignorados. docs/WHATSAPP_DEV.md preservado.
+
+### Regressão após adaptação privada — 22/10/2026
+
+- Mesma suíte P0 completa e harness descartável: **147 aprovados, zero falhas**,
+  em 117,24 segundos, com 48 avisos de depreciação on_event existentes.
+- Suíte Node 22.22.0: **10 aprovados, zero falhas ou skips**; gateway inalterado.
+- Recorte inicial do adaptador/proxy: 42 aprovados (já incluídos nos 147).
+- Novos casos cobrem origem privada exata e configuração explícita, portas,
+  usuário/senha na URL, query/path/fragment, hosts públicos, IPs/metadados,
+  preservação do HMAC/Bearer e links HTTPS, redirects reais do cliente httpx
+  com MockTransport e desconsideração de proxies de ambiente.
+- `git diff --check` sem erros. Frontend não foi alterado; não foi necessário
+  repetir o build desta etapa. DNS privado real, restrição por IP, proxy e
+  backup da SpeedTrail não foram acessados nem validados por estes testes.
+- Quatro arquivos alterados: backend/whatsapp_delivery.py, backend/server.py,
+  backend/p0_tests/test_whatsapp_delivery.py e este documento. Sem commit,
+  push, merge ou deploy nesta etapa.

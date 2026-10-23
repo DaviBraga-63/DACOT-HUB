@@ -397,6 +397,7 @@ async def _send_whatsapp_reset(number: str, token: str, purpose: str):
         service_key=os.environ.get("WHATSAPP_SERVICE_SECRET", ""),
         frontend_url=FRONTEND_URL,
         ca_file=os.environ.get("WHATSAPP_SERVICE_CA_FILE") or None,
+        service_transport=os.environ.get("WHATSAPP_SERVICE_TRANSPORT", "https"),
     )
     result = await provider.send(number=number, token=token, purpose=purpose,
                                  request_id=hashlib.sha256(token.encode()).hexdigest())
