@@ -29,8 +29,8 @@ function formatConnectedBrazilianPhone(phone) {
   return "+55 (" + ddd + ") " + subscriber.slice(0, splitAt) + "-" + subscriber.slice(splitAt);
 }
 
-function StatusChip({ tone, children }) {
-  return <span className={`dh-chip dh-chip-${tone} dh-chip-dot`}>{children}</span>;
+function StatusChip({ tone, children, className = "" }) {
+  return <span className={`dh-chip dh-chip-${tone} dh-chip-dot ${className}`}>{children}</span>;
 }
 
 // This page deliberately renders no QR image. Linking codes exist only during a
@@ -108,81 +108,81 @@ export default function WhatsAppPairing() {
         <article className="dh-card flex h-full flex-col p-6 sm:p-8 lg:p-10" data-testid="whatsapp-connected-account">
           <div className="flex items-start justify-between gap-3">
             <div>
-              <p className="dh-kpi-label">Conta WhatsApp</p>
-              <h2 className="mt-2 text-xl font-semibold text-[var(--dh-text)]">{formatConnectedBrazilianPhone(status?.connected_account_phone)}</h2>
+              <p className="dh-kpi-label text-[13px] sm:text-sm">Conta WhatsApp</p>
+              <h2 className="mt-3 text-3xl font-semibold leading-tight text-[var(--dh-text)] sm:text-4xl lg:text-[clamp(2.25rem,3vw,3.5rem)]">{formatConnectedBrazilianPhone(status?.connected_account_phone)}</h2>
             </div>
-            <Phone size={22} className="text-[var(--dh-accent)]" />
+            <Phone size={32} strokeWidth={1.65} className="shrink-0 text-[var(--dh-accent)]" />
           </div>
-          <p className="mt-4 text-sm text-[var(--dh-muted)]">
+          <p className="mt-5 max-w-xl text-base leading-relaxed text-[var(--dh-muted)] sm:text-lg">
             {status?.connected_account_phone ? "Número da conta ativa reconhecida pelo gateway." : "O gateway não informou um número confiável para a sessão atual."}
           </p>
 
-          <div className="mt-auto border-t border-[var(--dh-border-soft)] pt-6 sm:pt-8">
-            <button type="button" className="dh-btn dh-btn-outline w-full opacity-60 cursor-not-allowed" disabled aria-describedby="whatsapp-change-account-note">
+          <div className="mt-auto border-t border-[var(--dh-border-soft)] pt-7 sm:pt-9">
+            <button type="button" className="dh-btn dh-btn-outline w-full py-4 text-base opacity-60 cursor-not-allowed sm:text-lg" disabled aria-describedby="whatsapp-change-account-note">
               Trocar número do WhatsApp
             </button>
-            <p id="whatsapp-change-account-note" className="mt-3 text-xs text-[var(--dh-muted)]">A troca segura de conta será disponibilizada em uma próxima etapa.</p>
+            <p id="whatsapp-change-account-note" className="mt-4 text-sm leading-relaxed text-[var(--dh-muted)]">A troca segura de conta será disponibilizada em uma próxima etapa.</p>
           </div>
         </article>
 
         <div className="grid gap-5 sm:grid-cols-2 lg:h-full lg:min-h-0 lg:grid-rows-[minmax(0,0.8fr)_minmax(0,1.2fr)]">
-          <article className="dh-card p-5 sm:p-6 lg:h-full" data-testid="whatsapp-connection-status">
+          <article className="dh-card flex h-full flex-col p-6 sm:p-7 lg:p-8" data-testid="whatsapp-connection-status">
             <div className="flex items-start justify-between gap-3">
               <div>
-                <p className="dh-kpi-label">Conexão WhatsApp</p>
-                <h2 className="mt-2 text-lg font-semibold text-[var(--dh-text)]">{connection.label}</h2>
+                <p className="dh-kpi-label text-[13px] sm:text-sm">Conexão WhatsApp</p>
+                <h2 className="mt-3 text-xl font-semibold text-[var(--dh-text)] sm:text-2xl lg:text-[clamp(1.4rem,1.65vw,2rem)]">{connection.label}</h2>
               </div>
-              {connection.tone === "success" ? <CheckCircle2 size={22} className="text-[var(--dh-success-fg)]" /> : <CircleOff size={22} className="text-[var(--dh-muted)]" />}
+              {connection.tone === "success" ? <CheckCircle2 size={28} strokeWidth={1.65} className="shrink-0 text-[var(--dh-success-fg)]" /> : <CircleOff size={28} strokeWidth={1.65} className="shrink-0 text-[var(--dh-muted)]" />}
             </div>
-            <p className="mt-3 text-sm text-[var(--dh-muted)]">{connection.description}</p>
-            <div className="mt-4">
-              {statusLoading ? <StatusChip tone="neutral"><LoaderCircle size={13} className="animate-spin" /> Consultando</StatusChip> : <StatusChip tone={connection.tone}>{connection.label}</StatusChip>}
+            <p className="mt-4 text-sm leading-relaxed text-[var(--dh-muted)] sm:text-base">{connection.description}</p>
+            <div className="mt-auto pt-6">
+              {statusLoading ? <StatusChip tone="neutral" className="px-3 py-1 text-sm sm:text-[15px]"><LoaderCircle size={15} className="animate-spin" /> Consultando</StatusChip> : <StatusChip tone={connection.tone} className="px-3 py-1 text-sm sm:text-[15px]">{connection.label}</StatusChip>}
             </div>
           </article>
 
-          <article className="dh-card p-5 sm:p-6 lg:h-full" data-testid="whatsapp-gateway-status">
+          <article className="dh-card flex h-full flex-col p-6 sm:p-7 lg:p-8" data-testid="whatsapp-gateway-status">
             <div className="flex items-start justify-between gap-3">
               <div>
-                <p className="dh-kpi-label">Serviço gateway</p>
-                <h2 className="mt-2 text-lg font-semibold text-[var(--dh-text)]">{status?.gateway_reachable ? "Gateway disponível" : "Gateway indisponível"}</h2>
+                <p className="dh-kpi-label text-[13px] sm:text-sm">Serviço gateway</p>
+                <h2 className="mt-3 text-xl font-semibold text-[var(--dh-text)] sm:text-2xl lg:text-[clamp(1.4rem,1.65vw,2rem)]">{status?.gateway_reachable ? "Gateway disponível" : "Gateway indisponível"}</h2>
               </div>
-              {status?.gateway_reachable ? <ShieldCheck size={22} className="text-[var(--dh-success-fg)]" /> : <TriangleAlert size={22} className="text-[var(--dh-warning-fg)]" />}
+              {status?.gateway_reachable ? <ShieldCheck size={28} strokeWidth={1.65} className="shrink-0 text-[var(--dh-success-fg)]" /> : <TriangleAlert size={28} strokeWidth={1.65} className="shrink-0 text-[var(--dh-warning-fg)]" />}
             </div>
-            <p className="mt-3 text-sm text-[var(--dh-muted)]">{status?.gateway_reachable ? "O HUB recebeu uma resposta autenticada do gateway." : "O HUB não recebeu uma resposta autenticada do gateway."}</p>
-            <div className="mt-4">
-              <StatusChip tone={status?.gateway_reachable ? "success" : "neutral"}>{status?.gateway_reachable ? "Disponível" : "Indisponível"}</StatusChip>
+            <p className="mt-4 text-sm leading-relaxed text-[var(--dh-muted)] sm:text-base">{status?.gateway_reachable ? "O HUB recebeu uma resposta autenticada do gateway." : "O HUB não recebeu uma resposta autenticada do gateway."}</p>
+            <div className="mt-auto pt-6">
+              <StatusChip tone={status?.gateway_reachable ? "success" : "neutral"} className="px-3 py-1 text-sm sm:text-[15px]">{status?.gateway_reachable ? "Disponível" : "Indisponível"}</StatusChip>
             </div>
           </article>
 
-          <article className="dh-card p-6 sm:col-span-2 sm:p-8 lg:h-full space-y-6" data-testid="whatsapp-pairing-panel">
+          <article className="dh-card flex h-full flex-col p-7 sm:col-span-2 sm:p-9 lg:p-10" data-testid="whatsapp-pairing-panel">
             <div className="flex items-start gap-3">
-              <ShieldCheck size={20} strokeWidth={1.75} className="mt-0.5 shrink-0 text-[var(--dh-accent)]" />
+              <ShieldCheck size={30} strokeWidth={1.65} className="mt-0.5 shrink-0 text-[var(--dh-accent)]" />
               <div>
-                <p className="dh-kpi-label">Pareamento administrativo</p>
-                <h2 className="mt-1 text-xl font-semibold text-[var(--dh-text)]">{pairingEnabled ? "Pareamento habilitado" : "Pareamento bloqueado"}</h2>
-                <p className="mt-2 text-sm text-[var(--dh-muted)]">{pairingEnabled ? "A geração de código está disponível nesta janela controlada." : "A geração de novos códigos permanece desativada. A sessão atual não será alterada."}</p>
+                <p className="dh-kpi-label text-[13px] sm:text-sm">Pareamento administrativo</p>
+                <h2 className="mt-2 text-2xl font-semibold text-[var(--dh-text)] sm:text-3xl lg:text-[clamp(1.75rem,2.1vw,2.6rem)]">{pairingEnabled ? "Pareamento habilitado" : "Pareamento bloqueado"}</h2>
+                <p className="mt-4 max-w-2xl text-sm leading-relaxed text-[var(--dh-muted)] sm:text-base">{pairingEnabled ? "A geração de código está disponível nesta janela controlada." : "A geração de novos códigos permanece desativada. A sessão atual não será alterada."}</p>
               </div>
             </div>
 
             {pairingEnabled && (code ? (
-              <div className="rounded-lg border border-[var(--dh-border)] bg-[var(--dh-surface-secondary)] p-5 space-y-3" data-testid="whatsapp-pairing-code">
-                <p className="text-sm text-[var(--dh-muted)]">Digite este código no WhatsApp da conta de serviço. Ele é mostrado somente nesta sessão do navegador.</p>
-                <output className="block text-center font-mono text-3xl tracking-[0.25em] text-[var(--dh-text)]" aria-live="polite">{code}</output>
+              <div className="mt-auto rounded-lg border border-[var(--dh-border)] bg-[var(--dh-surface-secondary)] p-6 space-y-4" data-testid="whatsapp-pairing-code">
+                <p className="text-base text-[var(--dh-muted)]">Digite este código no WhatsApp da conta de serviço. Ele é mostrado somente nesta sessão do navegador.</p>
+                <output className="block text-center font-mono text-3xl tracking-[0.25em] text-[var(--dh-text)] sm:text-4xl" aria-live="polite">{code}</output>
               </div>
             ) : (
-              <form onSubmit={submit} className="space-y-5" autoComplete="off">
-                <label className="block text-[13px] text-[var(--dh-text)]">Número da conta WhatsApp DACOT
-                  <input className="dh-input mt-1" type="tel" inputMode="numeric" required value={phone}
+              <form onSubmit={submit} className="mt-auto space-y-6 pt-8" autoComplete="off">
+                <label className="block text-sm text-[var(--dh-text)]">Número da conta WhatsApp DACOT
+                  <input className="dh-input mt-2 py-3 text-base" type="tel" inputMode="numeric" required value={phone}
                          onChange={(event) => setPhone(event.target.value)} placeholder="(11) 99999-9999"
                          data-testid="whatsapp-pairing-phone" />
                 </label>
-                <label className="block text-[13px] text-[var(--dh-text)]">Confirme sua senha de superadministrador
-                  <input className="dh-input mt-1" type="password" required value={password}
+                <label className="block text-sm text-[var(--dh-text)]">Confirme sua senha de superadministrador
+                  <input className="dh-input mt-2 py-3 text-base" type="password" required value={password}
                          onChange={(event) => setPassword(event.target.value)} autoComplete="current-password"
                          data-testid="whatsapp-pairing-password" />
                 </label>
                 {error && <div className="dh-chip dh-chip-error" role="alert">{error}</div>}
-                <button type="submit" className="dh-btn dh-btn-primary w-full py-3 font-semibold" disabled={busy} data-testid="whatsapp-pairing-submit">
+                <button type="submit" className="dh-btn dh-btn-primary w-full py-4 text-base font-semibold sm:text-lg" disabled={busy} data-testid="whatsapp-pairing-submit">
                   {busy ? "Solicitando…" : "Gerar código de vinculação"}
                 </button>
               </form>
