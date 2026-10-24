@@ -4,6 +4,19 @@
         <meta charset="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
         <meta name="theme-color" content="#0A0A09" />
+        <script>
+            (function () {
+                var theme = "dark";
+                try {
+                    var savedTheme = window.localStorage.getItem("dacot-theme");
+                    if (savedTheme === "light" || savedTheme === "dark") theme = savedTheme;
+                } catch (error) {
+                    // Local storage can be unavailable in restrictive browser contexts.
+                }
+                document.documentElement.dataset.theme = theme;
+                document.documentElement.style.colorScheme = theme;
+            })();
+        </script>
         <link rel="icon" type="image/png" sizes="16x16" href="%PUBLIC_URL%/favicon-dacot-orange-v1-16.png" />
         <link rel="icon" type="image/png" sizes="32x32" href="%PUBLIC_URL%/favicon-dacot-orange-v1.png" />
         <link rel="preconnect" href="https://fonts.googleapis.com" />

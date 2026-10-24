@@ -1,13 +1,14 @@
 import { createContext, useCallback, useContext, useEffect, useState } from "react";
 
 const THEME_STORAGE_KEY = "dacot-theme";
+const DEFAULT_THEME = "dark";
 const ThemeContext = createContext(null);
 
 function getInitialTheme() {
-  if (typeof window === "undefined") return "light";
+  if (typeof window === "undefined") return DEFAULT_THEME;
 
   const savedTheme = window.localStorage.getItem(THEME_STORAGE_KEY);
-  return savedTheme === "dark" || savedTheme === "light" ? savedTheme : "light";
+  return savedTheme === "dark" || savedTheme === "light" ? savedTheme : DEFAULT_THEME;
 }
 
 export function ThemeProvider({ children }) {

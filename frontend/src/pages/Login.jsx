@@ -99,7 +99,7 @@ export default function Login() {
               <input
                 type="email" required
                 value={email} onChange={(e) => setEmail(e.target.value)}
-                className="dh-input dh-login-input" placeholder="voce@dacot.com"
+                className="dh-input dh-login-input" style={{ borderRadius: 4 }} placeholder="voce@dacot.com"
                 data-testid="login-email"
               />
             </div>
@@ -123,7 +123,7 @@ export default function Login() {
                 <input
                   type={showPassword ? "text" : "password"} required
                   value={password} onChange={(e) => setPassword(e.target.value)}
-                  className="dh-input dh-login-input pr-10" placeholder="••••••••"
+                  className="dh-input dh-login-input pr-10" style={{ borderRadius: 4 }} placeholder="••••••••"
                   data-testid="login-password"
                 />
               </div>
