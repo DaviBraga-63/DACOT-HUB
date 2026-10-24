@@ -97,7 +97,7 @@ export default function Login() {
             <div>
               <label className="block text-[13px] font-semibold text-slate-200 mb-2">E-mail</label>
               <input
-                type="email" required autoFocus
+                type="email" required
                 value={email} onChange={(e) => setEmail(e.target.value)}
                 className="dh-input dh-login-input" placeholder="voce@dacot.com"
                 data-testid="login-email"
