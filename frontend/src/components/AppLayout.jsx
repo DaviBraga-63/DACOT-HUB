@@ -308,7 +308,7 @@ export default function AppLayout() {
       <button
         onClick={doLogout}
         data-testid="logout-btn"
-        className="dh-sidebar-link w-full text-left text-[#64748B] hover:!text-[var(--dh-error-fg)] hover:!bg-[var(--dh-error-bg)]"
+        className="dh-sidebar-link w-full text-left text-[var(--dh-muted)] hover:!text-[var(--dh-error-fg)] hover:!bg-[var(--dh-error-bg)]"
       >
         <LogOut size={18} strokeWidth={1.75} />
         <span>Sair</span>
