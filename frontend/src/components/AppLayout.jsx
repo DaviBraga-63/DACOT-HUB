@@ -26,7 +26,7 @@ function Brand({ compact }) {
         className={`dh-brand-logo ${compact ? "dh-brand-logo-sm" : ""}`}
       />
       <div className={`flex items-center ${compact ? "" : "hidden sm:flex"}`}>
-        <div className="dh-font-display font-bold text-[15px] tracking-tight text-[var(--dh-text)]">DACOT</div>
+        <div className="dh-font-display font-bold text-[17px] tracking-tight text-[var(--dh-text)]">DACOT</div>
       </div>
     </div>
   );
