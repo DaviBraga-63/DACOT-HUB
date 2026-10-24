@@ -34,10 +34,11 @@ class IntegrationStatusResult:
     """Sanitized operational state returned by the WhatsApp gateway only."""
 
     def __init__(self, *, connection_state: str = "unavailable", gateway_reachable: bool = False,
-                 pairing_self_service_enabled: bool = False):
+                 pairing_self_service_enabled: bool = False, connected_account_phone: str | None = None):
         self.connection_state = connection_state
         self.gateway_reachable = gateway_reachable
         self.pairing_self_service_enabled = pairing_self_service_enabled
+        self.connected_account_phone = connected_account_phone
 
 
 def _https_origin(value: str) -> bool:
@@ -195,10 +196,17 @@ class WhatsAppStatusProvider:
             pairing_enabled = data.get("pairing_self_service_enabled")
             if state not in self._KNOWN_CONNECTION_STATES or not isinstance(pairing_enabled, bool):
                 return IntegrationStatusResult()
+            phone = data.get("connected_account_phone")
+            if phone is not None:
+                try:
+                    phone = normalize_brazilian_number(phone)
+                except ValueError:
+                    phone = None
             return IntegrationStatusResult(
                 connection_state=state,
                 gateway_reachable=True,
                 pairing_self_service_enabled=pairing_enabled,
+                connected_account_phone=phone,
             )
         except (httpx.HTTPError, ValueError, OSError, json.JSONDecodeError):
             return IntegrationStatusResult()

@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve, sep } from 'node:path';
 import { randomBytes, createHash, createHmac } from 'node:crypto';
 import { openStore } from '../store.mjs';
-import { createGateway } from '../gateway.mjs';
+import { connectedBrazilianAccountPhone, createGateway } from '../gateway.mjs';
 import { createConnection } from '../connection.mjs';
 
 function removeTestDirectory(dir) {
@@ -36,6 +36,15 @@ test('encrypted auth persists and idempotency survives restart', () => {
     assert.equal(store.reserve('request-one', 'payload', '+5511912345678'), 'accepted');
     store.close();
   } finally { removeTestDirectory(dir); }
+});
+
+test('connected account identity exposes only a validated Brazilian phone JID', () => {
+  assert.equal(connectedBrazilianAccountPhone('5511912345678@s.whatsapp.net'), '+5511912345678');
+  assert.equal(connectedBrazilianAccountPhone('5511912345678:23@s.whatsapp.net'), '+5511912345678');
+  assert.equal(connectedBrazilianAccountPhone('123456789@lid'), null);
+  assert.equal(connectedBrazilianAccountPhone('12025550123@s.whatsapp.net'), null);
+  assert.equal(connectedBrazilianAccountPhone('not-a-jid'), null);
+  assert.equal(connectedBrazilianAccountPhone(null), null);
 });
 
 test('gateway rejects unauthenticated requests and does not resend accepted or indeterminate requests', async () => {
@@ -82,7 +91,7 @@ test('integration status is authenticated, replay-safe, and exposes only sanitiz
   try {
     const store = openStore(join(dir, 'state.sqlite'), randomBytes(32));
     const secret = 'x'.repeat(32), adminSecret = 'y'.repeat(32), pairingSecret = 'z'.repeat(32);
-    const connection = { state: 'open' };
+    const connection = { state: 'open', accountId: () => '5511912345678:4@s.whatsapp.net' };
     const gateway = createGateway({ secret, adminSecret, pairingSecret, pairingEnabled: false,
       frontendOrigin: 'https://hub.example.test', connection, store });
     const request = (id) => {
@@ -98,14 +107,22 @@ test('integration status is authenticated, replay-safe, and exposes only sanitiz
     assert.equal((await gateway.handle({ ...first, method: 'POST' })).status, 400);
     assert.deepEqual(await gateway.handle(first), {
       status: 200,
-      body: { connection_state: 'open', pairing_self_service_enabled: false },
+      body: {
+        connection_state: 'open',
+        pairing_self_service_enabled: false,
+        connected_account_phone: '+5511912345678',
+      },
     });
     assert.equal((await gateway.handle(first)).status, 409);
     for (const [index, state] of ['connecting', 'pairing', 'disconnected', 'logged_out', 'error', 'stopped', 'disabled'].entries()) {
       connection.state = state;
       const response = await gateway.handle(request(`integration-status-request-${index + 20}`));
-      assert.deepEqual(response.body, { connection_state: state, pairing_self_service_enabled: false });
-      assert.equal(Object.keys(response.body).length, 2);
+      assert.deepEqual(response.body, {
+        connection_state: state,
+        pairing_self_service_enabled: false,
+        connected_account_phone: null,
+      });
+      assert.equal(Object.keys(response.body).length, 3);
     }
     store.close();
   } finally { removeTestDirectory(dir); }

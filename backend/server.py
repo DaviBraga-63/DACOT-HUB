@@ -743,6 +743,7 @@ async def whatsapp_integration_status(response: Response, _user: dict = Depends(
         "connection_state": status.connection_state if status.gateway_reachable else "unavailable",
         "gateway_reachable": status.gateway_reachable,
         "pairing_self_service_enabled": pairing_enabled,
+        "connected_account_phone": status.connected_account_phone if status.gateway_reachable else None,
     }
 
 

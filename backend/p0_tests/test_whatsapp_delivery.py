@@ -249,7 +249,11 @@ def test_integration_status_uses_gateway_hmac_contract_and_exposes_only_safe_fie
         async def __aexit__(self, *_): return False
         async def get(self, url, *, headers):
             self.calls.append((url, headers))
-            return httpx.Response(200, json={"connection_state": "open", "pairing_self_service_enabled": False})
+            return httpx.Response(200, json={
+                "connection_state": "open",
+                "pairing_self_service_enabled": False,
+                "connected_account_phone": "+5511912345678",
+            })
 
     client, options = StatusClient(), {}
     def factory(**kwargs):
@@ -264,6 +268,7 @@ def test_integration_status_uses_gateway_hmac_contract_and_exposes_only_safe_fie
     assert result.gateway_reachable is True
     assert result.connection_state == "open"
     assert result.pairing_self_service_enabled is False
+    assert result.connected_account_phone == "+5511912345678"
     url, headers = client.calls[0]
     assert url == "http://dacot-whatsapp:3002/internal/integration-status"
     # Independent wire-contract vector. The gateway signs real LF bytes between
@@ -296,6 +301,25 @@ def test_integration_status_timeout_or_invalid_response_is_unavailable(status, p
     assert result.gateway_reachable is False
     assert result.connection_state == "unavailable"
     assert result.pairing_self_service_enabled is False
+
+
+@pytest.mark.parametrize("phone", [None, "not-a-phone", "+12025550123", "5511912345678@lid"])
+def test_integration_status_never_exposes_an_untrusted_connected_identity(phone):
+    class StatusClient:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *_): return False
+        async def get(self, *_args, **_kwargs):
+            return httpx.Response(200, json={
+                "connection_state": "open",
+                "pairing_self_service_enabled": False,
+                "connected_account_phone": phone,
+            })
+
+    provider = module.WhatsAppStatusProvider(service_url="https://sender.example.test", service_key="s" * 32,
+                                               client_factory=lambda **_: StatusClient())
+    result = asyncio.run(provider.get_status(request_id="status-request-unique-123"))
+    assert result.gateway_reachable is True
+    assert result.connected_account_phone is None
 
 
 def test_integration_status_rejects_untrusted_http_destination_without_request():

@@ -7,10 +7,10 @@ const env = process.env;
 const config = transportConfiguration(env);
 const key = Buffer.from(env.WHATSAPP_STORAGE_KEY || '', 'base64');
 const store = openStore(env.WHATSAPP_DB_PATH || '/var/data/whatsapp.sqlite', key);
-let connection = { state: 'disabled', qr: null, stop() {}, resetPairing() { return false; }, requestPairingCode() { throw new Error('Pairing unavailable'); } };
+let connection = { state: 'disabled', qr: null, stop() {}, accountId() { return null; }, resetPairing() { return false; }, requestPairingCode() { throw new Error('Pairing unavailable'); } };
 const proxyConnection = {
   get state() { return connection.state; }, get qr() { return connection.qr; },
-  send(...args) { return connection.send(...args); }, resetPairing() { return connection.resetPairing(); },
+  send(...args) { return connection.send(...args); }, accountId() { return connection.accountId(); }, resetPairing() { return connection.resetPairing(); },
   requestPairingCode(...args) { return connection.requestPairingCode(...args); },
 };
 const gateway = createGateway({ secret: env.WHATSAPP_SERVICE_SECRET, adminSecret: env.WHATSAPP_ADMIN_SECRET,
