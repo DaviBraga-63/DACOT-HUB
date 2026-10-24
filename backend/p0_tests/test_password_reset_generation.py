@@ -343,7 +343,10 @@ def test_account_switch_is_super_admin_only_password_confirmed_and_origin_bound(
     assert denied.value.status_code == 403
 
     actor_id = str(ObjectId())
+    reserved_operation = {}
+
     async def reserve_operation(_query, update, **_kwargs):
+        reserved_operation.update(update["$set"])
         return update["$set"]
     operations = SimpleNamespace(find_one_and_update=reserve_operation, update_one=AsyncMock())
     users = SimpleNamespace(find_one=AsyncMock(return_value={"password_hash": "stored", "name": "Founder"}))
@@ -353,7 +356,8 @@ def test_account_switch_is_super_admin_only_password_confirmed_and_origin_bound(
     monkeypatch.setattr(hub, "verify_password", lambda supplied, stored: supplied == "correct" and stored == "stored")
     gateway = SimpleNamespace(prepare=AsyncMock(return_value=SimpleNamespace(available=True, state="awaiting_pairing", expires_at=1_700_000_600)))
     monkeypatch.setattr(hub, "_account_switch_provider", lambda: gateway)
-    monkeypatch.setattr(hub, "log_activity", AsyncMock())
+    audit_log = AsyncMock()
+    monkeypatch.setattr(hub, "log_activity", audit_log)
 
     def request(origin):
         return Request({"type": "http", "method": "POST", "path": "/api/hub/whatsapp/account-switch",
@@ -377,8 +381,19 @@ def test_account_switch_is_super_admin_only_password_confirmed_and_origin_bound(
                                                             {"_id": actor_id, "role": "super_admin"}))
     assert result["state"] == "awaiting_pairing"
     assert len(result["operation_id"]) == 48
-    assert gateway.prepare.await_args.kwargs["number"] == "+5511912345678"
-    assert "11912345678" not in str(gateway.prepare.await_args)
+    normalized_phone = "+5511912345678"
+
+    # The private, HMAC-authenticated provider must receive the normalized
+    # destination. Privacy is enforced at the externally visible and durable
+    # channels below, rather than by forbidding the required internal input.
+    assert gateway.prepare.await_args.kwargs["number"] == normalized_phone
+    assert "11912345678" not in str(result)
+    assert normalized_phone not in str(result)
+    assert "11912345678" not in str(reserved_operation)
+    assert normalized_phone not in str(reserved_operation)
+    audit_log.assert_awaited_once()
+    assert "11912345678" not in str(audit_log.await_args)
+    assert normalized_phone not in str(audit_log.await_args)
 
 
 def test_account_switch_status_fails_closed_without_sensitive_gateway_details(hub, monkeypatch):
