@@ -117,20 +117,6 @@ export default function WhatsAppPairing() {
             {status?.connected_account_phone ? "Número da conta ativa reconhecida pelo gateway." : "O gateway não informou um número confiável para a sessão atual."}
           </p>
 
-          <div className="border-t border-[var(--dh-border-soft)] pt-5" data-testid="whatsapp-connection-status">
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <p className="dh-kpi-label">Estado da conexão</p>
-                <h3 className="mt-2 text-lg font-semibold text-[var(--dh-text)]">{connection.label}</h3>
-              </div>
-              {connection.tone === "success" ? <CheckCircle2 size={22} className="text-[var(--dh-success-fg)]" /> : <CircleOff size={22} className="text-[var(--dh-muted)]" />}
-            </div>
-            <p className="mt-3 text-sm text-[var(--dh-muted)]">{connection.description}</p>
-            <div className="mt-4">
-              {statusLoading ? <StatusChip tone="neutral"><LoaderCircle size={13} className="animate-spin" /> Consultando</StatusChip> : <StatusChip tone={connection.tone}>{connection.label}</StatusChip>}
-            </div>
-          </div>
-
           <div className="border-t border-[var(--dh-border-soft)] pt-5">
             <button type="button" className="dh-btn dh-btn-outline w-full opacity-60 cursor-not-allowed" disabled aria-describedby="whatsapp-change-account-note">
               Trocar número do WhatsApp
@@ -140,7 +126,21 @@ export default function WhatsAppPairing() {
         </article>
 
         <div className="space-y-5">
-          <article className="dh-card p-6" data-testid="whatsapp-gateway-status">
+          <article className="dh-card p-5" data-testid="whatsapp-connection-status">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <p className="dh-kpi-label">Conexão WhatsApp</p>
+                <h2 className="mt-2 text-lg font-semibold text-[var(--dh-text)]">{connection.label}</h2>
+              </div>
+              {connection.tone === "success" ? <CheckCircle2 size={22} className="text-[var(--dh-success-fg)]" /> : <CircleOff size={22} className="text-[var(--dh-muted)]" />}
+            </div>
+            <p className="mt-3 text-sm text-[var(--dh-muted)]">{connection.description}</p>
+            <div className="mt-4">
+              {statusLoading ? <StatusChip tone="neutral"><LoaderCircle size={13} className="animate-spin" /> Consultando</StatusChip> : <StatusChip tone={connection.tone}>{connection.label}</StatusChip>}
+            </div>
+          </article>
+
+          <article className="dh-card p-5" data-testid="whatsapp-gateway-status">
             <div className="flex items-start justify-between gap-3">
               <div>
                 <p className="dh-kpi-label">Serviço gateway</p>
@@ -154,7 +154,7 @@ export default function WhatsAppPairing() {
             </div>
           </article>
 
-          <article className="dh-card p-6 space-y-6" data-testid="whatsapp-pairing-panel">
+          <article className="dh-card p-6 sm:p-8 space-y-6" data-testid="whatsapp-pairing-panel">
             <div className="flex items-start gap-3">
               <ShieldCheck size={20} strokeWidth={1.75} className="mt-0.5 shrink-0 text-[var(--dh-accent)]" />
               <div>
