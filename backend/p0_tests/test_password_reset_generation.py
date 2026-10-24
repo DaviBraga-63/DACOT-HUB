@@ -12,6 +12,7 @@ import motor.motor_asyncio
 import pytest
 from bson import ObjectId
 from fastapi import HTTPException, Response
+from starlette.requests import Request
 
 
 @pytest.fixture
@@ -48,6 +49,50 @@ def test_expiration_and_generation_for_new_tokens(hub, monkeypatch):
     assert timedelta(hours=23) < recovery_doc["expires_at"] - before <= timedelta(days=1, seconds=2)
     assert first_doc["generation"] != recovery_doc["generation"]
     assert users.update_one.call_args.args[1]["$set"]["password_reset_generation"] == recovery_doc["generation"]
+
+
+def test_frontend_allowed_origins_are_exact_and_deduplicated(hub):
+    origins = hub._frontend_allowed_origins(
+        "https://hub.example.test/",
+        "https://legacy.example.test,https://hub.example.test",
+    )
+    assert origins == (
+        "https://hub.example.test",
+        "https://legacy.example.test",
+    )
+    assert hub._cors_allowed_origins(origins) == origins + ("http://localhost:3000",)
+
+
+@pytest.mark.parametrize("origin", [
+    "*",
+    "https://*.example.test",
+    "https://hub.example.test/path",
+    "https://hub.example.test?next=https://attacker.example.test",
+    "https://user@hub.example.test",
+    "http://hub.example.test",
+    "http://localhost:3001",
+])
+def test_frontend_allowed_origins_reject_ambiguous_or_insecure_values(hub, origin):
+    with pytest.raises(RuntimeError):
+        hub._frontend_allowed_origins("https://hub.example.test", origin)
+
+
+def test_account_switch_origin_accepts_only_explicit_frontend_origins(hub, monkeypatch):
+    monkeypatch.setattr(hub, "FRONTEND_ALLOWED_ORIGINS", (
+        "https://hub.example.test",
+        "https://legacy.example.test",
+    ))
+
+    def request(origin):
+        return Request({
+            "type": "http", "method": "POST", "path": "/api/hub/whatsapp/account-switch",
+            "headers": [(b"origin", origin.encode())],
+        })
+
+    hub._require_frontend_origin(request("https://legacy.example.test"))
+    with pytest.raises(HTTPException) as rejected:
+        hub._require_frontend_origin(request("https://attacker.example.test"))
+    assert rejected.value.status_code == 403
 
 
 def test_reset_requires_token_generation_and_revokes_sessions(hub, monkeypatch):
@@ -332,8 +377,6 @@ def test_whatsapp_status_requires_super_admin_and_fails_closed_for_gateway_unava
 
 
 def test_account_switch_is_super_admin_only_password_confirmed_and_origin_bound(hub, monkeypatch):
-    from starlette.requests import Request
-
     start_route = next(route for route in hub.app.routes if route.path == "/api/hub/whatsapp/account-switch")
     promote_route = next(route for route in hub.app.routes if route.path == "/api/hub/whatsapp/account-switch/{operation_id}/promote")
     assert any(dep.call is hub.get_super_admin for dep in start_route.dependant.dependencies)

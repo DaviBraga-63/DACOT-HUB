@@ -79,7 +79,49 @@ db = client[DB_NAME]
 
 JWT_ALGORITHM = "HS256"
 JWT_SECRET = os.environ["JWT_SECRET"]
-FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://localhost:3000")
+
+LOCAL_FRONTEND_ORIGIN = "http://localhost:3000"
+
+
+def _normalize_frontend_origin(value: str, *, allow_localhost: bool) -> str:
+    """Accept one exact browser origin; fail closed for ambiguous CORS values."""
+    if not isinstance(value, str) or not value or value != value.strip() or any(char.isspace() for char in value):
+        raise RuntimeError("Configuração de origem do frontend inválida")
+    if "*" in value or "\\" in value:
+        raise RuntimeError("Configuração de origem do frontend inválida")
+    try:
+        parsed = urlparse(value)
+        port = parsed.port
+    except ValueError as exc:
+        raise RuntimeError("Configuração de origem do frontend inválida") from exc
+    if (not parsed.hostname or parsed.username or parsed.password or parsed.path not in ("", "/")
+            or parsed.params or parsed.query or parsed.fragment):
+        raise RuntimeError("Configuração de origem do frontend inválida")
+    is_localhost = parsed.scheme == "http" and parsed.hostname == "localhost" and port == 3000
+    if parsed.scheme != "https" and not (allow_localhost and is_localhost):
+        raise RuntimeError("Configuração de origem do frontend inválida")
+    host = f"[{parsed.hostname}]" if ":" in parsed.hostname else parsed.hostname
+    default_port = 443 if parsed.scheme == "https" else 80
+    return f"{parsed.scheme}://{host}" + (f":{port}" if port and port != default_port else "")
+
+
+def _frontend_allowed_origins(frontend_url: str, configured_origins: str) -> tuple[str, ...]:
+    origins = [_normalize_frontend_origin(frontend_url, allow_localhost=True)]
+    if configured_origins:
+        for candidate in configured_origins.split(","):
+            origins.append(_normalize_frontend_origin(candidate, allow_localhost=False))
+    return tuple(dict.fromkeys(origins))
+
+
+def _cors_allowed_origins(frontend_origins: tuple[str, ...]) -> tuple[str, ...]:
+    return tuple(dict.fromkeys((*frontend_origins, LOCAL_FRONTEND_ORIGIN)))
+
+
+FRONTEND_URL = _normalize_frontend_origin(os.environ.get("FRONTEND_URL", LOCAL_FRONTEND_ORIGIN), allow_localhost=True)
+FRONTEND_ALLOWED_ORIGINS = _frontend_allowed_origins(
+    FRONTEND_URL, os.environ.get("FRONTEND_ALLOWED_ORIGINS", "")
+)
+CORS_ALLOWED_ORIGINS = _cors_allowed_origins(FRONTEND_ALLOWED_ORIGINS)
 RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "")
 EMAIL_FROM_ADDRESS = os.environ.get("EMAIL_FROM_ADDRESS", "")
 EMAIL_FROM_NAME = os.environ.get("EMAIL_FROM_NAME") or "DACOT"
@@ -490,7 +532,7 @@ def _account_switch_enabled() -> bool:
 def _require_frontend_origin(request: Request) -> None:
     """CSRF check for the high-impact browser-only account switch controls."""
     origin = request.headers.get("origin", "").rstrip("/")
-    if not origin or origin != FRONTEND_URL.rstrip("/"):
+    if not origin or origin not in FRONTEND_ALLOWED_ORIGINS:
         raise HTTPException(403, "Origem não autorizada")
 
 
@@ -2536,7 +2578,7 @@ async def serve_frontend(frontend_path: str):
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
-    allow_origins=[FRONTEND_URL, "http://localhost:3000"],
+    allow_origins=CORS_ALLOWED_ORIGINS,
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["Content-Type", "Authorization", "X-Module-Key", TAB_SESSION_HEADER],
 )
