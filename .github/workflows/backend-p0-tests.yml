@@ -15,7 +15,9 @@ permissions:
 jobs:
   p0-tests:
     name: Isolated backend P0 tests
-    runs-on: ubuntu-latest
+    # MongoDB's pinned Ubuntu 24.04 binary is verified below. Do not rely on
+    # apt repositories whose availability changes with ubuntu-latest.
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
       P0_ORDERS_BACKEND: ${{ github.workspace }}/DACOT-PEDIDOS/backend
@@ -39,10 +41,22 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install local MongoDB binary
-        uses: ankane/setup-mongodb@v1
-        with:
-          mongodb-version: "8.0"
+      - name: Install verified temporary MongoDB binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          MONGO_VERSION="8.0.29"
+          MONGO_ARCHIVE="mongodb-linux-x86_64-ubuntu2404-${MONGO_VERSION}.tgz"
+          MONGO_SHA256="c897be96bdda032de38881f61add98348adb0022bd9766a6956160951b96ed00"
+          MONGO_ROOT="$RUNNER_TEMP/mongodb-${MONGO_VERSION}"
+          curl --fail --silent --show-error --location \
+            "https://fastdl.mongodb.org/linux/${MONGO_ARCHIVE}" \
+            --output "$RUNNER_TEMP/${MONGO_ARCHIVE}"
+          printf '%s  %s\n' "$MONGO_SHA256" "$RUNNER_TEMP/${MONGO_ARCHIVE}" | sha256sum --check --status
+          mkdir -p "$MONGO_ROOT"
+          tar -xzf "$RUNNER_TEMP/${MONGO_ARCHIVE}" --strip-components=1 -C "$MONGO_ROOT"
+          test -x "$MONGO_ROOT/bin/mongod"
+          echo "$MONGO_ROOT/bin" >> "$GITHUB_PATH"
 
       - name: Configure isolated test paths
         shell: bash
@@ -65,7 +79,7 @@ jobs:
   browser-e2e:
     name: Browser revocation E2E
     needs: p0-tests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     env:
       HUB_API: http://localhost:8443
@@ -95,9 +109,22 @@ jobs:
           node-version: "20"
           cache: yarn
           cache-dependency-path: frontend/yarn.lock
-      - uses: ankane/setup-mongodb@v1
-        with:
-          mongodb-version: "8.0"
+      - name: Install verified temporary MongoDB binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          MONGO_VERSION="8.0.29"
+          MONGO_ARCHIVE="mongodb-linux-x86_64-ubuntu2404-${MONGO_VERSION}.tgz"
+          MONGO_SHA256="c897be96bdda032de38881f61add98348adb0022bd9766a6956160951b96ed00"
+          MONGO_ROOT="$RUNNER_TEMP/mongodb-${MONGO_VERSION}"
+          curl --fail --silent --show-error --location \
+            "https://fastdl.mongodb.org/linux/${MONGO_ARCHIVE}" \
+            --output "$RUNNER_TEMP/${MONGO_ARCHIVE}"
+          printf '%s  %s\n' "$MONGO_SHA256" "$RUNNER_TEMP/${MONGO_ARCHIVE}" | sha256sum --check --status
+          mkdir -p "$MONGO_ROOT"
+          tar -xzf "$RUNNER_TEMP/${MONGO_ARCHIVE}" --strip-components=1 -C "$MONGO_ROOT"
+          test -x "$MONGO_ROOT/bin/mongod"
+          echo "$MONGO_ROOT/bin" >> "$GITHUB_PATH"
       - name: Install backend and frontend dependencies
         shell: bash
         run: |
@@ -111,6 +138,33 @@ jobs:
           (cd frontend && yarn playwright install --with-deps chromium)
       - name: Test Pedidos authentication context
         run: cd DACOT-PEDIDOS/frontend && CI=true yarn test --watch=false --runInBand src/context/AuthContext.test.jsx
+      - name: Start isolated MongoDB replica set
+        shell: bash
+        run: |
+          set -euo pipefail
+          MONGO_DATA="$RUNNER_TEMP/mongodb-e2e-data"
+          MONGO_LOG="$RUNNER_TEMP/mongodb-e2e.log"
+          mkdir -p "$MONGO_DATA"
+          mongod --bind_ip 127.0.0.1 --port 27017 --dbpath "$MONGO_DATA" --replSet e2e --fork --logpath "$MONGO_LOG"
+          python - <<'PY'
+          import time
+          from pymongo import MongoClient
+
+          client = MongoClient("mongodb://127.0.0.1:27017/?directConnection=true", serverSelectionTimeoutMS=1000)
+          for _ in range(30):
+              try:
+                  status = client.admin.command("replSetGetStatus")
+                  if status.get("myState") == 1:
+                      break
+              except Exception:
+                  try:
+                      client.admin.command("replSetInitiate", {"_id": "e2e", "members": [{"_id": 0, "host": "127.0.0.1:27017"}]})
+                  except Exception:
+                      pass
+              time.sleep(1)
+          else:
+              raise SystemExit("isolated MongoDB replica set did not become primary")
+          PY
       - name: Start isolated HUB, PEDIDOS and frontends
         shell: bash
         run: |
@@ -156,12 +210,29 @@ jobs:
           tenant_id="$(jq -r '.tenant.id // empty' "$E2E_RESULTS_FILE")"
           user_id="$(jq -r '.tenant.user_id // empty' "$E2E_RESULTS_FILE")"
           test -n "$tenant_id" && test -n "$user_id"
-          mongosh 'mongodb://127.0.0.1:27017/hub_e2e' --quiet --eval "const user=db.tenant_users.findOne({_id:ObjectId('$user_id')}); if(!user || !user.deleted_at){quit(1)}; const tenant=db.tenants.findOne({_id:ObjectId('$tenant_id')}); if(!tenant || tenant.deleted_at){quit(2)}; print('logical deletion verified')"
           deleted_tenant_id="$(jq -r '.deleted_tenant.id // empty' "$E2E_RESULTS_FILE")"
           deleted_tenant_user_id="$(jq -r '.deleted_tenant.user_id // empty' "$E2E_RESULTS_FILE")"
           deleted_staff_id="$(jq -r '.deleted_staff.id // empty' "$E2E_RESULTS_FILE")"
           test -n "$deleted_tenant_id" && test -n "$deleted_tenant_user_id" && test -n "$deleted_staff_id"
-          mongosh 'mongodb://127.0.0.1:27017/hub_e2e' --quiet --eval "const tenant=db.tenants.findOne({_id:ObjectId('$deleted_tenant_id')}); const user=db.tenant_users.findOne({_id:ObjectId('$deleted_tenant_user_id')}); const staff=db.hub_users.findOne({_id:ObjectId('$deleted_staff_id')}); if(!tenant || !tenant.deleted_at || !user || !staff || !staff.deleted_at){quit(1)}; print('tenant, employee and staff records preserved')"
+          export E2E_TENANT_ID="$tenant_id" E2E_USER_ID="$user_id"
+          export E2E_DELETED_TENANT_ID="$deleted_tenant_id" E2E_DELETED_TENANT_USER_ID="$deleted_tenant_user_id" E2E_DELETED_STAFF_ID="$deleted_staff_id"
+          python - <<'PY'
+          import os
+          from bson import ObjectId
+          from pymongo import MongoClient
+
+          db = MongoClient("mongodb://127.0.0.1:27017/hub_e2e", serverSelectionTimeoutMS=5000).get_database()
+          active_tenant = db.tenants.find_one({"_id": ObjectId(os.environ["E2E_TENANT_ID"])})
+          active_user = db.tenant_users.find_one({"_id": ObjectId(os.environ["E2E_USER_ID"])})
+          if not active_tenant or active_tenant.get("deleted_at") or not active_user or not active_user.get("deleted_at"):
+              raise SystemExit("logical deletion verification failed")
+          deleted_tenant = db.tenants.find_one({"_id": ObjectId(os.environ["E2E_DELETED_TENANT_ID"])})
+          deleted_user = db.tenant_users.find_one({"_id": ObjectId(os.environ["E2E_DELETED_TENANT_USER_ID"])})
+          deleted_staff = db.hub_users.find_one({"_id": ObjectId(os.environ["E2E_DELETED_STAFF_ID"])})
+          if not deleted_tenant or not deleted_tenant.get("deleted_at") or not deleted_user or not deleted_staff or not deleted_staff.get("deleted_at"):
+              raise SystemExit("logical deletion data-preservation verification failed")
+          print("logical deletion and data preservation verified")
+          PY
           jq '{pages, backend}' "$E2E_RESULTS_FILE"
       - name: Upload sanitized E2E evidence
         if: success()
