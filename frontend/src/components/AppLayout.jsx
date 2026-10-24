@@ -21,7 +21,7 @@ function Brand({ compact }) {
   return (
     <div className="flex items-center gap-3">
       <img
-        src="/dacot-logo.png"
+        src="/dacot-symbol-orange-v1.png"
         alt="DACOT"
         className={`dh-brand-logo ${compact ? "dh-brand-logo-sm" : ""}`}
       />
