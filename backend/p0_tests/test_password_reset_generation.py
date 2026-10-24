@@ -303,6 +303,7 @@ def test_whatsapp_status_requires_super_admin_and_fails_closed_for_gateway_unava
         "gateway_reachable": True,
         "pairing_self_service_enabled": True,
         "connected_account_phone": "+5511912345678",
+        "account_switch_available": False,
     }
     assert response.headers["cache-control"] == "no-store"
     assert response.headers["referrer-policy"] == "no-referrer"
@@ -317,6 +318,7 @@ def test_whatsapp_status_requires_super_admin_and_fails_closed_for_gateway_unava
         "gateway_reachable": False,
         "pairing_self_service_enabled": False,
         "connected_account_phone": None,
+        "account_switch_available": False,
     }
 
     monkeypatch.setenv("WHATSAPP_PAIRING_SELF_SERVICE_ENABLED", "false")
@@ -327,3 +329,69 @@ def test_whatsapp_status_requires_super_admin_and_fails_closed_for_gateway_unava
     blocked = asyncio.run(hub.whatsapp_integration_status(Response(), {"_id": "founder", "role": "super_admin"}))
     assert blocked["pairing_self_service_enabled"] is False
     assert blocked["connected_account_phone"] is None
+
+
+def test_account_switch_is_super_admin_only_password_confirmed_and_origin_bound(hub, monkeypatch):
+    from starlette.requests import Request
+
+    start_route = next(route for route in hub.app.routes if route.path == "/api/hub/whatsapp/account-switch")
+    promote_route = next(route for route in hub.app.routes if route.path == "/api/hub/whatsapp/account-switch/{operation_id}/promote")
+    assert any(dep.call is hub.get_super_admin for dep in start_route.dependant.dependencies)
+    assert any(dep.call is hub.get_super_admin for dep in promote_route.dependant.dependencies)
+    with pytest.raises(HTTPException) as denied:
+        asyncio.run(hub.get_super_admin({"_id": "staff", "role": "admin"}))
+    assert denied.value.status_code == 403
+
+    actor_id = str(ObjectId())
+    async def reserve_operation(_query, update, **_kwargs):
+        return update["$set"]
+    operations = SimpleNamespace(find_one_and_update=reserve_operation, update_one=AsyncMock())
+    users = SimpleNamespace(find_one=AsyncMock(return_value={"password_hash": "stored", "name": "Founder"}))
+    monkeypatch.setattr(hub, "db", SimpleNamespace(hub_users=users, whatsapp_account_switches=operations))
+    monkeypatch.setenv("WHATSAPP_ACCOUNT_SWITCH_SERVICE_SECRET", "w" * 32)
+    monkeypatch.setattr(hub, "_allow_account_switch_request", AsyncMock(return_value=True))
+    monkeypatch.setattr(hub, "verify_password", lambda supplied, stored: supplied == "correct" and stored == "stored")
+    gateway = SimpleNamespace(prepare=AsyncMock(return_value=SimpleNamespace(available=True, state="awaiting_pairing", expires_at=1_700_000_600)))
+    monkeypatch.setattr(hub, "_account_switch_provider", lambda: gateway)
+    monkeypatch.setattr(hub, "log_activity", AsyncMock())
+
+    def request(origin):
+        return Request({"type": "http", "method": "POST", "path": "/api/hub/whatsapp/account-switch",
+                        "headers": [(b"origin", origin.encode())]})
+
+    payload = hub.WhatsAppAccountSwitchStartIn(phone="11912345678", password="wrong", confirm=True)
+    with pytest.raises(HTTPException) as wrong_password:
+        asyncio.run(hub.start_whatsapp_account_switch(payload, request(hub.FRONTEND_URL), Response(),
+                                                       {"_id": actor_id, "role": "super_admin"}))
+    assert wrong_password.value.status_code == 401
+    gateway.prepare.assert_not_awaited()
+
+    payload.password = "correct"
+    with pytest.raises(HTTPException) as bad_origin:
+        asyncio.run(hub.start_whatsapp_account_switch(payload, request("https://attacker.example.test"), Response(),
+                                                       {"_id": actor_id, "role": "super_admin"}))
+    assert bad_origin.value.status_code == 403
+    gateway.prepare.assert_not_awaited()
+
+    result = asyncio.run(hub.start_whatsapp_account_switch(payload, request(hub.FRONTEND_URL), Response(),
+                                                            {"_id": actor_id, "role": "super_admin"}))
+    assert result["state"] == "awaiting_pairing"
+    assert len(result["operation_id"]) == 48
+    assert gateway.prepare.await_args.kwargs["number"] == "+5511912345678"
+    assert "11912345678" not in str(gateway.prepare.await_args)
+
+
+def test_account_switch_status_fails_closed_without_sensitive_gateway_details(hub, monkeypatch):
+    actor_id, operation_id = str(ObjectId()), "b" * 48
+    operation = {"_id": "global", "operation_id": operation_id, "actor_id": actor_id,
+                 "expires_at": hub.now_utc() + timedelta(minutes=10)}
+    operations = SimpleNamespace(find_one=AsyncMock(return_value=operation), update_one=AsyncMock())
+    monkeypatch.setattr(hub, "db", SimpleNamespace(whatsapp_account_switches=operations))
+    monkeypatch.setattr(hub, "_account_switch_provider", lambda: SimpleNamespace(
+        status=AsyncMock(return_value=SimpleNamespace(available=False, state="unavailable", code="MUST-NOT-LEAK", expires_at=None))))
+    response = Response()
+    result = asyncio.run(hub.whatsapp_account_switch_status(operation_id, response, {"_id": actor_id, "role": "super_admin"}))
+    assert result["state"] == "unavailable"
+    assert "MUST-NOT-LEAK" not in str(result)
+    assert response.headers["cache-control"] == "no-store"
+    assert response.headers["referrer-policy"] == "no-referrer"

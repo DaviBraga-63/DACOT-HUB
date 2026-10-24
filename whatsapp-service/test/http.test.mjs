@@ -81,7 +81,11 @@ test('real entrypoint starts in maintenance without importing Baileys or touchin
     WHATSAPP_ADMIN_SECRET: adminSecret, WHATSAPP_PAIRING_SERVICE_SECRET: pairingSecret,
     WHATSAPP_FRONTEND_ORIGIN: 'https://hub.example.test' });
   const before = openStore(env.WHATSAPP_DB_PATH, Buffer.from(env.WHATSAPP_STORAGE_KEY, 'base64'));
-  before.setMany({ creds: 'synthetic-session-preserved-in-maintenance' }); before.close();
+  const candidateId = 'a'.repeat(32);
+  before.setMany({ creds: 'synthetic-session-preserved-in-maintenance' });
+  before.createCandidate(candidateId, Date.now() + 60000, '5511912345678');
+  before.candidateAuth(candidateId).setMany({ creds: 'synthetic-candidate-never-resumed' });
+  before.close();
   const child = spawn(process.execPath, [fileURLToPath(new URL('../server.mjs', import.meta.url))], { env, stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true });
   let errors = ''; child.stderr.on('data', chunk => { errors += chunk.toString(); });
   try {
@@ -107,7 +111,10 @@ test('real entrypoint starts in maintenance without importing Baileys or touchin
   } finally {
     const exited = once(child, 'exit'); child.kill(); await exited;
     const after = openStore(env.WHATSAPP_DB_PATH, Buffer.from(env.WHATSAPP_STORAGE_KEY, 'base64'));
-    assert.equal(after.get('creds'), 'synthetic-session-preserved-in-maintenance'); after.close();
+    assert.equal(after.get('creds'), 'synthetic-session-preserved-in-maintenance');
+    assert.equal(after.candidate(candidateId).status, 'failed');
+    assert.equal(after.candidateAuth(candidateId).get('creds'), null);
+    after.close();
     const target = resolve(dir), root = resolve(tmpdir()) + sep;
     assert.ok(target.startsWith(root) && target.slice(root.length).startsWith('dacot-wa-start-'));
     rmSync(target, { recursive: true, force: true });
