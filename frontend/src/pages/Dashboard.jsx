@@ -34,6 +34,7 @@ export default function Dashboard() {
           <div
             key={key}
             className="dh-card p-6 group hover:shadow-lg transition-all duration-200 relative"
+            style={{ borderRadius: 0 }}
             data-testid={testid}
           >
             <div className="flex items-start justify-between mb-5">
@@ -54,7 +55,7 @@ export default function Dashboard() {
 
       <div>
         {/* Utilização por módulo */}
-        <div className="dh-card p-6 sm:p-7">
+        <div className="dh-card p-6 sm:p-7" style={{ borderRadius: 0 }}>
           <div className="flex items-center justify-between mb-6">
             <div>
               <h2 className="text-lg font-semibold text-slate-900" style={{fontFamily:"Cabinet Grotesk"}}>Utilização por módulo</h2>

@@ -46,7 +46,7 @@ export default function Equipe() {
                       canManageSuperAdmins={canManageSuperAdmins} />
       )}
 
-      <div className="dh-card overflow-hidden">
+      <div className="dh-card overflow-hidden" style={{ borderRadius: 0 }}>
         <div className="overflow-x-auto">
           <table className="dh-table" data-testid="staff-table">
             <thead>

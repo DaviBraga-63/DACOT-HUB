@@ -189,7 +189,7 @@ export default function ModuloPedidos() {
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,3fr)_minmax(320px,2fr)] items-start gap-6">
-      <form className="order-2 dh-card p-6 sm:p-7" onSubmit={saveTemplate} data-testid="orders-template-form">
+      <form className="order-2 dh-card p-6 sm:p-7" style={{ borderRadius: 0 }} onSubmit={saveTemplate} data-testid="orders-template-form">
         <div className="flex items-start justify-between gap-4 flex-wrap mb-5">
           <div><h2 className="text-lg font-semibold text-[var(--dh-text)]">Configuração do módulo</h2><p className="text-[13px] text-[var(--dh-muted)] mt-1">A URL global preserva o placeholder obrigatório <code>{"{slug}"}</code>.</p></div>
           {!canWrite && <span className="dh-chip dh-chip-neutral">Somente leitura</span>}
@@ -200,7 +200,7 @@ export default function ModuloPedidos() {
         {canWrite && <div className="mt-4 flex justify-end"><button className="dh-btn dh-btn-primary" type="submit" disabled={savingTemplate} data-testid="orders-template-save"><Save size={15} strokeWidth={1.9} />{savingTemplate ? "Salvando…" : "Salvar alterações"}</button></div>}
       </form>
 
-      <section className="order-1 dh-card p-6 sm:p-7" data-testid="orders-access-section">
+      <section className="order-1 dh-card p-6 sm:p-7" style={{ borderRadius: 0 }} data-testid="orders-access-section">
         <div className="flex items-start gap-3 mb-6"><span className="dh-icon-tile-neutral w-10 h-10 rounded-lg"><Users size={19} strokeWidth={1.7} /></span><div><h2 className="text-lg font-semibold text-[var(--dh-text)]">Acesso de usuários</h2><p className="text-[13px] text-[var(--dh-muted)] mt-1">Configure acessos por restaurante, sem misturar usuários de tenants diferentes.</p></div></div>
         <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
           <div className="w-full max-w-lg"><label className="text-[11px] uppercase tracking-wider font-semibold text-[var(--dh-muted)]">Restaurante</label><div className="mt-2"><select value={selectedTenantId} onChange={(event) => setSelectedTenantId(event.target.value)} className="dh-input" data-testid="orders-tenant-select"><option value="">Selecionar restaurante</option>{tenants.map((tenant) => <option key={tenant.id} value={tenant.id}>{tenant.name}</option>)}</select></div></div>
