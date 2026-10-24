@@ -22,6 +22,9 @@
     --dh-accent-light: var(--dacot-copper-light);
     --dh-accent-soft: rgba(195, 123, 69, 0.10);
     --dh-accent-gradient: linear-gradient(135deg, var(--dacot-copper) 0%, var(--dacot-copper-light) 100%);
+    --dh-input-bg: #FFFFFF;
+    --dh-input-text: #1A1A1A;
+    --dh-input-placeholder: #6B6B6B;
     --dh-disabled-bg: #E1D6C7;
     --dh-disabled-fg: #82786B;
 
@@ -65,6 +68,7 @@
     --dh-surface-hover: #EEE6DA; --dh-border: #DED3C4; --dh-border-soft: #EEE5DB;
     --dh-text: #27231F; --dh-text-strong: #1C1916; --dh-muted: #71695E;
     --dh-muted-strong: #4D463E; --dh-input-border: #CFC1AE;
+    --dh-input-bg: #FFFFFF; --dh-input-text: #1A1A1A; --dh-input-placeholder: #6B6B6B;
     --dh-accent: var(--dacot-copper); --dh-accent-hover: var(--dacot-copper-light); --dh-accent-light: var(--dacot-copper-light);
     --dh-accent-soft: rgba(195, 123, 69, 0.10);
     --dh-accent-gradient: linear-gradient(135deg, var(--dacot-copper-dark) 0%, var(--dacot-copper) 58%, var(--dacot-copper-light) 100%);
@@ -80,7 +84,8 @@
     --dh-bg: #0A0A09; --dh-surface: #0F0F0E; --dh-surface-secondary: #161512;
     --dh-surface-hover: #1C1A17; --dh-border: #26241F; --dh-border-soft: #1D1B18;
     --dh-text: #EEE9E1; --dh-text-strong: #EEE9E1; --dh-muted: #A29C91;
-    --dh-muted-strong: #C9C1B6; --dh-input-border: #3A362E;
+    --dh-muted-strong: #C9C1B6; --dh-input-border: #30363D;
+    --dh-input-bg: #161B22; --dh-input-text: #F0F6FC; --dh-input-placeholder: #8B949E;
     --dh-accent: var(--dacot-copper); --dh-accent-hover: var(--dacot-copper-light); --dh-accent-light: var(--dacot-copper-light);
     --dh-accent-soft: rgba(195, 123, 69, 0.18);
     --dh-accent-gradient: linear-gradient(135deg, var(--dacot-copper-dark) 0%, var(--dacot-copper) 58%, var(--dacot-copper-light) 100%);
@@ -228,12 +233,12 @@
 /* ── Inputs ────────────────────────────────────────────────────────────── */
 .dh-input {
     width: 100%; padding: 9px 12px; font-size: 14px;
-    background: var(--dh-surface); color: var(--dh-text);
+    background: var(--dh-input-bg); color: var(--dh-input-text);
     border: 1px solid var(--dh-input-border); border-radius: 8px;
     outline: none;
     transition: border-color .15s ease, box-shadow .15s ease;
 }
-.dh-input::placeholder { color: var(--dh-muted); }
+.dh-input::placeholder { color: var(--dh-input-placeholder); }
 .dh-input:focus-visible { border-color: var(--dh-accent); box-shadow: 0 0 0 3px var(--dh-accent-focus); }
 
 /* ── Tables ────────────────────────────────────────────────────────────── */
@@ -649,11 +654,11 @@
     animation: dhFloatingPath var(--dh-floating-duration) linear var(--dh-floating-delay) infinite;
 }
 .dh-login-input {
-    background: #161512;
-    color: #EEE9E1;
-    border-color: #3A362E;
+    background: var(--dh-input-bg);
+    color: var(--dh-input-text);
+    border-color: var(--dh-input-border);
 }
-.dh-login-input::placeholder { color: #A29C91; }
+.dh-login-input::placeholder { color: var(--dh-input-placeholder); }
 @keyframes dhFloatingPath {
     to { stroke-dashoffset: -1; }
 }
