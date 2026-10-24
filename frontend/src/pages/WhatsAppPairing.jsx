@@ -204,7 +204,7 @@ export default function WhatsAppPairing() {
       {statusError && <div className="dh-chip dh-chip-warning" role="status">{statusError}</div>}
 
       <div className="grid gap-6 lg:min-h-0 lg:flex-1 lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)] lg:items-stretch">
-        <article className="dh-card flex h-full flex-col p-6 sm:p-8 lg:p-10" data-testid="whatsapp-connected-account">
+        <article className="dh-card flex h-full flex-col p-6 sm:p-8 lg:p-10" style={{ borderRadius: 0 }} data-testid="whatsapp-connected-account">
           <div className="flex items-start justify-between gap-3">
             <div>
               <p className="dh-kpi-label text-[13px] sm:text-sm">Conta WhatsApp</p>
@@ -262,7 +262,7 @@ export default function WhatsAppPairing() {
         </article>
 
         <div className="grid gap-5 sm:grid-cols-2 lg:h-full lg:min-h-0 lg:grid-rows-[minmax(0,0.8fr)_minmax(0,1.2fr)]">
-          <article className="dh-card flex h-full flex-col p-6 sm:p-7 lg:p-8" data-testid="whatsapp-connection-status">
+          <article className="dh-card flex h-full flex-col p-6 sm:p-7 lg:p-8" style={{ borderRadius: 0 }} data-testid="whatsapp-connection-status">
             <div className="flex items-start justify-between gap-3">
               <div>
                 <p className="dh-kpi-label text-[13px] sm:text-sm">Conexão WhatsApp</p>
@@ -276,7 +276,7 @@ export default function WhatsAppPairing() {
             </div>
           </article>
 
-          <article className="dh-card flex h-full flex-col p-6 sm:p-7 lg:p-8" data-testid="whatsapp-gateway-status">
+          <article className="dh-card flex h-full flex-col p-6 sm:p-7 lg:p-8" style={{ borderRadius: 0 }} data-testid="whatsapp-gateway-status">
             <div className="flex items-start justify-between gap-3">
               <div>
                 <p className="dh-kpi-label text-[13px] sm:text-sm">Serviço gateway</p>
@@ -290,7 +290,7 @@ export default function WhatsAppPairing() {
             </div>
           </article>
 
-          <article className="dh-card flex h-full flex-col p-7 sm:col-span-2 sm:p-9 lg:p-10" data-testid="whatsapp-pairing-panel">
+          <article className="dh-card flex h-full flex-col p-7 sm:col-span-2 sm:p-9 lg:p-10" style={{ borderRadius: 0 }} data-testid="whatsapp-pairing-panel">
             <div className="flex items-start gap-3">
               <ShieldCheck size={30} strokeWidth={1.65} className="mt-0.5 shrink-0 text-[var(--dh-accent)]" />
               <div>
