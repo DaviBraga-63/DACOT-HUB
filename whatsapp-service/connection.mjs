@@ -35,14 +35,17 @@ export function createConnection({ makeSocket, auth, logger, loggedOutCode, sche
     if (stopped) return;
     reconnectScheduled = false;
     setState('connecting');
-    socket = makeSocket({ auth: auth.state, logger, syncFullHistory: false, markOnlineOnConnect: false });
-    socket.ev.on('creds.update', () => {
-      if (stopped) return;
+    const nextSocket = makeSocket({ auth: auth.state, logger, syncFullHistory: false, markOnlineOnConnect: false });
+    socket = nextSocket;
+    nextSocket.ev.on('creds.update', () => {
+      // Baileys can deliver delayed events from a socket that a reconnect has
+      // already replaced. Those events must never mutate the live session.
+      if (stopped || socket !== nextSocket) return;
       try { auth.saveCreds(); }
-      catch { stopped = true; setState('error'); connection.qr = null; socket.end(); }
+      catch { stopped = true; setState('error'); connection.qr = null; nextSocket.end(); }
     });
-    socket.ev.on('connection.update', ({ connection: status, lastDisconnect, qr }) => {
-      if (stopped) return;
+    nextSocket.ev.on('connection.update', ({ connection: status, lastDisconnect, qr }) => {
+      if (stopped || socket !== nextSocket) return;
       if (qr) { connection.qr = qr; setState('pairing'); }
       if (status === 'open') { setState('open'); connection.qr = null; delay = 1000; }
       if (status === 'close') {
