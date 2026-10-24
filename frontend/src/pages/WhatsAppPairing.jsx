@@ -83,7 +83,7 @@ export default function WhatsAppPairing() {
   }
 
   return (
-    <section className="max-w-5xl mx-auto py-6 sm:py-10 px-0 sm:px-6 space-y-5">
+    <section className="max-w-6xl mx-auto py-6 sm:py-10 px-0 sm:px-6 space-y-6">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
         <div>
           <div className="text-[11px] uppercase tracking-widest font-bold text-[var(--dh-accent)] mb-3">Administração restrita</div>
@@ -104,8 +104,8 @@ export default function WhatsAppPairing() {
 
       {statusError && <div className="dh-chip dh-chip-warning" role="status">{statusError}</div>}
 
-      <div className="grid gap-5 lg:grid-cols-2 lg:items-start">
-        <article className="dh-card p-6 sm:p-8 space-y-6" data-testid="whatsapp-connected-account">
+      <div className="grid gap-6 lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)] lg:items-stretch">
+        <article className="dh-card flex h-full flex-col p-6 sm:p-8 lg:p-10" data-testid="whatsapp-connected-account">
           <div className="flex items-start justify-between gap-3">
             <div>
               <p className="dh-kpi-label">Conta WhatsApp</p>
@@ -113,11 +113,11 @@ export default function WhatsAppPairing() {
             </div>
             <Phone size={22} className="text-[var(--dh-accent)]" />
           </div>
-          <p className="text-sm text-[var(--dh-muted)]">
+          <p className="mt-4 text-sm text-[var(--dh-muted)]">
             {status?.connected_account_phone ? "Número da conta ativa reconhecida pelo gateway." : "O gateway não informou um número confiável para a sessão atual."}
           </p>
 
-          <div className="border-t border-[var(--dh-border-soft)] pt-5">
+          <div className="mt-auto border-t border-[var(--dh-border-soft)] pt-6 sm:pt-8">
             <button type="button" className="dh-btn dh-btn-outline w-full opacity-60 cursor-not-allowed" disabled aria-describedby="whatsapp-change-account-note">
               Trocar número do WhatsApp
             </button>
@@ -125,8 +125,8 @@ export default function WhatsAppPairing() {
           </div>
         </article>
 
-        <div className="space-y-5">
-          <article className="dh-card p-5" data-testid="whatsapp-connection-status">
+        <div className="grid gap-5 sm:grid-cols-2">
+          <article className="dh-card p-5 sm:p-6" data-testid="whatsapp-connection-status">
             <div className="flex items-start justify-between gap-3">
               <div>
                 <p className="dh-kpi-label">Conexão WhatsApp</p>
@@ -140,7 +140,7 @@ export default function WhatsAppPairing() {
             </div>
           </article>
 
-          <article className="dh-card p-5" data-testid="whatsapp-gateway-status">
+          <article className="dh-card p-5 sm:p-6" data-testid="whatsapp-gateway-status">
             <div className="flex items-start justify-between gap-3">
               <div>
                 <p className="dh-kpi-label">Serviço gateway</p>
@@ -154,7 +154,7 @@ export default function WhatsAppPairing() {
             </div>
           </article>
 
-          <article className="dh-card p-6 sm:p-8 space-y-6" data-testid="whatsapp-pairing-panel">
+          <article className="dh-card p-6 sm:col-span-2 sm:p-8 space-y-6" data-testid="whatsapp-pairing-panel">
             <div className="flex items-start gap-3">
               <ShieldCheck size={20} strokeWidth={1.75} className="mt-0.5 shrink-0 text-[var(--dh-accent)]" />
               <div>
