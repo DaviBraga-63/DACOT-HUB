@@ -140,7 +140,7 @@ def test_orders_template_http_is_rejected_by_endpoint_in_production(services):
     try:
         service.env["APP_ENV"] = "production"
         service.env["HANDOFF_ALLOWED_ORIGINS_JSON"] = (
-            '{"orders":["https://orders.example.test","https://dacot-pedidos-frontend.onrender.com"]}'
+            '{"orders":["https://orders.example.test","https://pedidos.dacot.com.br"]}'
         )
         service.restart_hub()
         response = service.call("PATCH", "/hub/modules/orders/launch-url-template", json={
