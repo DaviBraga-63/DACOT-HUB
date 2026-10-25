@@ -17,7 +17,12 @@ from datetime import datetime, timezone, timedelta
 from typing import List, Optional, Annotated, Any
 from urllib.parse import urlparse
 
-from handoff_policy import validate_handoff_configuration, validate_launch_url, orders_module_key
+from handoff_policy import (
+    launch_destination_diagnostics,
+    orders_module_key,
+    validate_handoff_configuration,
+    validate_launch_url,
+)
 from orders_launch_urls import ORDERS_LAUNCH_URL_TEMPLATE, migrate_legacy_orders_launch_urls
 from orders_user_grants import ORDERS_MODULE_KEY, bootstrap_orders_user_grants
 from whatsapp_numbers import normalize_brazilian_number
@@ -1372,12 +1377,38 @@ def _validate_orders_launch_url_template(value: str) -> str:
     return template
 
 
+def _handoff_destination_diagnostics_enabled() -> bool:
+    return os.environ.get("HANDOFF_DESTINATION_DIAGNOSTICS", "").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
+
+
+def _log_handoff_destination_validation_failure(value: str) -> None:
+    """Emit only a sanitized, opt-in snapshot for the global Pedidos URL editor."""
+    diagnostic = launch_destination_diagnostics(value, ORDERS_MODULE_KEY)
+    logger.warning(
+        "handoff_destination_validation_failed "
+        "allowed_origins_present=%s allowed_origins_json_valid=%s "
+        "orders_origins=%s received_origin=%s origin_match=%s",
+        diagnostic["allowed_origins_present"],
+        diagnostic["allowed_origins_json_valid"],
+        diagnostic["orders_origins"],
+        diagnostic["received_origin"],
+        diagnostic["origin_match"],
+    )
+
+
 @api_router.patch("/hub/modules/orders/launch-url-template")
 async def set_orders_launch_url_template(payload: LaunchUrlTemplateIn, user: dict = Depends(get_staff_write)):
     module = await db.modules.find_one({"key": ORDERS_MODULE_KEY})
     if not module:
         raise HTTPException(404, "Módulo Pedidos não encontrado")
-    template = _validate_orders_launch_url_template(payload.launch_url_template)
+    try:
+        template = _validate_orders_launch_url_template(payload.launch_url_template)
+    except HTTPException:
+        if _handoff_destination_diagnostics_enabled():
+            _log_handoff_destination_validation_failure(payload.launch_url_template)
+        raise
     previous = module.get("launch_url_template", "")
     await db.modules.update_one({"_id": module["_id"]}, {"$set": {"launch_url_template": template}})
     await log_activity(

@@ -79,3 +79,55 @@ def validate_launch_url(value: str, module: str) -> str:
         return value
     except (ValueError, TypeError, AttributeError):
         raise HTTPException(400, "Destino de handoff inválido ou não autorizado")
+
+
+def _safe_diagnostic_origin(value: object, *, allow_path: bool) -> str | None:
+    """Return only a strictly normalized public origin suitable for a temporary log."""
+    if not isinstance(value, str) or not value or any(ord(char) <= 32 or ord(char) == 127 for char in value):
+        return None
+    if "\\" in value or "*" in value:
+        return None
+    try:
+        parsed = urlsplit(value)
+        port = parsed.port
+    except (ValueError, TypeError, AttributeError):
+        return None
+    if (parsed.scheme != "https" or not parsed.hostname or parsed.username is not None
+            or parsed.password is not None or parsed.query or parsed.fragment or "%" in parsed.netloc):
+        return None
+    if not allow_path and parsed.path not in ("", "/"):
+        return None
+    host = f"[{parsed.hostname}]" if ":" in parsed.hostname else parsed.hostname
+    return f"https://{host}" + (f":{port}" if port and port != 443 else "")
+
+
+def launch_destination_diagnostics(value: str, module: str) -> dict[str, object]:
+    """Build a log-safe diagnostic snapshot without exposing raw configuration or URLs.
+
+    This does not participate in authorization or destination validation.  Callers
+    must keep it opt-in and use it only for controlled operational diagnosis.
+    """
+    present = "HANDOFF_ALLOWED_ORIGINS_JSON" in os.environ
+    raw = os.environ.get("HANDOFF_ALLOWED_ORIGINS_JSON", "")
+    json_valid = False
+    configured_origins: list[str] = []
+    try:
+        configured = json.loads(raw)
+        json_valid = True
+        if isinstance(configured, dict) and isinstance(configured.get(module), list):
+            configured_origins = configured[module]
+    except (TypeError, json.JSONDecodeError):
+        pass
+
+    received_origin = _safe_diagnostic_origin(value, allow_path=True)
+    safe_origins = [
+        origin for candidate in configured_origins
+        if (origin := _safe_diagnostic_origin(candidate, allow_path=False)) is not None
+    ]
+    return {
+        "allowed_origins_present": present,
+        "allowed_origins_json_valid": json_valid,
+        "orders_origins": safe_origins,
+        "received_origin": received_origin,
+        "origin_match": bool(received_origin and received_origin in configured_origins),
+    }

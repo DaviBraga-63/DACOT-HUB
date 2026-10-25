@@ -103,3 +103,41 @@ def test_orders_template_uses_render_origin_slug_and_allowlist(monkeypatch):
     with pytest.raises(Exception) as rejected:
         policy.validate_launch_url("https://pedidos.dacot.app/restaurant-a", "orders")
     assert rejected.value.status_code == 400
+
+
+def test_launch_destination_diagnostics_are_sanitized_and_do_not_change_validation(monkeypatch):
+    policy = load("handoff_policy_diagnostics", BACKEND / "handoff_policy.py")
+    template = "https://pedidos.dacot.com.br/{slug}"
+    destination = template.replace("{slug}", "startup-check")
+
+    monkeypatch.delenv("HANDOFF_ALLOWED_ORIGINS_JSON", raising=False)
+    disabled = policy.launch_destination_diagnostics(template, "orders")
+    assert disabled == {
+        "allowed_origins_present": False,
+        "allowed_origins_json_valid": False,
+        "orders_origins": [],
+        "received_origin": "https://pedidos.dacot.com.br",
+        "origin_match": False,
+    }
+
+    monkeypatch.setenv(
+        "HANDOFF_ALLOWED_ORIGINS_JSON",
+        '{"orders":["https://pedidos.dacot.com.br","https://unsafe.example.test/path?secret=synthetic-secret"]}',
+    )
+    enabled = policy.launch_destination_diagnostics(template, "orders")
+    assert enabled["allowed_origins_present"] is True
+    assert enabled["allowed_origins_json_valid"] is True
+    assert enabled["orders_origins"] == ["https://pedidos.dacot.com.br"]
+    assert enabled["received_origin"] == "https://pedidos.dacot.com.br"
+    assert enabled["origin_match"] is True
+    assert "synthetic-secret" not in str(enabled)
+
+    monkeypatch.setenv("HANDOFF_ALLOWED_ORIGINS_JSON", "not-json")
+    invalid = policy.launch_destination_diagnostics(template, "orders")
+    assert invalid["allowed_origins_present"] is True
+    assert invalid["allowed_origins_json_valid"] is False
+    assert invalid["orders_origins"] == []
+    assert invalid["origin_match"] is False
+
+    monkeypatch.setenv("HANDOFF_ALLOWED_ORIGINS_JSON", '{"orders":["https://pedidos.dacot.com.br"]}')
+    assert policy.validate_launch_url(destination, "orders") == destination

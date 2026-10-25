@@ -71,6 +71,49 @@ def test_orders_template_requires_single_slug_and_authorized_origin(services):
     assert accepted.json()["launch_url_template"] == "https://orders.example.test/{slug}"
 
 
+def test_orders_template_diagnostics_are_opt_in_sanitized_and_keep_response(services):
+    service = services
+    endpoint = "/hub/modules/orders/launch-url-template"
+    original_env = service.env.copy()
+
+    def latest_hub_log():
+        service.logs[-1].flush()
+        return service.logs[-1].name and open(service.logs[-1].name, encoding="utf-8").read()
+
+    try:
+        service.env["HANDOFF_ALLOWED_ORIGINS_JSON"] = '{"orders":["https://orders.example.test"]}'
+        service.env.pop("HANDOFF_DESTINATION_DIAGNOSTICS", None)
+        service.restart_hub()
+        disabled = service.call("PATCH", endpoint, json={
+            "launch_url_template": "https://untrusted.example.test/{slug}",
+        })
+        assert disabled.status_code == 400
+        assert "handoff_destination_validation_failed" not in latest_hub_log()
+
+        service.env["HANDOFF_DESTINATION_DIAGNOSTICS"] = "true"
+        service.env["HANDOFF_ALLOWED_ORIGINS_JSON"] = (
+            '{"orders":["https://orders.example.test?secret=synthetic-secret"]}'
+        )
+        service.restart_hub()
+        enabled = service.call("PATCH", endpoint, json={
+            "launch_url_template": "https://untrusted.example.test/{slug}",
+        })
+        assert enabled.status_code == disabled.status_code == 400
+        log = latest_hub_log()
+        assert "handoff_destination_validation_failed" in log
+        assert "allowed_origins_present=True" in log
+        assert "allowed_origins_json_valid=True" in log
+        assert "orders_origins=[]" in log
+        assert "received_origin=https://untrusted.example.test" in log
+        assert "origin_match=False" in log
+        assert "synthetic-secret" not in log
+        assert "https://untrusted.example.test/{slug}" not in log
+    finally:
+        service.env.clear()
+        service.env.update(original_env)
+        service.restart_hub()
+
+
 def test_public_revalidation_denies_a_revoked_orders_grant(services):
     service, restaurant = services, services.restaurant()
     handoff = service.handoff(restaurant)
