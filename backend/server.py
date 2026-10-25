@@ -202,6 +202,29 @@ def _orders_frontend_url() -> str:
     return value
 
 
+def _handoff_runtime_diagnostics_enabled() -> bool:
+    """Temporary opt-in operational check; disabled unless both services enable it."""
+    return os.environ.get("HANDOFF_RUNTIME_DIAGNOSTICS", "").strip().lower() == "true"
+
+
+async def _orders_issuer_matches_contract() -> tuple[bool, bool]:
+    """Query Pedidos without exposing configuration or transport details externally."""
+    try:
+        async with httpx.AsyncClient(timeout=3.0, follow_redirects=False, trust_env=False) as client:
+            result = await client.get(
+                f"{_orders_backend_url()}/api/internal/hub/handoff-runtime-diagnostics",
+                headers={"X-Module-Key": MODULE_ACCESS_KEYS[ORDERS_MODULE_KEY]},
+            )
+        payload = result.json()
+        if (result.status_code != 200 or not isinstance(payload, dict)
+                or set(payload) != {"issuer_matches_contract"}
+                or not isinstance(payload["issuer_matches_contract"], bool)):
+            return False, False
+        return True, payload["issuer_matches_contract"]
+    except (httpx.HTTPError, HTTPException, TypeError, ValueError):
+        return False, False
+
+
 def iso(dt: Optional[datetime]) -> Optional[str]:
     return dt.isoformat() if dt else None
 
@@ -855,6 +878,21 @@ async def whatsapp_integration_status(response: Response, _user: dict = Depends(
         "connected_account_phone": status.connected_account_phone if status.gateway_reachable else None,
         "account_switch_available": bool(status.gateway_reachable and _account_switch_enabled()
                                           and getattr(status, "account_switch_available", False)),
+    }
+
+
+@api_router.get("/hub/handoff/runtime-diagnostics", include_in_schema=False)
+async def handoff_runtime_diagnostics(response: Response, _user: dict = Depends(get_super_admin)):
+    """Temporary super-admin-only diagnostic returning no raw runtime configuration."""
+    if not _handoff_runtime_diagnostics_enabled():
+        raise HTTPException(404, "Não encontrado")
+    orders_reachable, orders_issuer_matches_contract = await _orders_issuer_matches_contract()
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    return {
+        "hub_issuer_matches_contract": secrets.compare_digest(HANDOFF_ISSUER, "dacot-hub"),
+        "orders_issuer_matches_contract": orders_issuer_matches_contract,
+        "orders_reachable": orders_reachable,
     }
 
 
