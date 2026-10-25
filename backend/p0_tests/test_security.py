@@ -79,7 +79,7 @@ def test_existing_poisoned_destination_cannot_issue_token(services):
     assert s.call("POST", "/portal/modules/orders/launch-token", headers=identity["headers"]).status_code == 400
 
 
-def test_local_requires_explicit_development_and_allowlist(monkeypatch):
+def test_handoff_destinations_require_https_even_in_development(monkeypatch):
     policy = load("policy", BACKEND / "handoff_policy.py")
     monkeypatch.setenv("HANDOFF_ALLOWED_ORIGINS_JSON", '{"orders":["http://127.0.0.1:3000"]}')
     monkeypatch.setenv("APP_ENV", "production")
@@ -87,7 +87,9 @@ def test_local_requires_explicit_development_and_allowlist(monkeypatch):
         policy.validate_launch_url("http://127.0.0.1:3000/r", "orders")
     assert error.value.status_code == 400
     monkeypatch.setenv("APP_ENV", "development")
-    assert policy.validate_launch_url("http://127.0.0.1:3000/r", "orders").startswith("http:")
+    with pytest.raises(Exception) as error:
+        policy.validate_launch_url("http://127.0.0.1:3000/r", "orders")
+    assert error.value.status_code == 400
     monkeypatch.delenv("HANDOFF_ALLOWED_ORIGINS_JSON")
     with pytest.raises(Exception):
         policy.validate_launch_url("http://127.0.0.1:3000/r", "orders")
