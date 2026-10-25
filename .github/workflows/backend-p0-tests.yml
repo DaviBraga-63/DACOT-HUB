@@ -215,7 +215,69 @@ jobs:
           wait_for "$ORDERS_API/api/health"
           wait_for --cacert "$E2E_TLS_CA" "$HUB_UI/login"
           wait_for --cacert "$E2E_TLS_CA" "$ORDERS_UI/login"
-          NODE_EXTRA_CA_CERTS="$E2E_TLS_CA" node -e 'require("https").get(process.argv[1], response => { if (response.statusCode !== 200) process.exitCode = 1; response.resume(); }).on("error", error => { console.error(error.message); process.exitCode = 1; })' "$ORDERS_UI/login"
+          NODE_EXTRA_CA_CERTS="$E2E_TLS_CA" ORDERS_UI="$ORDERS_UI" node <<'NODE'
+          const https = require("https");
+
+          const target = new URL(`${process.env.ORDERS_UI}/login`);
+          const timeoutMs = 10_000;
+          const tlsErrorCodes = new Set([
+            "DEPTH_ZERO_SELF_SIGNED_CERT",
+            "ERR_TLS_CERT_ALTNAME_INVALID",
+            "SELF_SIGNED_CERT_IN_CHAIN",
+            "UNABLE_TO_VERIFY_LEAF_SIGNATURE",
+          ]);
+          const networkErrorCodes = new Set([
+            "ECONNREFUSED",
+            "ECONNRESET",
+            "EHOSTUNREACH",
+            "ENETUNREACH",
+            "ENOTFOUND",
+            "EAI_AGAIN",
+          ]);
+
+          const sanitizeText = (value) => String(value || "unknown error")
+            .replace(/https?:\/\/[^\s'"<>]+/gi, "<url>")
+            .replace(/([?&](?:token|code|secret|password|authorization)=)[^\s&]+/gi, "$1<redacted>")
+            .slice(0, 240);
+          const sanitizeLocation = (value) => {
+            if (!value) return null;
+            try {
+              const location = new URL(value, target);
+              return `${location.origin}${location.pathname}`;
+            } catch {
+              return "<invalid-location>";
+            }
+          };
+          const classifyError = (error) => {
+            const code = typeof error?.code === "string" ? error.code : "UNKNOWN";
+            if (code === "ETIMEDOUT") return "timeout";
+            if (tlsErrorCodes.has(code) || code.startsWith("ERR_TLS_") || code.includes("CERT")) return "tls_error";
+            if (networkErrorCodes.has(code)) return "service_unavailable";
+            return "connection_error";
+          };
+
+          console.log(`E2E HTTPS readiness probe: origin=${target.origin} path=${target.pathname} expected_status=200 timeout_ms=${timeoutMs}`);
+          const request = https.get(target, { timeout: timeoutMs }, (response) => {
+            const status = response.statusCode || 0;
+            const location = sanitizeLocation(response.headers.location);
+            const category = status === 200
+              ? "ready"
+              : status >= 300 && status < 400
+                ? "redirect"
+                : [502, 503, 504].includes(status)
+                  ? "service_unavailable"
+                  : "unexpected_http_status";
+            console.log(`E2E HTTPS readiness response: category=${category} origin=${target.origin} path=${target.pathname} status=${status}${location ? ` location=${location}` : ""}`);
+            response.resume();
+            if (status !== 200) process.exitCode = 1;
+          });
+          request.on("timeout", () => request.destroy(Object.assign(new Error("Readiness probe timed out"), { code: "ETIMEDOUT" })));
+          request.on("error", (error) => {
+            const code = typeof error?.code === "string" ? error.code : "UNKNOWN";
+            console.error(`E2E HTTPS readiness failure: category=${classifyError(error)} code=${code} message=${sanitizeText(error?.message)}`);
+            process.exitCode = 1;
+          });
+          NODE
       - name: Run real Chromium revocation E2E
         run: cd frontend && E2E_HEADED=1 xvfb-run -a yarn playwright test
       - name: Verify logical deletion persisted in isolated MongoDB
