@@ -34,7 +34,7 @@ function tabHeaders(binding, tabId = crypto.randomUUID()) {
 }
 
 async function authenticatedHubApi(email, password) {
-  const api = await request.newContext({ baseURL: HUB_API, ignoreHTTPSErrors: true });
+  const api = await request.newContext({ baseURL: HUB_API });
   const tabId = crypto.randomUUID();
   const login = await api.post("/api/auth/login", {
     headers: { "X-DACOT-Tab-Session": tabId },
@@ -72,6 +72,11 @@ async function createRestaurant(admin, suffix) {
   });
   expect(employee.status()).toBe(200);
   const user = await employee.json();
+  const insecureLaunchUrl = await admin.api.patch(`/api/hub/tenants/${tenant.id}/modules/orders`, {
+    headers: admin.headers,
+    data: { launch_url: `http://localhost:3001/${tenant.slug}` },
+  });
+  expect(insecureLaunchUrl.status()).toBe(400);
   const launchUrl = await admin.api.patch(`/api/hub/tenants/${tenant.id}/modules/orders`, {
     headers: admin.headers,
     data: { launch_url: `${ORDERS_UI}/${tenant.slug}` },
@@ -92,7 +97,7 @@ async function exchangeOrdersSession(employee) {
     expect(launch.status()).toBe(200);
     const { handoff } = await launch.json();
     expect(handoff).toBeTruthy();
-    const orders = await request.newContext({ baseURL: ORDERS_API, ignoreHTTPSErrors: true });
+    const orders = await request.newContext({ baseURL: ORDERS_API });
     try {
       const exchange = await orders.post("/api/orders/session/exchange", { data: { handoff } });
       expect(exchange.status()).toBe(200);
@@ -108,7 +113,7 @@ async function exchangeOrdersSession(employee) {
 }
 
 async function ordersBrowserContext(browser, token) {
-  const context = await browser.newContext({ ignoreHTTPSErrors: true });
+  const context = await browser.newContext();
   const seedPage = await context.newPage();
   await seedPage.goto(`${ORDERS_UI}/login`);
   await seedPage.evaluate((sessionToken) => {
@@ -135,7 +140,7 @@ async function openOrdersPages(browser, token) {
 }
 
 async function deleteEmployeeThroughHubUi(browser, tenant, user, timing) {
-  const context = await browser.newContext({ ignoreHTTPSErrors: true });
+  const context = await browser.newContext();
   const page = await context.newPage();
   page.on("response", (response) => {
     const url = new URL(response.url());
@@ -167,7 +172,7 @@ async function deleteEmployeeThroughHubUi(browser, tenant, user, timing) {
 }
 
 async function hubBrowserPage(browser, email = ADMIN_EMAIL, password = ADMIN_PASSWORD) {
-  const context = await browser.newContext({ ignoreHTTPSErrors: true });
+  const context = await browser.newContext();
   const page = await context.newPage();
   await page.goto(`${HUB_UI}/login`);
   await page.getByTestId("login-email").fill(email);
@@ -207,7 +212,7 @@ test("revoga funcionário em Dashboard, Pedidos e Cozinha sem afetar outro resta
     await deleteEmployeeThroughHubUi(browser, tenantA.tenant, tenantA.user, timing);
     await Promise.all(disconnects);
 
-    const oldToken = await request.newContext({ baseURL: ORDERS_API, ignoreHTTPSErrors: true });
+    const oldToken = await request.newContext({ baseURL: ORDERS_API });
     try {
       const rejected = await oldToken.get("/api/auth/me", { headers: { Authorization: `Bearer ${tokenA}` } });
       expect([401, 403]).toContain(rejected.status());
@@ -316,7 +321,7 @@ test("handoff pela interface do Portal estabelece sessão no Pedidos", async ({ 
   let context;
   try {
     const restaurant = await createRestaurant(admin, "ui-handoff");
-    context = await browser.newContext({ ignoreHTTPSErrors: true });
+    context = await browser.newContext();
     const page = await context.newPage();
     await page.goto(`${HUB_UI}/login`);
     await page.getByTestId("login-email").fill(restaurant.user.email);
