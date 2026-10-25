@@ -257,7 +257,7 @@ jobs:
           };
 
           console.log(`E2E HTTPS readiness probe: origin=${target.origin} path=${target.pathname} expected_status=200 timeout_ms=${timeoutMs}`);
-          const request = https.get(target, { timeout: timeoutMs }, (response) => {
+          const request = https.get(target, { timeout: timeoutMs, headers: { accept: "text/html" } }, (response) => {
             const status = response.statusCode || 0;
             const location = sanitizeLocation(response.headers.location);
             const category = status === 200
