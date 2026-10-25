@@ -296,7 +296,7 @@ test("foco sintetico e evento de visibilidade visivel apos revogacao", async ({ 
     expect(syntheticFocus).toEqual({ isTrusted: false, observed: true });
     const revalidation = page.waitForResponse((response) => {
       const url = new URL(response.url());
-      return url.origin === ORDERS_API && url.pathname === "/api/auth/me" && [401, 403].includes(response.status());
+      return url.origin === ORDERS_UI && url.pathname === "/api/auth/me" && [401, 403].includes(response.status());
     });
     const disconnect = waitForLogin(page, "synthetic_visibility_event", timing);
     // This dispatch tests the existing visible-page handler; it is not evidence
@@ -333,7 +333,7 @@ test("handoff pela interface do Portal estabelece sessão no Pedidos", async ({ 
     const popup = context.waitForEvent("page");
     const exchange = context.waitForEvent("response", { predicate: (response) => {
       const url = new URL(response.url());
-      return url.origin === ORDERS_API && url.pathname === "/api/orders/session/exchange" && response.request().method() === "POST";
+      return url.origin === ORDERS_UI && url.pathname === "/api/orders/session/exchange" && response.request().method() === "POST";
     } });
     await page.getByTestId("portal-open-orders").click();
     const orders = await popup;
