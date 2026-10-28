@@ -18,20 +18,6 @@ const CONNECTION_STATES = {
   unavailable: { label: "Indisponível", tone: "neutral", description: "Não foi possível consultar o gateway com segurança." },
 };
 
-const RUNTIME_DIAGNOSTIC_FIELDS = [
-  "hub_issuer_matches_contract",
-  "orders_issuer_matches_contract",
-  "orders_reachable",
-];
-
-function validRuntimeDiagnostics(value) {
-  return value !== null
-    && typeof value === "object"
-    && !Array.isArray(value)
-    && Object.keys(value).length === RUNTIME_DIAGNOSTIC_FIELDS.length
-    && RUNTIME_DIAGNOSTIC_FIELDS.every((field) => typeof value[field] === "boolean");
-}
-
 function connectionDetails(status) {
   return CONNECTION_STATES[status?.connection_state] || CONNECTION_STATES.unavailable;
 }
@@ -70,9 +56,6 @@ export default function WhatsAppPairing() {
   const [switchCode, setSwitchCode] = useState("");
   const [switchError, setSwitchError] = useState("");
   const [switchBusy, setSwitchBusy] = useState(false);
-  const [diagnostics, setDiagnostics] = useState(null);
-  const [diagnosticsLoading, setDiagnosticsLoading] = useState(false);
-  const [diagnosticsUnavailable, setDiagnosticsUnavailable] = useState(false);
   const statusRequestGate = useRef(null);
   if (!statusRequestGate.current) statusRequestGate.current = createLatestRequestGate();
 
@@ -198,23 +181,6 @@ export default function WhatsAppPairing() {
     } finally { setBusy(false); }
   }
 
-  async function loadRuntimeDiagnostics() {
-    if (diagnosticsLoading) return;
-    setDiagnosticsLoading(true);
-    setDiagnostics(null);
-    setDiagnosticsUnavailable(false);
-    try {
-      const { data } = await api.get("/hub/handoff/runtime-diagnostics");
-      if (!validRuntimeDiagnostics(data)) throw new Error("Invalid diagnostic response");
-      setDiagnostics(data);
-    } catch {
-      // This temporary surface deliberately never displays raw API failures.
-      setDiagnosticsUnavailable(true);
-    } finally {
-      setDiagnosticsLoading(false);
-    }
-  }
-
   return (
     <section className="w-full py-6 sm:py-10 space-y-6 lg:min-h-[calc(100dvh-5rem)] lg:flex lg:flex-col">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
@@ -236,34 +202,6 @@ export default function WhatsAppPairing() {
       </div>
 
       {statusError && <div className="dh-chip dh-chip-warning" role="status">{statusError}</div>}
-
-      {user?.role === "super_admin" && (
-        <section className="dh-card p-5 sm:p-6" aria-labelledby="handoff-runtime-diagnostics-title">
-          <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-            <div>
-              <p className="dh-kpi-label">Diagnóstico de integração</p>
-              <p id="handoff-runtime-diagnostics-title" className="mt-1 text-sm text-[var(--dh-muted)]">Consulta temporária do contrato de issuer entre HUB e Pedidos.</p>
-            </div>
-            <button type="button" className="dh-btn dh-btn-outline shrink-0" onClick={() => void loadRuntimeDiagnostics()}
-                    disabled={diagnosticsLoading} data-testid="handoff-runtime-diagnostics-query">
-              {diagnosticsLoading ? "Consultando…" : "Consultar diagnóstico"}
-            </button>
-          </div>
-
-          {diagnosticsUnavailable && <p className="mt-4 text-sm text-[var(--dh-muted)]" role="status">Diagnóstico indisponível</p>}
-
-          {diagnostics && (
-            <dl className="mt-4 grid gap-3 sm:grid-cols-3" data-testid="handoff-runtime-diagnostics-result">
-              {RUNTIME_DIAGNOSTIC_FIELDS.map((field) => (
-                <div key={field} className="border border-[var(--dh-border-soft)] p-3">
-                  <dt className="text-xs text-[var(--dh-muted)] break-all">{field}</dt>
-                  <dd className="mt-1 font-semibold text-[var(--dh-text)]">{diagnostics[field] ? "true" : "false"}</dd>
-                </div>
-              ))}
-            </dl>
-          )}
-        </section>
-      )}
 
       <div className="grid gap-6 lg:min-h-0 lg:flex-1 lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)] lg:items-stretch">
         <article className="dh-card flex h-full flex-col p-6 sm:p-8 lg:p-10" style={{ borderRadius: 0 }} data-testid="whatsapp-connected-account">
