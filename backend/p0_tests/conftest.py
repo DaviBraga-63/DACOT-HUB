@@ -62,10 +62,13 @@ class Services:
         self.odb = self.mongo.orders_p0
         self.hport, self.oport = hp, op
         self.restart_hub()
-        orders_env = {**env, "DB_NAME": "orders_p0", "JWT_SECRET": secrets.token_urlsafe(40),
-                      "DEFAULT_RESTAURANT_NAME": "Isolated test bootstrap"}
-        self.start("orders", [sys.executable, "-m", "uvicorn", "server:app", "--host", "127.0.0.1", "--port", str(op)], orders, orders_env)
-        self.wait(lambda: requests.get(self.orders + "/api/health", timeout=1).raise_for_status(), "orders")
+        self.orders_env = {
+            **env,
+            "DB_NAME": "orders_p0",
+            "JWT_SECRET": secrets.token_urlsafe(40),
+            "DEFAULT_RESTAURANT_NAME": "Isolated test bootstrap",
+        }
+        self.restart_orders()
         assert self.db.tenants.count_documents({}) == 0, "Hub must not seed demo tenants"
         assert self.db.tenant_users.count_documents({}) == 0
         self.staff = self.login(self.admin_email, self.password)
@@ -101,6 +104,16 @@ class Services:
         self.stop("hub")
         self.start("hub", [sys.executable, "-m", "uvicorn", "server:app", "--host", "127.0.0.1", "--port", str(self.hport)], self.hub_backend, self.env)
         self.wait(lambda: requests.get(self.hub + "/api/", timeout=1).raise_for_status(), "hub")
+
+    def restart_orders(self):
+        self.stop("orders")
+        self.start(
+            "orders",
+            [sys.executable, "-m", "uvicorn", "server:app", "--host", "127.0.0.1", "--port", str(self.oport)],
+            self.orders_backend,
+            self.orders_env,
+        )
+        self.wait(lambda: requests.get(self.orders + "/api/health", timeout=1).raise_for_status(), "orders")
 
     def login(self, email, password, *, browser_binding=None, tab_session_id=None):
         """Return the HTTP representation of one browser-tab session.

@@ -30,17 +30,23 @@ DIRECT_LOGIN_FIELDS = {
 
 @contextmanager
 def _direct_login_enabled(services, *, trust_local_proxy=False):
-    original_env = services.env.copy()
+    original_hub_env = services.env.copy()
+    original_orders_env = services.orders_env.copy()
     services.env["ORDERS_DIRECT_LOGIN_ENABLED"] = "true"
+    services.orders_env["ORDERS_DIRECT_LOGIN_ENABLED"] = "true"
     if trust_local_proxy:
         services.env["RECOVERY_TRUSTED_PROXY_CIDRS"] = "127.0.0.1/32"
     services.restart_hub()
+    services.restart_orders()
     try:
         yield
     finally:
         services.env.clear()
-        services.env.update(original_env)
+        services.env.update(original_hub_env)
+        services.orders_env.clear()
+        services.orders_env.update(original_orders_env)
         services.restart_hub()
+        services.restart_orders()
 
 
 def _restaurant_user(services, identity):
@@ -67,6 +73,14 @@ def _direct_login(services, email, password, *, module_key=None, extra=None, ori
     return requests.post(
         (hub_url or services.hub) + "/api" + DIRECT_LOGIN_PATH,
         json=payload, headers=headers, timeout=10,
+    )
+
+
+def _orders_login(services, email, password):
+    return requests.post(
+        services.orders + "/api/auth/login",
+        json={"email": email, "password": password},
+        timeout=10,
     )
 
 
@@ -180,6 +194,99 @@ def test_direct_login_derives_tenant_only_from_the_authenticated_user(services):
     assert first_response.json()["restaurant_id"] == first["tid"]
     assert second_response.json()["restaurant_id"] == second["tid"]
     assert attempted_override.status_code == 422
+
+
+def test_orders_direct_login_uses_real_hub_and_orders_backends(services):
+    """Exercise the complete service boundary against the disposable MongoDB."""
+    first = services.restaurant()
+    second = services.restaurant()
+    first_user = _restaurant_user(services, first)
+    second_user = _restaurant_user(services, second)
+
+    with _direct_login_enabled(services):
+        # Two browser requests race through the real Pedidos API to the real
+        # HUB endpoint.  The unique mirror key must keep one local identity.
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            concurrent_logins = list(executor.map(
+                lambda _index: _orders_login(services, first_user["email"], services.password),
+                range(2),
+            ))
+        assert [response.status_code for response in concurrent_logins] == [200, 200]
+        first_login = concurrent_logins[0]
+        second_login = _orders_login(services, second_user["email"], services.password)
+
+        assert first_login.status_code == second_login.status_code == 200
+        first_session = first_login.json()
+        second_session = second_login.json()
+        assert first_session["user"]["restaurant_id"] == first["tid"]
+        assert second_session["user"]["restaurant_id"] == second["tid"]
+        assert first_session["user"]["restaurant_id"] != second_session["user"]["restaurant_id"]
+        assert services.order_me(first_session["token"]).status_code == 200
+        assert services.order_me(second_session["token"]).status_code == 200
+
+        mirror = services.odb.users.find_one({
+            "restaurant_id": first["tid"], "hub_user_id": first["uid"],
+        })
+        assert mirror is not None
+        assert mirror["account_origin"] == "hub"
+        assert mirror["provisioned_by"] == "hub_direct_login"
+        assert "password_hash" not in mirror
+        assert services.odb.users.count_documents({
+            "restaurant_id": first["tid"], "hub_user_id": first["uid"],
+        }) == 1
+
+        # A second direct sign-in preserves the operational mirror identifier.
+        repeated = _orders_login(services, first_user["email"], services.password)
+        assert repeated.status_code == 200
+        assert repeated.json()["user"]["id"] == first_session["user"]["id"]
+
+        # The existing handoff continues to issue a Pedidos session while the
+        # direct-login gate is enabled in this isolated environment.
+        handoff = services.exchange(services.handoff(first))
+        assert handoff.status_code == 200
+        assert services.order_me(handoff.json()["token"]).status_code == 200
+
+
+def test_orders_direct_login_denies_invalid_credentials_and_revoked_access(services):
+    identity = services.restaurant()
+    user = _restaurant_user(services, identity)
+    inactive_user = services.restaurant()
+    suspended_tenant = services.restaurant()
+    disabled_module = services.restaurant()
+    inactive_user_record = _restaurant_user(services, inactive_user)
+    suspended_tenant_user = _restaurant_user(services, suspended_tenant)
+    disabled_module_user = _restaurant_user(services, disabled_module)
+
+    _add_backup_admin(services, inactive_user)
+    services.call(
+        "PATCH", f"/hub/tenants/{inactive_user['tid']}/users/{inactive_user['uid']}",
+        json={"status": "inactive"},
+    ).raise_for_status()
+    services.call(
+        "PATCH", f"/hub/tenants/{suspended_tenant['tid']}", json={"status": "suspended"},
+    ).raise_for_status()
+    services.call(
+        "POST", f"/hub/tenants/{disabled_module['tid']}/modules/orders/deactivate",
+    ).raise_for_status()
+
+    with _direct_login_enabled(services):
+        assert _orders_login(services, user["email"], "wrong-password").status_code == 401
+        assert _orders_login(services, inactive_user_record["email"], services.password).status_code == 401
+        assert _orders_login(services, suspended_tenant_user["email"], services.password).status_code == 401
+        assert _orders_login(services, disabled_module_user["email"], services.password).status_code == 401
+
+        granted = _orders_login(services, user["email"], services.password)
+        assert granted.status_code == 200
+
+        services.call(
+            "PUT", f"/hub/tenants/{identity['tid']}/modules/orders/users/{identity['uid']}/access",
+            json={"active": False},
+        ).raise_for_status()
+
+        # A revoked grant prevents a new Pedidos session and invalidates an
+        # already issued session through the existing fresh HUB revalidation.
+        assert _orders_login(services, user["email"], services.password).status_code == 401
+        assert services.order_me(granted.json()["token"]).status_code == 403
 
 
 def test_direct_login_denies_inactive_user_tenant_disabled_module_and_grant(services):
