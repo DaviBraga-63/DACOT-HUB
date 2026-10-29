@@ -12,6 +12,7 @@ import logging
 import re
 import secrets
 import hashlib
+import hmac
 import ipaddress
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional, Annotated, Any
@@ -146,6 +147,10 @@ MODULE_ACCESS_KEYS = {
 }
 VALID_HANDOFF_ROLES = {"admin", "manager", "waiter", "kitchen"}
 HUB_ADMIN_ROLES = {"super_admin", "admin"}
+ORDERS_DIRECT_LOGIN_VERSION = 1
+ORDERS_DIRECT_LOGIN_WINDOW = timedelta(minutes=15)
+ORDERS_DIRECT_LOGIN_ACCOUNT_LIMIT = 5
+ORDERS_DIRECT_LOGIN_ORIGIN_LIMIT = 50
 
 app = FastAPI(title="DACOT Hub API")
 api_router = APIRouter(prefix="/api")
@@ -401,6 +406,15 @@ async def send_orders_first_access_email(to_email: str, token: str) -> bool:
 class LoginIn(BaseModel):
     email: EmailStr
     password: str
+
+
+class OrdersDirectLoginIn(BaseModel):
+    """The private Pedidos-to-HUB credential contract accepts no other fields."""
+    model_config = ConfigDict(extra="forbid")
+
+    email: EmailStr
+    password: str = Field(min_length=1, max_length=256)
+
 
 class ForgotIn(BaseModel):
     email: EmailStr
@@ -2131,6 +2145,141 @@ def require_module_key(mkey: str, request: Request):
         raise HTTPException(401, "Chave de módulo inválida")
 
 
+def _orders_direct_login_enabled() -> bool:
+    """Default-off migration gate for direct Pedidos authentication."""
+    return os.environ.get("ORDERS_DIRECT_LOGIN_ENABLED", "false").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
+
+
+def _orders_direct_login_rate_key(scope: str, value: str) -> str:
+    """Derive an opaque, stable key without retaining email or origin values."""
+    return hmac.new(
+        JWT_SECRET.encode("utf-8"),
+        f"orders-direct-login:v1:{scope}:{value}".encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+async def _reserve_orders_direct_login_limit(scope: str, value: str, limit: int) -> bool:
+    """Atomically admit one credential attempt into a fixed 15-minute window.
+
+    One document represents one protected dimension.  The predicate and update
+    run as one MongoDB operation, so workers and FastAPI instances cannot admit
+    more than ``limit`` requests in the same active window.  A duplicate-key
+    retry only handles simultaneous first inserts; all other uncertainty is a
+    denial.
+    """
+    now = now_utc()
+    window_start = now - ORDERS_DIRECT_LOGIN_WINDOW
+    expires_at = now + ORDERS_DIRECT_LOGIN_WINDOW
+    key = _orders_direct_login_rate_key(scope, value)
+    can_reset_window = {
+        "$or": [
+            {"$eq": [{"$type": "$window_started_at"}, "missing"]},
+            {"$lte": ["$window_started_at", window_start]},
+        ],
+    }
+    query = {
+        "_id": key,
+        "$or": [
+            {"window_started_at": {"$exists": False}},
+            {"window_started_at": {"$lte": window_start}},
+            {"$and": [{"count": {"$gte": 0}}, {"count": {"$lt": limit}}]},
+        ],
+    }
+    update = [{"$set": {
+        "window_started_at": {"$cond": [can_reset_window, now, "$window_started_at"]},
+        "count": {"$cond": [can_reset_window, 1, {"$add": ["$count", 1]}]},
+        "expires_at": {"$cond": [can_reset_window, expires_at, "$expires_at"]},
+    }}]
+    for _ in range(3):
+        try:
+            result = await db.orders_direct_login_rate_limits.find_one_and_update(
+                query, update, upsert=True, return_document=ReturnDocument.AFTER,
+            )
+        except DuplicateKeyError:
+            # Another instance created this bucket between this request's read
+            # and upsert. Retry against its now-visible counter.
+            continue
+        if not result:
+            return False
+        return type(result.get("count")) is int and result["count"] <= limit
+    return False
+
+
+async def _allow_orders_direct_login_attempt(email: str, origin: str) -> bool:
+    """Reserve both independent rate-limit dimensions; failure is fail-closed."""
+    try:
+        for scope, value, limit in (
+            ("account", email, ORDERS_DIRECT_LOGIN_ACCOUNT_LIMIT),
+            ("origin", origin, ORDERS_DIRECT_LOGIN_ORIGIN_LIMIT),
+        ):
+            if not await _reserve_orders_direct_login_limit(scope, value, limit):
+                return False
+        return True
+    except PyMongoError:
+        # Deliberately omit account and network identifiers from logs.
+        logger.warning("orders_direct_login_rate_limiter_unavailable")
+        return False
+
+
+async def _orders_direct_login_access(user: dict) -> Optional[dict]:
+    """Resolve all current Pedidos access authority from the HUB database.
+
+    The tenant and the user id always come from the authenticated credential
+    record.  No caller-provided restaurant, role, or module can influence this
+    decision.
+    """
+    user_id = str(user["_id"])
+    tenant_id = user.get("tenant_id", "")
+    role = user.get("role", "")
+    return await _current_module_access(
+        tenant_id, ORDERS_MODULE_KEY, f"tenant_user:{user_id}", role,
+    )
+
+
+@api_router.post("/internal/modules/orders/direct-login/v1")
+async def orders_direct_login(payload: OrdersDirectLoginIn, request: Request, response: Response):
+    """Authenticate one restaurant user for Pedidos without issuing HUB sessions.
+
+    This endpoint is intentionally not a browser login API.  It is hidden until
+    explicitly enabled and requires the existing service-to-service module key.
+    Every authorization fact is resolved from the authoritative HUB records so
+    tenant, module and individual-grant revocations fail closed.
+    """
+    if not _orders_direct_login_enabled():
+        raise HTTPException(404, "Recurso não encontrado")
+    require_module_key(ORDERS_MODULE_KEY, request)
+
+    email = payload.email.lower()
+    ip = _client_ip(request)
+    if not await _allow_orders_direct_login_attempt(email, ip):
+        raise HTTPException(429, "Muitas tentativas de login. Tente novamente em 15 minutos.")
+
+    user = await db.tenant_users.find_one({"email": email})
+    valid = bool(user) and bool(user.get("password_hash")) and verify_password(
+        payload.password, user.get("password_hash", ""),
+    )
+    access = await _orders_direct_login_access(user) if valid else None
+    if not access:
+        # Do not reveal whether credentials, tenant state, module state, or an
+        # individual grant caused the denial.
+        raise HTTPException(401, "Credenciais inválidas")
+
+    response.headers["Cache-Control"] = "no-store"
+    return {
+        "contract_version": ORDERS_DIRECT_LOGIN_VERSION,
+        "user_id": str(user["_id"]),
+        "restaurant_id": user["tenant_id"],
+        "name": user.get("name", ""),
+        "email": email,
+        "module": ORDERS_MODULE_KEY,
+        "role": user["role"],
+        "access_versions": access,
+    }
+
+
 @api_router.get("/public/tenants/{tid}/modules/{mkey}/status")
 async def public_module_status(tid: str, mkey: str, request: Request):
     require_module_key(mkey, request)
@@ -2448,6 +2597,7 @@ async def startup():
     await db.activity_log.create_index([("created_at", -1)])
     await db.login_attempts.create_index("email")
     await db.login_attempts.create_index("identifier")
+    await db.orders_direct_login_rate_limits.create_index("expires_at", expireAfterSeconds=0)
     await db.password_reset_tokens.create_index("token_hash", unique=True)
     await db.password_reset_tokens.create_index("expires_at", expireAfterSeconds=0)
     await db.password_reset_requests.create_index("email")
