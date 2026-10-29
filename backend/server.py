@@ -12,6 +12,8 @@ import logging
 import re
 import secrets
 import hashlib
+import hmac
+import ipaddress
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional, Annotated, Any
 from urllib.parse import urlparse
@@ -81,6 +83,10 @@ MODULE_ACCESS_KEYS = {
 }
 VALID_HANDOFF_ROLES = {"admin", "manager", "waiter", "kitchen"}
 HUB_ADMIN_ROLES = {"super_admin", "admin"}
+ORDERS_DIRECT_LOGIN_VERSION = 1
+ORDERS_DIRECT_LOGIN_WINDOW = timedelta(minutes=15)
+ORDERS_DIRECT_LOGIN_ACCOUNT_LIMIT = 5
+ORDERS_DIRECT_LOGIN_ORIGIN_LIMIT = 50
 
 app = FastAPI(title="DACOT Hub API")
 api_router = APIRouter(prefix="/api")
@@ -323,6 +329,15 @@ class LoginIn(BaseModel):
     email: EmailStr
     password: str
 
+
+class OrdersDirectLoginIn(BaseModel):
+    """The private Pedidos-to-HUB credential contract accepts no other fields."""
+    model_config = ConfigDict(extra="forbid")
+
+    email: EmailStr
+    password: str = Field(min_length=1, max_length=256)
+
+
 class ForgotIn(BaseModel):
     email: EmailStr
 
@@ -344,13 +359,27 @@ async def _issue_password_reset(user_id: str, email: str, user_type: str) -> str
 
 
 # ─── Auth endpoints ────────────────────────────────────────────────────────────
+def _recovery_client_ip(request: Request) -> str:
+    """Trust forwarded client addresses only from explicitly trusted proxies."""
+    try:
+        peer = ipaddress.ip_address(request.client.host)
+        networks = [ipaddress.ip_network(value.strip()) for value in
+                    os.environ.get("RECOVERY_TRUSTED_PROXY_CIDRS", "").split(",") if value.strip()]
+        if not any(peer in network for network in networks):
+            return peer.compressed
+        hops = [ipaddress.ip_address(value.strip()) for value in request.headers.get("x-forwarded-for", "").split(",") if value.strip()]
+        if len(hops) > 20:
+            return "unknown"
+        for hop in reversed(hops):
+            if not any(hop in network for network in networks):
+                return hop.compressed
+        return peer.compressed
+    except (ValueError, AttributeError):
+        return "unknown"
+
+
 def _client_ip(request: Request) -> str:
-    # Behind the k8s ingress, request.client.host is the proxy pod IP — use the
-    # first X-Forwarded-For hop (set by the edge proxy) for the real client.
-    xff = request.headers.get("x-forwarded-for", "")
-    if xff:
-        return xff.split(",")[0].strip()
-    return request.client.host if request.client else "unknown"
+    return _recovery_client_ip(request)
 
 
 @api_router.post("/auth/login")
@@ -1513,6 +1542,117 @@ def require_module_key(mkey: str, request: Request):
         raise HTTPException(401, "Chave de módulo inválida")
 
 
+def _orders_direct_login_enabled() -> bool:
+    """Default-off migration gate for direct Pedidos authentication."""
+    return os.environ.get("ORDERS_DIRECT_LOGIN_ENABLED", "false").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
+
+
+def _orders_direct_login_rate_key(scope: str, value: str) -> str:
+    """Derive an opaque, stable key without retaining email or origin values."""
+    return hmac.new(
+        JWT_SECRET.encode("utf-8"),
+        f"orders-direct-login:v1:{scope}:{value}".encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+async def _reserve_orders_direct_login_limit(scope: str, value: str, limit: int) -> bool:
+    """Atomically admit one credential attempt into a fixed 15-minute window."""
+    now = now_utc()
+    window_start = now - ORDERS_DIRECT_LOGIN_WINDOW
+    expires_at = now + ORDERS_DIRECT_LOGIN_WINDOW
+    key = _orders_direct_login_rate_key(scope, value)
+    can_reset_window = {
+        "$or": [
+            {"$eq": [{"$type": "$window_started_at"}, "missing"]},
+            {"$lte": ["$window_started_at", window_start]},
+        ],
+    }
+    query = {
+        "_id": key,
+        "$or": [
+            {"window_started_at": {"$exists": False}},
+            {"window_started_at": {"$lte": window_start}},
+            {"$and": [{"count": {"$gte": 0}}, {"count": {"$lt": limit}}]},
+        ],
+    }
+    update = [{"$set": {
+        "window_started_at": {"$cond": [can_reset_window, now, "$window_started_at"]},
+        "count": {"$cond": [can_reset_window, 1, {"$add": ["$count", 1]}]},
+        "expires_at": {"$cond": [can_reset_window, expires_at, "$expires_at"]},
+    }}]
+    for _ in range(3):
+        try:
+            result = await db.orders_direct_login_rate_limits.find_one_and_update(
+                query, update, upsert=True, return_document=ReturnDocument.AFTER,
+            )
+        except DuplicateKeyError:
+            continue
+        if not result:
+            return False
+        return type(result.get("count")) is int and result["count"] <= limit
+    return False
+
+
+async def _allow_orders_direct_login_attempt(email: str, origin: str) -> bool:
+    """Reserve both independent rate-limit dimensions; failure is fail-closed."""
+    try:
+        for scope, value, limit in (
+            ("account", email, ORDERS_DIRECT_LOGIN_ACCOUNT_LIMIT),
+            ("origin", origin, ORDERS_DIRECT_LOGIN_ORIGIN_LIMIT),
+        ):
+            if not await _reserve_orders_direct_login_limit(scope, value, limit):
+                return False
+        return True
+    except PyMongoError:
+        logger.warning("orders_direct_login_rate_limiter_unavailable")
+        return False
+
+
+async def _orders_direct_login_access(user: dict) -> Optional[dict]:
+    """Resolve Pedidos authority solely from authoritative HUB records."""
+    user_id = str(user["_id"])
+    tenant_id = user.get("tenant_id", "")
+    role = user.get("role", "")
+    return await _current_module_access(
+        tenant_id, ORDERS_MODULE_KEY, f"tenant_user:{user_id}", role,
+    )
+
+
+@api_router.post("/internal/modules/orders/direct-login/v1")
+async def orders_direct_login(payload: OrdersDirectLoginIn, request: Request, response: Response):
+    """Authenticate one restaurant user for Pedidos without issuing HUB sessions."""
+    if not _orders_direct_login_enabled():
+        raise HTTPException(404, "Recurso não encontrado")
+    require_module_key(ORDERS_MODULE_KEY, request)
+
+    email = payload.email.lower()
+    if not await _allow_orders_direct_login_attempt(email, _client_ip(request)):
+        raise HTTPException(429, "Muitas tentativas de login. Tente novamente em 15 minutos.")
+
+    user = await db.tenant_users.find_one({"email": email})
+    valid = bool(user) and bool(user.get("password_hash")) and verify_password(
+        payload.password, user.get("password_hash", ""),
+    )
+    access = await _orders_direct_login_access(user) if valid else None
+    if not access:
+        raise HTTPException(401, "Credenciais inválidas")
+
+    response.headers["Cache-Control"] = "no-store"
+    return {
+        "contract_version": ORDERS_DIRECT_LOGIN_VERSION,
+        "user_id": str(user["_id"]),
+        "restaurant_id": user["tenant_id"],
+        "name": user.get("name", ""),
+        "email": email,
+        "module": ORDERS_MODULE_KEY,
+        "role": user["role"],
+        "access_versions": access,
+    }
+
+
 @api_router.get("/public/tenants/{tid}/modules/{mkey}/status")
 async def public_module_status(tid: str, mkey: str, request: Request):
     require_module_key(mkey, request)
@@ -1830,6 +1970,7 @@ async def startup():
     await db.activity_log.create_index([("created_at", -1)])
     await db.login_attempts.create_index("email")
     await db.login_attempts.create_index("identifier")
+    await db.orders_direct_login_rate_limits.create_index("expires_at", expireAfterSeconds=0)
     await db.password_reset_tokens.create_index("token_hash", unique=True)
     await db.password_reset_tokens.create_index("expires_at", expireAfterSeconds=0)
     await db.password_reset_requests.create_index("email")
