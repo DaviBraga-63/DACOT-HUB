@@ -47,6 +47,16 @@ def _restaurant_user(services, identity):
     return services.db.tenant_users.find_one({"_id": ObjectId(identity["uid"])})
 
 
+def _add_backup_admin(services, identity):
+    response = services.call("POST", f"/hub/tenants/{identity['tid']}/users", json={
+        "name": "Backup Admin",
+        "email": f"backup-{secrets.token_hex(8)}@example.com",
+        "role": "admin",
+        "password": services.password,
+    })
+    response.raise_for_status()
+
+
 def _direct_login(services, email, password, *, module_key=None, extra=None, origin=None, hub_url=None):
     payload = {"email": email, "password": password}
     if extra:
@@ -181,6 +191,7 @@ def test_direct_login_denies_inactive_user_tenant_disabled_module_and_grant(serv
         inactive_user, inactive_tenant, disabled_module, revoked_grant,
     )]
 
+    _add_backup_admin(services, inactive_user)
     services.call(
         "PATCH", f"/hub/tenants/{inactive_user['tid']}/users/{inactive_user['uid']}",
         json={"status": "inactive"},
