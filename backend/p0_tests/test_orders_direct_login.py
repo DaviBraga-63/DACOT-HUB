@@ -203,6 +203,16 @@ def test_orders_direct_login_uses_real_hub_and_orders_backends(services):
     first_user = _restaurant_user(services, first)
     second_user = _restaurant_user(services, second)
 
+    # ``Services.restaurant`` activates Pedidos through the established HUB
+    # provisioning flow.  That creates an operational mirror tagged ``hub``
+    # with no usable local password before direct login begins.
+    preprovisioned = services.odb.users.find_one({
+        "restaurant_id": first["tid"], "hub_user_id": first["uid"],
+    })
+    assert preprovisioned is not None
+    assert preprovisioned["provisioned_by"] == "hub"
+    assert not preprovisioned.get("password_hash")
+
     with _direct_login_enabled(services):
         # Two browser requests race through the real Pedidos API to the real
         # HUB endpoint.  The unique mirror key must keep one local identity.
@@ -229,8 +239,11 @@ def test_orders_direct_login_uses_real_hub_and_orders_backends(services):
         })
         assert mirror is not None
         assert mirror["account_origin"] == "hub"
-        assert mirror["provisioned_by"] == "hub_direct_login"
-        assert "password_hash" not in mirror
+        # Direct login preserves the pre-existing operational mirror and its
+        # provenance; it never needs or receives a local HUB password.
+        assert mirror["id"] == preprovisioned["id"]
+        assert mirror["provisioned_by"] == "hub"
+        assert not mirror.get("password_hash")
         assert services.odb.users.count_documents({
             "restaurant_id": first["tid"], "hub_user_id": first["uid"],
         }) == 1
