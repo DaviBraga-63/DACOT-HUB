@@ -150,6 +150,9 @@ class Services:
         r = self.call("POST", f"/hub/tenants/{tid}/users", json={"name": "Test", "email": f"u{tag}@example.com", "role": "admin", "password": self.password})
         r.raise_for_status()
         uid = r.json()["id"]
+        # Tests that exercise the restaurant portal must make the ownership
+        # link explicit, exactly as DACOT staff do for legacy tenants.
+        self.call("PUT", f"/hub/tenants/{tid}/portal-owner", json={"user_id": uid}).raise_for_status()
         self.call("POST", f"/hub/tenants/{tid}/modules/orders/activate").raise_for_status()
         self.call("PATCH", f"/hub/tenants/{tid}/modules/orders", json={"launch_url": f"https://orders.example.test/{tag}"}).raise_for_status()
         return {"tid": tid, "uid": uid, "headers": self.login(f"u{tag}@example.com", self.password)}

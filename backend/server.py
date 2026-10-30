@@ -273,14 +273,14 @@ async def get_restaurant_user(user: dict = Depends(get_current_user)) -> dict:
     tenant = await db.tenants.find_one({"_id": ObjectId(user["tenant_id"])})
     if not tenant or not _tenant_operational(tenant):
         raise HTTPException(403, "Restaurante suspenso ou inativo")
+    if str(tenant.get("portal_owner_user_id") or "") != str(user["_id"]):
+        raise HTTPException(403, "Acesso restrito ao proprietário do restaurante")
     user["tenant"] = tenant
     return user
 
 
 async def get_restaurant_admin(user: dict = Depends(get_restaurant_user)) -> dict:
-    """Tenant-scoped administration; never grants access to DACOT staff APIs."""
-    if user.get("role") != "admin":
-        raise HTTPException(403, "Permissão restrita ao administrador do restaurante")
+    """Tenant-scoped administration for the explicit portal owner only."""
     return user
 
 
@@ -410,6 +410,8 @@ async def login(payload: LoginIn, request: Request, response: Response):
         # A restaurant account tied to a suspended/inactive tenant is treated
         # the same as an inactive user — no session is issued.
         if not tenant or not _tenant_operational(tenant):
+            valid = False
+        elif str(tenant.get("portal_owner_user_id") or "") != str(user["_id"]):
             valid = False
     if not valid:
         await _record_attempt(ip, email, False)
@@ -582,6 +584,10 @@ class TenantPatch(BaseModel):
     notes: Optional[str] = None
 
 
+class PortalOwnerIn(BaseModel):
+    user_id: str
+
+
 VALID_STATUS = {"active", "trial", "suspended", "inactive"}
 # A tenant is operational (can log in, use the portal, or receive a handoff
 # into an external module) only in "active"/"trial". "suspended"/"inactive"
@@ -609,6 +615,7 @@ def _tenant_out(doc: dict) -> dict:
         "owner_name": doc.get("owner_name", ""),
         "email": doc.get("email", ""),
         "phone": doc.get("phone", ""),
+        "portal_owner_configured": bool(doc.get("portal_owner_user_id")),
         "status": doc.get("status", "trial"),
         "address": doc.get("address", ""),
         "notes": doc.get("notes", ""),
@@ -696,6 +703,15 @@ async def onboard_tenant(payload: TenantOnboardingIn, background_tasks: Backgrou
         access_created = False
         if payload.create_hub_access:
             created_user_id = await _create_initial_tenant_manager(tid, access_name, access_email)
+            owner_update = await db.tenants.update_one(
+                {"_id": inserted.inserted_id, "portal_owner_user_id": {"$exists": False}},
+                {"$set": {"portal_owner_user_id": created_user_id,
+                          "portal_owner_assigned_at": now_utc().isoformat(),
+                          "portal_owner_assigned_by": user["_id"]}},
+            )
+            if owner_update.matched_count != 1:
+                raise HTTPException(409, "Proprietário do portal já está configurado")
+            doc["portal_owner_user_id"] = created_user_id
             raw_reset = await _issue_password_reset(created_user_id, access_email, "restaurant")
             access_created = True
         await log_activity(
@@ -729,6 +745,38 @@ async def get_tenant(tid: str, _u: dict = Depends(get_staff_user)):
     base["active_modules"] = await db.tenant_modules.count_documents({"tenant_id": tid, "active": True})
     base["users_count"] = await db.tenant_users.count_documents({"tenant_id": tid, "deleted_at": None})
     return base
+
+
+@api_router.put("/hub/tenants/{tid}/portal-owner")
+async def assign_portal_owner(tid: str, payload: PortalOwnerIn, user: dict = Depends(get_super_admin)):
+    """Assign the one explicitly-authorized restaurant portal owner."""
+    if not ObjectId.is_valid(tid) or not ObjectId.is_valid(payload.user_id):
+        raise HTTPException(404, "Cliente ou usuário não encontrado")
+    tenant = await db.tenants.find_one({"_id": ObjectId(tid), "deleted_at": None})
+    if not tenant:
+        raise HTTPException(404, "Cliente não encontrado")
+    owner = await db.tenant_users.find_one({
+        "_id": ObjectId(payload.user_id), "tenant_id": tid,
+        "deleted_at": None, "status": "active",
+    })
+    if not owner:
+        raise HTTPException(404, "Usuário ativo não encontrado neste restaurante")
+    previous_owner_id = tenant.get("portal_owner_user_id")
+    result = await db.tenants.update_one(
+        {"_id": ObjectId(tid), "deleted_at": None},
+        {"$set": {"portal_owner_user_id": payload.user_id,
+                  "portal_owner_assigned_at": now_utc().isoformat(),
+                  "portal_owner_assigned_by": user["_id"]}},
+    )
+    if result.matched_count != 1:
+        raise HTTPException(404, "Cliente não encontrado")
+    await log_activity(
+        actor_id=user["_id"], actor_name=user.get("name", user["email"]),
+        action="tenant.portal_owner_assigned", target_type="tenant", target_id=tid,
+        tenant_id=tid, metadata={"previous_owner_configured": bool(previous_owner_id),
+                                 "owner_user_id": payload.user_id},
+    )
+    return {"portal_owner_configured": True}
 
 
 @api_router.patch("/hub/tenants/{tid}")
@@ -1184,7 +1232,8 @@ async def _apply_tenant_user_patch(tid: str, uid: str, payload: TenantUserPatch,
                                    actor: dict) -> dict:
     if not ObjectId.is_valid(tid) or not ObjectId.is_valid(uid):
         raise HTTPException(404, "Usuário não encontrado")
-    if not await db.tenants.find_one({"_id": ObjectId(tid), "deleted_at": None}):
+    tenant = await db.tenants.find_one({"_id": ObjectId(tid), "deleted_at": None})
+    if not tenant:
         raise HTTPException(404, "Cliente não encontrado")
     oid = ObjectId(uid)
     existing = await db.tenant_users.find_one(
@@ -1206,6 +1255,9 @@ async def _apply_tenant_user_patch(tid: str, uid: str, payload: TenantUserPatch,
         raise HTTPException(400, "Papel inválido")
     if "status" in update and update["status"] not in VALID_TENANT_USER_STATUS:
         raise HTTPException(400, "Status inválido")
+    if (str(tenant.get("portal_owner_user_id") or "") == uid
+            and update.get("status") == "inactive"):
+        raise HTTPException(409, "Atribua outro proprietário do portal antes de desativar esta conta")
     if (actor.get("user_type") == "restaurant" and actor["_id"] == uid
             and ("role" in update or update.get("status") == "inactive")):
         raise HTTPException(400, "Você não pode alterar seu próprio papel nem desativar sua própria conta")
@@ -1298,7 +1350,8 @@ async def delete_tenant_user(tid: str, uid: str, user: dict = Depends(get_staff_
     """Logically remove one restaurant identity without erasing its history."""
     if not ObjectId.is_valid(tid) or not ObjectId.is_valid(uid):
         raise HTTPException(404, "Usuário não encontrado")
-    if not await db.tenants.find_one({"_id": ObjectId(tid), "deleted_at": None}):
+    tenant = await db.tenants.find_one({"_id": ObjectId(tid), "deleted_at": None})
+    if not tenant:
         raise HTTPException(404, "Cliente não encontrado")
     oid = ObjectId(uid)
     existing = await db.tenant_users.find_one(
@@ -1306,6 +1359,8 @@ async def delete_tenant_user(tid: str, uid: str, user: dict = Depends(get_staff_
     )
     if not existing:
         raise HTTPException(404, "Usuário não encontrado")
+    if str(tenant.get("portal_owner_user_id") or "") == uid:
+        raise HTTPException(409, "Atribua outro proprietário do portal antes de remover esta conta")
 
     lock_owner = None
     try:
