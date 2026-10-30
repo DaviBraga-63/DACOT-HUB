@@ -176,6 +176,9 @@ jobs:
           export JWT_SECRET="$(openssl rand -hex 32)"
           export HANDOFF_JWT_SECRET="$(openssl rand -hex 32)"
           export MODULE_API_KEY="$(openssl rand -hex 32)"
+          # Browser E2E validates the Hub-managed employee path against the
+          # isolated pair of backends only.  Production remains default-off.
+          export ORDERS_DIRECT_LOGIN_ENABLED=true
           export HANDOFF_ISSUER=dacot-hub HANDOFF_AUDIENCE=dacot-orders HANDOFF_VERSION=1 HANDOFF_MODULE_ID=orders
           export HANDOFF_ALLOWED_ORIGINS_JSON='{"orders":["https://localhost:9444"]}'
           export HUB_BASE_URL="$HUB_API" ORDERS_BACKEND_URL="$ORDERS_API" ORDERS_FRONTEND_URL="$ORDERS_UI"
