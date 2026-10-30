@@ -1131,6 +1131,7 @@ class TenantUserIn(BaseModel):
     email: EmailStr
     role: str
     password: Optional[str] = Field(default=None, min_length=6)
+    custom_role_id: Optional[str] = Field(default=None, min_length=1, max_length=64)
 
 
 class TenantUserPatch(BaseModel):
@@ -1138,6 +1139,34 @@ class TenantUserPatch(BaseModel):
     email: Optional[EmailStr] = None
     role: Optional[str] = None
     status: Optional[str] = None
+    custom_role_id: Optional[str] = Field(default=None, min_length=1, max_length=64)
+
+
+class PortalPasswordIn(BaseModel):
+    password: str = Field(min_length=6, max_length=256)
+
+
+class PortalCustomRoleIn(BaseModel):
+    custom_role_id: Optional[str] = Field(default=None, min_length=1, max_length=64)
+
+
+async def _orders_portal_request(method: str, path: str, *, params=None, payload=None) -> dict:
+    try:
+        async with httpx.AsyncClient(timeout=5.0, follow_redirects=False, trust_env=False) as client:
+            response = await client.request(method, f"{_orders_backend_url()}{path}", params=params, json=payload, headers={"X-Module-Key": MODULE_ACCESS_KEYS[ORDERS_MODULE_KEY]})
+        data = response.json() if response.status_code == 200 else None
+        if not isinstance(data, dict): raise ValueError("orders")
+        return data
+    except (httpx.HTTPError, ValueError, TypeError):
+        raise HTTPException(503, "Integração com Pedidos indisponível")
+
+
+async def _provision_portal_orders_user(target: dict, tenant: dict) -> None:
+    await _orders_portal_request("POST", "/api/internal/hub/provision/direct/v1", payload={"tenant_id": str(tenant["_id"]), "tenant_name": tenant["name"], "hub_user_id": str(target["_id"]), "name": target["name"], "email": target["email"], "role": target["role"]})
+
+
+async def _set_portal_orders_grant(tid: str, uid: str, active: bool) -> None:
+    await db.module_user_grants.update_one({"tenant_id": tid, "user_id": uid, "module_key": ORDERS_MODULE_KEY}, {"$set": {"active": active, "source": "portal", "updated_at": now_utc().isoformat()}, "$setOnInsert": {"created_at": now_utc().isoformat()}}, upsert=True)
 
 
 @api_router.get("/hub/tenants/{tid}/users")
@@ -1896,18 +1925,104 @@ async def portal_users(user: dict = Depends(get_restaurant_admin)):
 @api_router.post("/portal/users")
 async def create_portal_user(payload: TenantUserIn, user: dict = Depends(get_restaurant_admin)):
     # tenant_id is deliberately derived from the authenticated database identity.
-    return await _create_tenant_user(user["tenant_id"], payload, user)
+    if payload.custom_role_id is not None and payload.role != "waiter":
+        raise HTTPException(409, "Cargo personalizado requer papel básico waiter")
+    created = await _create_tenant_user(user["tenant_id"], payload, user)
+    active = await db.tenant_modules.find_one({"tenant_id": user["tenant_id"], "module_key": ORDERS_MODULE_KEY, "active": True})
+    if active:
+        await _set_portal_orders_grant(user["tenant_id"], created["id"], False)
+        target = await db.tenant_users.find_one({"_id": ObjectId(created["id"]), "tenant_id": user["tenant_id"]})
+        try:
+            await _provision_portal_orders_user(target, user["tenant"])
+            if payload.custom_role_id is not None:
+                await _orders_portal_request("PUT", f"/api/internal/hub/users/{created['id']}/custom-role/v1", payload={"tenant_id": user["tenant_id"], "custom_role_id": payload.custom_role_id})
+            await _set_portal_orders_grant(user["tenant_id"], created["id"], True)
+        except HTTPException:
+            await _set_portal_orders_grant(user["tenant_id"], created["id"], False)
+            raise
+    return created
 
 
 @api_router.patch("/portal/users/{uid}")
 async def patch_portal_user(uid: str, payload: TenantUserPatch,
                             user: dict = Depends(get_restaurant_admin)):
-    return await _apply_tenant_user_patch(user["tenant_id"], uid, payload, user)
+    if not ObjectId.is_valid(uid): raise HTTPException(404, "Usuário não encontrado")
+    target = await db.tenant_users.find_one({"_id": ObjectId(uid), "tenant_id": user["tenant_id"], "deleted_at": None})
+    if not target: raise HTTPException(404, "Usuário não encontrado")
+    requested = payload.model_dump(exclude_unset=True)
+    custom_role_requested = "custom_role_id" in requested
+    custom_role_id = requested.pop("custom_role_id", None)
+    target_role = requested.get("role", target.get("role"))
+    if custom_role_requested and custom_role_id is not None and target_role != "waiter":
+        raise HTTPException(409, "Cargo personalizado requer papel básico waiter")
+    security_change = "role" in requested or "status" in requested or custom_role_requested
+    if security_change:
+        await _set_portal_orders_grant(user["tenant_id"], uid, False)
+    updated = await _apply_tenant_user_patch(user["tenant_id"], uid, TenantUserPatch(**requested), user)
+    if security_change and updated["status"] == "active":
+        try:
+            if custom_role_requested:
+                await _orders_portal_request("PUT", f"/api/internal/hub/users/{uid}/custom-role/v1", payload={"tenant_id": user["tenant_id"], "custom_role_id": custom_role_id})
+            else:
+                current = await _orders_portal_request("GET", f"/api/internal/hub/users/{uid}/custom-role/v1", params={"tenant_id": user["tenant_id"]})
+                role = current.get("custom_role")
+                if role is not None and updated["role"] != "waiter":
+                    await _orders_portal_request("PUT", f"/api/internal/hub/users/{uid}/custom-role/v1", payload={"tenant_id": user["tenant_id"], "custom_role_id": None})
+            await _provision_portal_orders_user(await db.tenant_users.find_one({"_id": ObjectId(uid)}), user["tenant"])
+            await _set_portal_orders_grant(user["tenant_id"], uid, True)
+        except HTTPException:
+            await _set_portal_orders_grant(user["tenant_id"], uid, False)
+            raise
+    return updated
 
 
 @api_router.post("/portal/users/{uid}/reset-password")
 async def reset_portal_user_password(uid: str, user: dict = Depends(get_restaurant_admin)):
     return await _reset_tenant_user_password(user["tenant_id"], uid, user)
+
+
+@api_router.post("/portal/users/{uid}/password")
+async def set_portal_user_password(uid: str, payload: PortalPasswordIn, user: dict = Depends(get_restaurant_admin)):
+    if not ObjectId.is_valid(uid) or str(user["_id"]) == uid: raise HTTPException(400, "Operação não permitida")
+    result = await db.tenant_users.update_one({"_id": ObjectId(uid), "tenant_id": user["tenant_id"], "deleted_at": None}, _version_increment_update("token_version", {"password_hash": hash_password(payload.password), "password_reset_required": False}))
+    if result.matched_count != 1: raise HTTPException(404, "Usuário não encontrado")
+    await revoke_user_sessions(db, user_id=uid, user_type="restaurant", reason="password_reset")
+    return {"ok": True}
+
+
+@api_router.get("/portal/orders/custom-roles")
+async def portal_orders_custom_roles(user: dict = Depends(get_restaurant_admin)):
+    data = await _orders_portal_request("GET", "/api/internal/hub/custom-roles/v1", params={"tenant_id": user["tenant_id"]})
+    roles = data.get("custom_roles")
+    if not isinstance(roles, list) or any(not isinstance(r, dict) or set(r) != {"id", "name"} for r in roles): raise HTTPException(503, "Integração com Pedidos indisponível")
+    return {"custom_roles": roles}
+
+
+@api_router.get("/portal/users/{uid}/custom-role")
+async def portal_user_custom_role(uid: str, user: dict = Depends(get_restaurant_admin)):
+    if not ObjectId.is_valid(uid) or not await db.tenant_users.find_one({"_id": ObjectId(uid), "tenant_id": user["tenant_id"], "deleted_at": None}):
+        raise HTTPException(404, "Usuário não encontrado")
+    data = await _orders_portal_request("GET", f"/api/internal/hub/users/{uid}/custom-role/v1", params={"tenant_id": user["tenant_id"]})
+    role = data.get("custom_role")
+    if role is not None and (not isinstance(role, dict) or set(role) != {"id", "name"}): raise HTTPException(503, "Integração com Pedidos indisponível")
+    return {"custom_role": role}
+
+
+@api_router.put("/portal/users/{uid}/custom-role")
+async def set_portal_custom_role(uid: str, payload: PortalCustomRoleIn, user: dict = Depends(get_restaurant_admin)):
+    if not ObjectId.is_valid(uid) or str(user["_id"]) == uid: raise HTTPException(400, "Operação não permitida")
+    target = await db.tenant_users.find_one({"_id": ObjectId(uid), "tenant_id": user["tenant_id"], "deleted_at": None})
+    if not target: raise HTTPException(404, "Usuário não encontrado")
+    if payload.custom_role_id is not None and target.get("role") != "waiter": raise HTTPException(409, "Cargo personalizado requer papel básico waiter")
+    await _set_portal_orders_grant(user["tenant_id"], uid, False)
+    try:
+        await _provision_portal_orders_user(target, user["tenant"])
+        await _orders_portal_request("PUT", f"/api/internal/hub/users/{uid}/custom-role/v1", payload={"tenant_id": user["tenant_id"], "custom_role_id": payload.custom_role_id})
+        await _set_portal_orders_grant(user["tenant_id"], uid, target.get("status") == "active")
+    except HTTPException:
+        await _set_portal_orders_grant(user["tenant_id"], uid, False)
+        raise
+    return {"ok": True}
 
 
 @api_router.post("/portal/modules/{mkey}/launch-token")
