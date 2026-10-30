@@ -61,6 +61,14 @@ def _add_backup_admin(services, identity):
         "password": services.password,
     })
     response.raise_for_status()
+    return response.json()
+
+
+def _transfer_portal_owner(services, identity, replacement):
+    services.call(
+        "PUT", f"/hub/tenants/{identity['tid']}/portal-owner",
+        json={"user_id": replacement["id"]},
+    ).raise_for_status()
 
 
 def _direct_login(services, email, password, *, module_key=None, extra=None, origin=None, hub_url=None):
@@ -270,7 +278,7 @@ def test_orders_direct_login_denies_invalid_credentials_and_revoked_access(servi
     suspended_tenant_user = _restaurant_user(services, suspended_tenant)
     disabled_module_user = _restaurant_user(services, disabled_module)
 
-    _add_backup_admin(services, inactive_user)
+    _transfer_portal_owner(services, inactive_user, _add_backup_admin(services, inactive_user))
     services.call(
         "PATCH", f"/hub/tenants/{inactive_user['tid']}/users/{inactive_user['uid']}",
         json={"status": "inactive"},
@@ -311,7 +319,7 @@ def test_direct_login_denies_inactive_user_tenant_disabled_module_and_grant(serv
         inactive_user, inactive_tenant, disabled_module, revoked_grant,
     )]
 
-    _add_backup_admin(services, inactive_user)
+    _transfer_portal_owner(services, inactive_user, _add_backup_admin(services, inactive_user))
     services.call(
         "PATCH", f"/hub/tenants/{inactive_user['tid']}/users/{inactive_user['uid']}",
         json={"status": "inactive"},

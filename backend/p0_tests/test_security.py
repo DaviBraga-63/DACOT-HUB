@@ -22,6 +22,7 @@ def add_backup_admin(services, identity):
         "name": "Backup Admin", "email": email, "role": "admin", "password": services.password,
     })
     result.raise_for_status()
+    return result.json()
 
 
 def load(name, file):
@@ -52,8 +53,15 @@ def test_deactivated_module_rejects_pending_and_new_handoff(services):
 
 def test_disabled_user_cannot_handoff(services):
     s, identity = services, services.restaurant()
-    add_backup_admin(s, identity)
+    replacement_owner = add_backup_admin(s, identity)
     token = s.handoff(identity)
+    # The explicit owner link must move before the current owner can be
+    # disabled.  This preserves the production fail-closed owner guard while
+    # exercising revocation of an already-issued handoff.
+    s.call(
+        "PUT", f"/hub/tenants/{identity['tid']}/portal-owner",
+        json={"user_id": replacement_owner["id"]},
+    ).raise_for_status()
     s.call("PATCH", f"/hub/tenants/{identity['tid']}/users/{identity['uid']}", json={"status": "inactive"}).raise_for_status()
     assert s.call("POST", "/portal/modules/orders/launch-token", headers=identity["headers"]).status_code == 401
     assert s.exchange(token).status_code == 403
@@ -206,10 +214,14 @@ def test_revocation_bound_reactivation_and_hub_outage(services):
     for token in sessions:
         assert s.order_me(token).status_code == 200
     a, b, c, d, healthy = identities
-    add_backup_admin(s, c)
+    replacement_owner = add_backup_admin(s, c)
     add_backup_admin(s, d)
     s.call("PATCH", f"/hub/tenants/{a['tid']}", json={"status": "suspended"}).raise_for_status()
     s.call("POST", f"/hub/tenants/{b['tid']}/modules/orders/deactivate").raise_for_status()
+    s.call(
+        "PUT", f"/hub/tenants/{c['tid']}/portal-owner",
+        json={"user_id": replacement_owner["id"]},
+    ).raise_for_status()
     s.call("PATCH", f"/hub/tenants/{c['tid']}/users/{c['uid']}", json={"status": "inactive"}).raise_for_status()
     s.call("PATCH", f"/hub/tenants/{d['tid']}/users/{d['uid']}", json={"role": "waiter"}).raise_for_status()
     # /auth/me is intentionally fresh so the client can discover a revocation
