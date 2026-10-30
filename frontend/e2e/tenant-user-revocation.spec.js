@@ -60,6 +60,12 @@ async function createRestaurant(admin, suffix) {
     data: { name: `Responsible ${suffix}`, email: `responsible-${tag}-${suffix}@example.com`, role: "admin", password: EMPLOYEE_PASSWORD },
   });
   expect(responsible.status()).toBe(200);
+  const owner = await responsible.json();
+  const ownerAssignment = await admin.api.put(`/api/hub/tenants/${tenant.id}/portal-owner`, {
+    headers: admin.headers,
+    data: { user_id: owner.id },
+  });
+  expect(ownerAssignment.status(), "isolated tenant must have an explicit portal owner").toBe(200);
 
   const activation = await admin.api.post(`/api/hub/tenants/${tenant.id}/modules/orders/activate`, {
     headers: admin.headers,
@@ -87,28 +93,30 @@ async function createRestaurant(admin, suffix) {
     data: { active: true },
   });
   expect(grant.status()).toBe(200);
-  return { tenant, user: { ...user, email: employeeEmail } };
+  const ownerGrant = await admin.api.put(`/api/hub/tenants/${tenant.id}/modules/orders/users/${owner.id}/access`, {
+    headers: admin.headers,
+    data: { active: true },
+  });
+  expect(ownerGrant.status()).toBe(200);
+  return {
+    tenant,
+    owner: { ...owner, email: `responsible-${tag}-${suffix}@example.com` },
+    user: { ...user, email: employeeEmail },
+  };
 }
 
-async function exchangeOrdersSession(employee) {
-  const hub = await authenticatedHubApi(employee.email, EMPLOYEE_PASSWORD);
+async function directOrdersSession(employee) {
+  const orders = await request.newContext({ baseURL: ORDERS_API });
   try {
-    const launch = await hub.api.post("/api/portal/modules/orders/launch-token", { headers: hub.headers });
-    expect(launch.status()).toBe(200);
-    const { handoff } = await launch.json();
-    expect(handoff).toBeTruthy();
-    const orders = await request.newContext({ baseURL: ORDERS_API });
-    try {
-      const exchange = await orders.post("/api/orders/session/exchange", { data: { handoff } });
-      expect(exchange.status()).toBe(200);
-      const body = await exchange.json();
-      expect(body.token || body.session_token).toBeTruthy();
-      return body.token || body.session_token;
-    } finally {
-      await orders.dispose();
-    }
+    const login = await orders.post("/api/auth/login", {
+      data: { email: employee.email, password: EMPLOYEE_PASSWORD },
+    });
+    expect(login.status(), "Hub-managed employee must authenticate through Pedidos").toBe(200);
+    const body = await login.json();
+    expect(body.token || body.session_token).toBeTruthy();
+    return body.token || body.session_token;
   } finally {
-    await hub.api.dispose();
+    await orders.dispose();
   }
 }
 
@@ -195,8 +203,8 @@ test("revoga funcionário em Dashboard, Pedidos e Cozinha sem afetar outro resta
   try {
     const tenantA = await createRestaurant(admin, "A");
     const tenantB = await createRestaurant(admin, "B");
-    const tokenA = await exchangeOrdersSession(tenantA.user);
-    const tokenB = await exchangeOrdersSession(tenantB.user);
+    const tokenA = await directOrdersSession(tenantA.user);
+    const tokenB = await directOrdersSession(tenantB.user);
     const employee = await openOrdersPages(browser, tokenA);
     const unaffected = await ordersBrowserContext(browser, tokenB);
     const unaffectedPage = await unaffected.newPage();
@@ -240,7 +248,7 @@ test("revoga sessão ao recuperar conexão após exclusão", async ({ browser })
   let employee;
   try {
     const restaurant = await createRestaurant(admin, "offline");
-    const token = await exchangeOrdersSession(restaurant.user);
+    const token = await directOrdersSession(restaurant.user);
     employee = await ordersBrowserContext(browser, token);
     const page = await employee.newPage();
     await page.goto(`${ORDERS_UI}/`);
@@ -268,7 +276,7 @@ test("foco sintetico e evento de visibilidade visivel apos revogacao", async ({ 
   let employee;
   try {
     const restaurant = await createRestaurant(admin, "visibility-event");
-    const token = await exchangeOrdersSession(restaurant.user);
+    const token = await directOrdersSession(restaurant.user);
     employee = await ordersBrowserContext(browser, token);
     const page = await employee.newPage();
     await page.goto(`${ORDERS_UI}/`);
@@ -324,7 +332,7 @@ test("handoff pela interface do Portal estabelece sessão no Pedidos", async ({ 
     context = await browser.newContext();
     const page = await context.newPage();
     await page.goto(`${HUB_UI}/login`);
-    await page.getByTestId("login-email").fill(restaurant.user.email);
+    await page.getByTestId("login-email").fill(restaurant.owner.email);
     await page.getByTestId("login-password").fill(EMPLOYEE_PASSWORD);
     await page.getByTestId("login-submit").click();
     await expect(page).toHaveURL(/\/portal$/);
@@ -356,7 +364,7 @@ test("exclui restaurante pela interface e invalida sessão sem apagar dados", as
   let hub;
   try {
     const restaurant = await createRestaurant(admin, "deleted-tenant");
-    const token = await exchangeOrdersSession(restaurant.user);
+    const token = await directOrdersSession(restaurant.user);
     employee = await ordersBrowserContext(browser, token);
     const page = await employee.newPage();
     await page.goto(`${ORDERS_UI}/`);
