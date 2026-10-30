@@ -211,15 +211,17 @@ def test_orders_direct_login_uses_real_hub_and_orders_backends(services):
     first_user = _restaurant_user(services, first)
     second_user = _restaurant_user(services, second)
 
-    # ``Services.restaurant`` activates Pedidos through the established HUB
-    # provisioning flow.  That creates an operational mirror tagged ``hub``
-    # with no usable local password before direct login begins.
+    # ``Services.restaurant`` assigns an explicit portal owner before module
+    # activation. That owner uses the passwordless Hub-managed provisioning
+    # contract, so a later handoff never routes to Pedidos' local password
+    # change page.
     preprovisioned = services.odb.users.find_one({
         "restaurant_id": first["tid"], "hub_user_id": first["uid"],
     })
     assert preprovisioned is not None
-    assert preprovisioned["provisioned_by"] == "hub"
+    assert preprovisioned["provisioned_by"] == "hub_direct_login"
     assert not preprovisioned.get("password_hash")
+    assert not preprovisioned.get("must_change_password")
 
     with _direct_login_enabled(services):
         # Two browser requests race through the real Pedidos API to the real
@@ -250,7 +252,7 @@ def test_orders_direct_login_uses_real_hub_and_orders_backends(services):
         # Direct login preserves the pre-existing operational mirror and its
         # provenance; it never needs or receives a local HUB password.
         assert mirror["id"] == preprovisioned["id"]
-        assert mirror["provisioned_by"] == "hub"
+        assert mirror["provisioned_by"] == "hub_direct_login"
         assert not mirror.get("password_hash")
         assert services.odb.users.count_documents({
             "restaurant_id": first["tid"], "hub_user_id": first["uid"],
@@ -265,6 +267,7 @@ def test_orders_direct_login_uses_real_hub_and_orders_backends(services):
         # direct-login gate is enabled in this isolated environment.
         handoff = services.exchange(services.handoff(first))
         assert handoff.status_code == 200
+        assert handoff.json()["user"]["must_change_password"] is False
         assert services.order_me(handoff.json()["token"]).status_code == 200
 
 

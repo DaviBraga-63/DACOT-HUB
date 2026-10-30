@@ -1521,7 +1521,18 @@ async def _orders_responsible_user(tid: str) -> Optional[dict]:
 
 
 async def _provision_orders_tenant(tid: str, tenant: dict, activation: dict) -> None:
-    responsible = await _orders_responsible_user(tid)
+    owner_id = str(tenant.get("portal_owner_user_id") or "")
+    owner = None
+    if ObjectId.is_valid(owner_id):
+        owner = await db.tenant_users.find_one({
+            "_id": ObjectId(owner_id), "tenant_id": tid,
+            "status": "active", "deleted_at": None,
+        })
+    # Only an explicitly assigned portal owner is migrated to the
+    # passwordless Hub-managed provisioning contract. Tenants without that
+    # authoritative link retain the legacy invitation path unchanged.
+    responsible = owner or await _orders_responsible_user(tid)
+    use_direct_provision = owner is not None
     now = now_utc().isoformat()
     if not responsible:
         await db.tenant_modules.update_one(
@@ -1544,19 +1555,24 @@ async def _provision_orders_tenant(tid: str, tenant: dict, activation: dict) -> 
     )
     try:
         async with httpx.AsyncClient(timeout=5.0, follow_redirects=False) as client:
+            endpoint = (
+                "/api/internal/hub/provision/direct/v1"
+                if use_direct_provision else "/api/internal/hub/provision"
+            )
+            payload = {
+                "tenant_id": tid, "tenant_name": tenant["name"],
+                "hub_user_id": uid, "name": responsible["name"],
+                "email": responsible["email"], "role": responsible["role"],
+            }
             result = await client.post(
-                f"{_orders_backend_url()}/api/internal/hub/provision",
+                f"{_orders_backend_url()}{endpoint}",
                 headers={"X-Module-Key": MODULE_ACCESS_KEYS[ORDERS_MODULE_KEY]},
-                json={
-                    "tenant_id": tid, "tenant_name": tenant["name"],
-                    "hub_user_id": uid, "name": responsible["name"],
-                    "email": responsible["email"], "role": responsible["role"],
-                },
+                json=payload,
             )
         if result.status_code != 200:
             raise ValueError(f"orders_status_{result.status_code}")
         provisioned = result.json()
-        invite_token = provisioned.get("invite_token")
+        invite_token = None if use_direct_provision else provisioned.get("invite_token")
         if invite_token and not await send_orders_first_access_email(responsible["email"], invite_token):
             await db.tenant_modules.update_one(
                 {"tenant_id": tid, "module_key": ORDERS_MODULE_KEY},
