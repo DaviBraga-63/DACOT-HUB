@@ -2,7 +2,7 @@
 from bson import ObjectId
 import requests
 from uuid import uuid4
-from auth_sessions import new_browser_binding, session_query
+from backend.auth_sessions import new_browser_binding, session_query
 
 
 def _grant(services, tenant_id, user_id):
