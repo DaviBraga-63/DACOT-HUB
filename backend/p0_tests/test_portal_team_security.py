@@ -101,6 +101,11 @@ def test_password_reset_and_custom_role_reactivation_fail_closed(services):
     assert services.call("PATCH", f"/portal/users/{uid}", headers=owner["headers"], json={"status": "active"}).status_code == 200
     assert _grant(services, owner["tid"], uid)["active"] is True
 
+    # This session is still live at the time of the password reset and must
+    # therefore receive the password-reset revocation reason.
+    services.db.auth_sessions.insert_one({
+        "user_id": uid, "user_type": "restaurant", "revoked_at": None,
+    })
     before = services.db.tenant_users.find_one({"_id": ObjectId(uid)})["token_version"]
     assert services.call(
         "POST", f"/portal/users/{uid}/password", headers=owner["headers"],
