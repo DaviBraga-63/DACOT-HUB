@@ -2,6 +2,7 @@
 from bson import ObjectId
 import requests
 from uuid import uuid4
+from auth_sessions import new_browser_binding, session_query
 
 
 def _grant(services, tenant_id, user_id):
@@ -19,6 +20,14 @@ def _custom_role(services, tenant_id, role_id="leader-role"):
         "permissions": ["orders.view"],
     })
     return role_id
+
+
+def _live_session(services, user_id):
+    query = session_query(new_browser_binding(), str(uuid4()))
+    services.db.auth_sessions.insert_one({
+        **query, "user_id": user_id, "user_type": "restaurant", "revoked_at": None,
+    })
+    return query
 
 
 def test_portal_owner_only_and_tenant_isolation(services):
@@ -86,9 +95,7 @@ def test_password_reset_and_custom_role_reactivation_fail_closed(services):
     )
     created.raise_for_status()
     uid = created.json()["id"]
-    services.db.auth_sessions.insert_one({
-        "user_id": uid, "user_type": "restaurant", "revoked_at": None,
-    })
+    _live_session(services, uid)
 
     assert services.call("PATCH", f"/portal/users/{uid}", headers=owner["headers"], json={"status": "inactive"}).status_code == 200
     assert _grant(services, owner["tid"], uid)["active"] is False
@@ -103,14 +110,12 @@ def test_password_reset_and_custom_role_reactivation_fail_closed(services):
 
     # This session is still live at the time of the password reset and must
     # therefore receive the password-reset revocation reason.
-    services.db.auth_sessions.insert_one({
-        "user_id": uid, "user_type": "restaurant", "revoked_at": None,
-    })
+    session_query_filter = _live_session(services, uid)
     before = services.db.tenant_users.find_one({"_id": ObjectId(uid)})["token_version"]
     assert services.call(
         "POST", f"/portal/users/{uid}/password", headers=owner["headers"],
         json={"password": "new-password-safe"},
     ).status_code == 200
     assert services.db.tenant_users.find_one({"_id": ObjectId(uid)})["token_version"] == before + 1
-    session = services.db.auth_sessions.find_one({"user_id": uid, "user_type": "restaurant"})
+    session = services.db.auth_sessions.find_one(session_query_filter)
     assert session["revoked_at"] is not None and session["revocation_reason"] == "password_reset"
