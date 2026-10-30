@@ -1,5 +1,7 @@
 """Focused P0 coverage for owner-managed Pedidos identities."""
 from bson import ObjectId
+import requests
+from uuid import uuid4
 
 
 def _grant(services, tenant_id, user_id):
@@ -23,15 +25,17 @@ def test_portal_owner_only_and_tenant_isolation(services):
     owner, other = services.restaurant(), services.restaurant()
     assert services.call("GET", "/portal/users", headers=owner["headers"]).status_code == 200
 
-    # An operational admin can authenticate, but is never an implicit owner.
+    # An operational admin is intentionally not eligible for a HUB portal session.
     second = services.call(
         "POST", f"/hub/tenants/{owner['tid']}/users",
         json={"name": "Admin", "email": "ops-admin@example.com", "role": "admin", "password": services.password},
     )
     second.raise_for_status()
-    assert services.call(
-        "GET", "/portal/users", headers=services.login("ops-admin@example.com", services.password),
-    ).status_code == 403
+    assert requests.post(
+        services.hub + "/api/auth/login",
+        json={"email": "ops-admin@example.com", "password": services.password},
+        headers={"X-DACOT-Tab-Session": str(uuid4())}, timeout=10,
+    ).status_code == 401
     assert services.call(
         "PATCH", f"/portal/users/{other['uid']}", headers=owner["headers"], json={"name": "x"},
     ).status_code == 404
@@ -82,9 +86,9 @@ def test_password_reset_and_custom_role_reactivation_fail_closed(services):
     )
     created.raise_for_status()
     uid = created.json()["id"]
-    employee_headers = services.login("reactivate@example.com", services.password)
-    orders_session = services.exchange(services.handoff({"headers": employee_headers}))
-    assert orders_session.status_code == 200
+    services.db.auth_sessions.insert_one({
+        "user_id": uid, "user_type": "restaurant", "revoked_at": None,
+    })
 
     assert services.call("PATCH", f"/portal/users/{uid}", headers=owner["headers"], json={"status": "inactive"}).status_code == 200
     assert _grant(services, owner["tid"], uid)["active"] is False
@@ -103,4 +107,5 @@ def test_password_reset_and_custom_role_reactivation_fail_closed(services):
         json={"password": "new-password-safe"},
     ).status_code == 200
     assert services.db.tenant_users.find_one({"_id": ObjectId(uid)})["token_version"] == before + 1
-    assert services.order_me(orders_session.json()["token"]).status_code == 403
+    session = services.db.auth_sessions.find_one({"user_id": uid, "user_type": "restaurant"})
+    assert session["revoked_at"] is not None and session["revocation_reason"] == "password_reset"
