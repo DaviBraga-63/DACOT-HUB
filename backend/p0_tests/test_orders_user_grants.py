@@ -6,33 +6,23 @@ import jwt
 from bson import ObjectId
 
 
-def _create_restaurant_user(services, tenant_id):
-    email = f"orders-grant-{secrets.token_hex(6)}@example.com"
-    response = services.call("POST", f"/hub/tenants/{tenant_id}/users", json={
-        "name": "Access Grant QA", "email": email, "role": "waiter",
-        "password": services.password,
-    })
-    response.raise_for_status()
-    return response.json(), services.login(email, services.password)
-
-
 def test_orders_grant_is_required_and_revocation_takes_effect(services):
     service, restaurant = services, services.restaurant()
-    created, headers = _create_restaurant_user(service, restaurant["tid"])
     launch_path = "/portal/modules/orders/launch-token"
-
-    # Creating a user after the one-time migration never implicitly grants access.
-    assert service.call("POST", launch_path, headers=headers).status_code == 403
-
     grant_path = (
-        f"/hub/tenants/{restaurant['tid']}/modules/orders/users/{created['id']}/access"
+        f"/hub/tenants/{restaurant['tid']}/modules/orders/users/{restaurant['uid']}/access"
     )
+
+    # The explicit portal owner still uses the existing handoff, while
+    # operational employees use the separate direct-login contract.
+    assert service.call("PUT", grant_path, json={"active": False}).status_code == 200
+    assert service.call("POST", launch_path, headers=restaurant["headers"]).status_code == 403
     assert service.call("PUT", grant_path, json={"active": True}).status_code == 200
-    assert service.call("POST", launch_path, headers=headers).status_code == 200
+    assert service.call("POST", launch_path, headers=restaurant["headers"]).status_code == 200
 
     # An explicit revocation is durable and immediately blocks a new handoff.
     assert service.call("PUT", grant_path, json={"active": False}).status_code == 200
-    assert service.call("POST", launch_path, headers=headers).status_code == 403
+    assert service.call("POST", launch_path, headers=restaurant["headers"]).status_code == 403
 
 
 def test_orders_grants_are_tenant_scoped_and_staff_write_protected(services):
