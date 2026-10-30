@@ -139,6 +139,12 @@ def test_last_admin_and_concurrent_duplicate_guards(services):
     assert s.db.tenant_users.count_documents(
         {"tenant_id": owner["tid"], "status": "active", "role": "admin"}) == 1
 
+    # A successful role change revokes every prior browser-tab session.  The
+    # explicit owner retains portal authority, but must authenticate again
+    # before managing users.
+    owner_email = s.db.tenant_users.find_one({"_id": ObjectId(owner["uid"])})["email"]
+    owner["headers"] = s.login(owner_email, s.password)
+
     duplicate_email = "concurrent-duplicate@example.com"
     payload = {"name": "Concorrente", "email": duplicate_email, "role": "waiter"}
     with ThreadPoolExecutor(max_workers=2) as pool:
