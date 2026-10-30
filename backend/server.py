@@ -12,13 +12,22 @@ import logging
 import re
 import secrets
 import hashlib
+import hmac
+import ipaddress
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional, Annotated, Any
 from urllib.parse import urlparse
 
-from handoff_policy import validate_handoff_configuration, validate_launch_url, orders_module_key
+from handoff_policy import (
+    launch_destination_diagnostics,
+    orders_module_key,
+    validate_handoff_configuration,
+    validate_launch_url,
+)
 from orders_launch_urls import ORDERS_LAUNCH_URL_TEMPLATE, migrate_legacy_orders_launch_urls
 from orders_user_grants import ORDERS_MODULE_KEY, bootstrap_orders_user_grants
+from whatsapp_numbers import normalize_brazilian_number
+from whatsapp_delivery import WhatsAppDeliveryProvider, WhatsAppPairingProvider, WhatsAppStatusProvider, WhatsAppAccountSwitchProvider
 from email_delivery import (
     send_orders_first_access_email as _send_orders_first_access_email,
     send_password_reset_email as _send_password_reset_email,
@@ -46,6 +55,21 @@ from pydantic import BaseModel, Field, EmailStr, BeforeValidator, ConfigDict
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("dacot-hub")
 
+
+class _ResetAccessLogFilter(logging.Filter):
+    def filter(self, record):
+        # Uvicorn access records carry the request target as the third argument.
+        if isinstance(record.args, tuple) and len(record.args) >= 3:
+            args = list(record.args)
+            target = args[2]
+            if isinstance(target, str) and target.split("?", 1)[0] == "/reset-password":
+                args[2] = "/reset-password"
+                record.args = tuple(args)
+        return True
+
+
+logging.getLogger("uvicorn.access").addFilter(_ResetAccessLogFilter())
+
 MONGO_URL = os.environ["MONGO_URL"]
 DB_NAME = os.environ["DB_NAME"]
 # The application cannot operate without MongoDB.  Bound initial server
@@ -61,7 +85,49 @@ db = client[DB_NAME]
 
 JWT_ALGORITHM = "HS256"
 JWT_SECRET = os.environ["JWT_SECRET"]
-FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://localhost:3000")
+
+LOCAL_FRONTEND_ORIGIN = "http://localhost:3000"
+
+
+def _normalize_frontend_origin(value: str, *, allow_localhost: bool) -> str:
+    """Accept one exact browser origin; fail closed for ambiguous CORS values."""
+    if not isinstance(value, str) or not value or value != value.strip() or any(char.isspace() for char in value):
+        raise RuntimeError("Configuração de origem do frontend inválida")
+    if "*" in value or "\\" in value:
+        raise RuntimeError("Configuração de origem do frontend inválida")
+    try:
+        parsed = urlparse(value)
+        port = parsed.port
+    except ValueError as exc:
+        raise RuntimeError("Configuração de origem do frontend inválida") from exc
+    if (not parsed.hostname or parsed.username or parsed.password or parsed.path not in ("", "/")
+            or parsed.params or parsed.query or parsed.fragment):
+        raise RuntimeError("Configuração de origem do frontend inválida")
+    is_localhost = parsed.scheme == "http" and parsed.hostname == "localhost" and port == 3000
+    if parsed.scheme != "https" and not (allow_localhost and is_localhost):
+        raise RuntimeError("Configuração de origem do frontend inválida")
+    host = f"[{parsed.hostname}]" if ":" in parsed.hostname else parsed.hostname
+    default_port = 443 if parsed.scheme == "https" else 80
+    return f"{parsed.scheme}://{host}" + (f":{port}" if port and port != default_port else "")
+
+
+def _frontend_allowed_origins(frontend_url: str, configured_origins: str) -> tuple[str, ...]:
+    origins = [_normalize_frontend_origin(frontend_url, allow_localhost=True)]
+    if configured_origins:
+        for candidate in configured_origins.split(","):
+            origins.append(_normalize_frontend_origin(candidate, allow_localhost=False))
+    return tuple(dict.fromkeys(origins))
+
+
+def _cors_allowed_origins(frontend_origins: tuple[str, ...]) -> tuple[str, ...]:
+    return tuple(dict.fromkeys((*frontend_origins, LOCAL_FRONTEND_ORIGIN)))
+
+
+FRONTEND_URL = _normalize_frontend_origin(os.environ.get("FRONTEND_URL", LOCAL_FRONTEND_ORIGIN), allow_localhost=True)
+FRONTEND_ALLOWED_ORIGINS = _frontend_allowed_origins(
+    FRONTEND_URL, os.environ.get("FRONTEND_ALLOWED_ORIGINS", "")
+)
+CORS_ALLOWED_ORIGINS = _cors_allowed_origins(FRONTEND_ALLOWED_ORIGINS)
 RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "")
 EMAIL_FROM_ADDRESS = os.environ.get("EMAIL_FROM_ADDRESS", "")
 EMAIL_FROM_NAME = os.environ.get("EMAIL_FROM_NAME") or "DACOT"
@@ -81,9 +147,21 @@ MODULE_ACCESS_KEYS = {
 }
 VALID_HANDOFF_ROLES = {"admin", "manager", "waiter", "kitchen"}
 HUB_ADMIN_ROLES = {"super_admin", "admin"}
+ORDERS_DIRECT_LOGIN_VERSION = 1
+ORDERS_DIRECT_LOGIN_WINDOW = timedelta(minutes=15)
+ORDERS_DIRECT_LOGIN_ACCOUNT_LIMIT = 5
+ORDERS_DIRECT_LOGIN_ORIGIN_LIMIT = 50
 
 app = FastAPI(title="DACOT Hub API")
 api_router = APIRouter(prefix="/api")
+
+@app.middleware("http")
+async def protect_reset_response(request: Request, call_next):
+    response = await call_next(request)
+    if request.url.path in {"/reset-password", "/api/auth/reset-password", "/api/hub/whatsapp/pairing-code"} or request.url.path.startswith("/api/hub/whatsapp/account-switch"):
+        response.headers["Referrer-Policy"] = "no-referrer"
+        response.headers["Cache-Control"] = "no-store"
+    return response
 
 # ─── Types & Base Model ────────────────────────────────────────────────────────
 def _validate_object_id(v: Any) -> str:
@@ -256,6 +334,12 @@ async def get_staff_write(user: dict = Depends(get_staff_user)) -> dict:
     return user
 
 
+async def get_super_admin(user: dict = Depends(get_staff_user)) -> dict:
+    if user.get("role") != "super_admin":
+        raise HTTPException(403, "Permissão restrita a super administradores")
+    return user
+
+
 async def get_restaurant_user(user: dict = Depends(get_current_user)) -> dict:
     """Restaurant client — tenant_id always comes from the authenticated identity.
     Also gates on the tenant being operational: a suspended/inactive tenant loses
@@ -267,14 +351,17 @@ async def get_restaurant_user(user: dict = Depends(get_current_user)) -> dict:
     tenant = await db.tenants.find_one({"_id": ObjectId(user["tenant_id"])})
     if not tenant or not _tenant_operational(tenant):
         raise HTTPException(403, "Restaurante suspenso ou inativo")
+    # Operational roles never grant access to the Hub portal.  A tenant can
+    # have several operational admins in Pedidos, but exactly one explicitly
+    # assigned portal owner is allowed to administer Hub-managed identities.
+    if str(tenant.get("portal_owner_user_id") or "") != str(user["_id"]):
+        raise HTTPException(403, "Acesso restrito ao proprietário do restaurante")
     user["tenant"] = tenant
     return user
 
 
 async def get_restaurant_admin(user: dict = Depends(get_restaurant_user)) -> dict:
-    """Tenant-scoped administration; never grants access to DACOT staff APIs."""
-    if user.get("role") != "admin":
-        raise HTTPException(403, "Permissão restrita ao administrador do restaurante")
+    """Tenant-scoped administration for the explicit portal owner only."""
     return user
 
 
@@ -297,14 +384,14 @@ async def _record_attempt(ip: str, email: str, success: bool) -> None:
 
 
 # ─── Email (reset) ─────────────────────────────────────────────────────────────
-async def send_password_reset_email(to_email: str, token: str) -> bool:
+async def send_password_reset_email(to_email: str, token: str, validity_hours: int = 24) -> bool:
     return await _send_password_reset_email(
         to_email,
         token,
         frontend_url=FRONTEND_URL,
         resend_api_key=RESEND_API_KEY,
         email_from_address=EMAIL_FROM_ADDRESS,
-        email_from_name=EMAIL_FROM_NAME,
+        email_from_name=EMAIL_FROM_NAME, validity_hours=validity_hours,
     )
 
 
@@ -323,34 +410,187 @@ class LoginIn(BaseModel):
     email: EmailStr
     password: str
 
+
+class OrdersDirectLoginIn(BaseModel):
+    """The private Pedidos-to-HUB credential contract accepts no other fields."""
+    model_config = ConfigDict(extra="forbid")
+
+    email: EmailStr
+    password: str = Field(min_length=1, max_length=256)
+
+
 class ForgotIn(BaseModel):
     email: EmailStr
+    channel: str = "email"
 
 class ResetIn(BaseModel):
     token: str
     password: str = Field(min_length=6)
 
 
-async def _issue_password_reset(user_id: str, email: str, user_type: str) -> str:
+class WhatsAppPairingCodeIn(BaseModel):
+    """Confirmation is deliberately required for this high-impact operation."""
+    phone: str = Field(min_length=10, max_length=32)
+    password: str = Field(min_length=1, max_length=256)
+
+
+class WhatsAppAccountSwitchStartIn(BaseModel):
+    phone: str = Field(min_length=10, max_length=32)
+    password: str = Field(min_length=1, max_length=256)
+    confirm: bool = False
+
+
+class WhatsAppAccountSwitchPromoteIn(BaseModel):
+    password: str = Field(min_length=1, max_length=256)
+    confirm: bool = False
+
+
+async def _issue_password_reset(user_id: str, email: str, user_type: str, *, first_access: bool = False,
+                                whatsapp_version: Optional[str] = None) -> str:
     """Create the existing one-time reset credential without exposing it."""
     raw = secrets.token_urlsafe(32)
+    generation = secrets.token_urlsafe(32)
+    coll = db.tenant_users if user_type == "restaurant" else db.hub_users
+    query = {"_id": ObjectId(user_id), "deleted_at": None}
+    if whatsapp_version is not None:
+        query["whatsapp_binding_version"] = whatsapp_version
+        query["status"] = "active"
+    changed = await coll.update_one(
+        query,
+        {"$set": {"password_reset_generation": generation}},
+    )
+    if changed.matched_count != 1:
+        raise HTTPException(400, "Não foi possível preparar a redefinição")
     await db.password_reset_tokens.insert_one({
         "token_hash": hashlib.sha256(raw.encode()).hexdigest(),
         "user_id": user_id, "email": email, "user_type": user_type,
-        "used": False, "expires_at": now_utc() + timedelta(hours=1),
+        "generation": generation,
+        "whatsapp_binding_version": whatsapp_version,
+        "used": False, "expires_at": now_utc() + timedelta(days=30 if first_access else 1),
         "created_at": now_utc(),
     })
     return raw
 
 
+async def _send_whatsapp_reset(number: str, token: str, purpose: str):
+    provider = WhatsAppDeliveryProvider(
+        service_url=os.environ.get("WHATSAPP_SERVICE_URL", ""),
+        service_key=os.environ.get("WHATSAPP_SERVICE_SECRET", ""),
+        frontend_url=FRONTEND_URL,
+        ca_file=os.environ.get("WHATSAPP_SERVICE_CA_FILE") or None,
+        service_transport=os.environ.get("WHATSAPP_SERVICE_TRANSPORT", "https"),
+    )
+    result = await provider.send(number=number, token=token, purpose=purpose,
+                                 request_id=hashlib.sha256(token.encode()).hexdigest())
+    if result.value != "accepted":
+        logger.warning("whatsapp_delivery_unavailable purpose=%s", purpose)
+    return result
+
+
+def _pairing_self_service_enabled() -> bool:
+    # Default-off: leave this emergency control unavailable after pairing unless
+    # founders explicitly enable it again through the deployment environment.
+    return os.environ.get("WHATSAPP_PAIRING_SELF_SERVICE_ENABLED", "false") == "true"
+
+
+async def _allow_pairing_code_request(actor_id: str) -> bool:
+    """Shared bounded admission for a super-admin pairing-code request.
+
+    Counters contain only HMAC-like hashes of scope/actor identifiers; neither
+    the phone nor the returned pairing code is retained.
+    """
+    now = now_utc()
+    bucket = int(now.timestamp()) // 900
+    try:
+        for scope, identity, limit in (("global", "all", 6), ("actor", actor_id, 2)):
+            key = hashlib.sha256(f"whatsapp-pairing:{scope}:{identity}:{bucket}".encode()).hexdigest()
+            doc = await db.whatsapp_pairing_requests.find_one_and_update(
+                {"_id": key}, {"$inc": {"count": 1}, "$setOnInsert": {"created_at": now}},
+                upsert=True, return_document=ReturnDocument.AFTER,
+            )
+            if doc["count"] > limit:
+                return False
+        return True
+    except PyMongoError:
+        logger.warning("whatsapp_pairing_rate_limiter_unavailable")
+        return False
+
+
+async def _request_gateway_pairing_code(number: str, request_id: str) -> Optional[str]:
+    provider = WhatsAppPairingProvider(
+        service_url=os.environ.get("WHATSAPP_SERVICE_URL", ""),
+        service_key=os.environ.get("WHATSAPP_PAIRING_SERVICE_SECRET", ""),
+        ca_file=os.environ.get("WHATSAPP_SERVICE_CA_FILE") or None,
+        service_transport=os.environ.get("WHATSAPP_SERVICE_TRANSPORT", "https"),
+    )
+    return (await provider.request_code(number=number, request_id=request_id)).code
+
+
+async def _get_whatsapp_integration_status():
+    provider = WhatsAppStatusProvider(
+        service_url=os.environ.get("WHATSAPP_SERVICE_URL", ""),
+        service_key=os.environ.get("WHATSAPP_SERVICE_SECRET", ""),
+        ca_file=os.environ.get("WHATSAPP_SERVICE_CA_FILE") or None,
+        service_transport=os.environ.get("WHATSAPP_SERVICE_TRANSPORT", "https"),
+    )
+    return await provider.get_status(request_id=secrets.token_urlsafe(24))
+
+
+def _account_switch_provider() -> WhatsAppAccountSwitchProvider:
+    return WhatsAppAccountSwitchProvider(
+        service_url=os.environ.get("WHATSAPP_SERVICE_URL", ""),
+        service_key=os.environ.get("WHATSAPP_ACCOUNT_SWITCH_SERVICE_SECRET", ""),
+        ca_file=os.environ.get("WHATSAPP_SERVICE_CA_FILE") or None,
+        service_transport=os.environ.get("WHATSAPP_SERVICE_TRANSPORT", "https"),
+    )
+
+
+def _account_switch_enabled() -> bool:
+    # No fallback is permitted: delivery, legacy pairing and administrative
+    # credentials can never authorize an account replacement.
+    return len(os.environ.get("WHATSAPP_ACCOUNT_SWITCH_SERVICE_SECRET", "")) >= 32
+
+
+def _require_frontend_origin(request: Request) -> None:
+    """CSRF check for the high-impact browser-only account switch controls."""
+    origin = request.headers.get("origin", "").rstrip("/")
+    if not origin or origin not in FRONTEND_ALLOWED_ORIGINS:
+        raise HTTPException(403, "Origem não autorizada")
+
+
+async def _allow_account_switch_request(actor_id: str, action: str = "start") -> bool:
+    # Keep the limited pairing-code retrieval budget separate from creation of
+    # a candidate. Both are shared, atomic Mongo counters across HUB workers.
+    if action not in {"start", "code"}:
+        return False
+    now = now_utc()
+    bucket = int(now.timestamp()) // 900
+    try:
+        for scope, identity, limit in (("global", "all", 8), ("actor", actor_id, 3)):
+            key = hashlib.sha256(f"whatsapp-account-switch:{action}:{scope}:{identity}:{bucket}".encode()).hexdigest()
+            doc = await db.whatsapp_account_switch_rate.find_one_and_update(
+                {"_id": key}, {"$inc": {"count": 1}, "$setOnInsert": {"created_at": now}},
+                upsert=True, return_document=ReturnDocument.AFTER,
+            )
+            if doc["count"] > limit:
+                return False
+        return True
+    except PyMongoError:
+        logger.warning("whatsapp_account_switch_rate_limiter_unavailable")
+        return False
+
+
+async def _owned_account_switch(actor_id: str) -> Optional[dict]:
+    operation = await db.whatsapp_account_switches.find_one({"_id": "global"})
+    if not operation or operation.get("actor_id") != actor_id or operation.get("expires_at", now_utc()) <= now_utc():
+        return None
+    return operation
+
+
 # ─── Auth endpoints ────────────────────────────────────────────────────────────
 def _client_ip(request: Request) -> str:
-    # Behind the k8s ingress, request.client.host is the proxy pod IP — use the
-    # first X-Forwarded-For hop (set by the edge proxy) for the real client.
-    xff = request.headers.get("x-forwarded-for", "")
-    if xff:
-        return xff.split(",")[0].strip()
-    return request.client.host if request.client else "unknown"
+    # Login and recovery must apply the same explicit proxy trust policy.
+    return _recovery_client_ip(request)
 
 
 @api_router.post("/auth/login")
@@ -381,6 +621,11 @@ async def login(payload: LoginIn, request: Request, response: Response):
         # A restaurant account tied to a suspended/inactive tenant is treated
         # the same as an inactive user — no session is issued.
         if not tenant or not _tenant_operational(tenant):
+            valid = False
+        # A Hub browser session is only for the tenant's explicit portal
+        # owner. Operational staff authenticate directly to Pedidos through
+        # the service-to-service contract and never gain Hub portal access.
+        elif str(tenant.get("portal_owner_user_id") or "") != str(user["_id"]):
             valid = False
     if not valid:
         await _record_attempt(ip, email, False)
@@ -460,13 +705,62 @@ async def refresh(request: Request, response: Response):
 GENERIC_RESET_RESPONSE = {"message": "Se este e-mail estiver cadastrado, um link de redefinição foi enviado."}
 
 
+def _recovery_client_ip(request: Request) -> str:
+    """Only trust forwarding data received directly from explicitly trusted proxies.
+
+    Run Uvicorn with --no-proxy-headers so request.client remains the direct peer.
+    """
+    try:
+        peer = ipaddress.ip_address(request.client.host)
+        networks = [ipaddress.ip_network(value.strip()) for value in
+                    os.environ.get("RECOVERY_TRUSTED_PROXY_CIDRS", "").split(",") if value.strip()]
+        if not any(peer in network for network in networks):
+            return peer.compressed
+        hops = [ipaddress.ip_address(value.strip()) for value in request.headers.get("x-forwarded-for", "").split(",") if value.strip()]
+        if len(hops) > 20:
+            return "unknown"
+        for hop in reversed(hops):
+            if not any(hop in network for network in networks):
+                return hop.compressed
+        return peer.compressed
+    except (ValueError, AttributeError):
+        return "unknown"
+
+
+async def _allow_recovery_request(email: str, ip: str) -> bool:
+    """Shared, atomic counters and a sliding account cooldown; fail closed."""
+    now = now_utc()
+    bucket = int(now.timestamp()) // 900
+    try:
+        for scope, identity, limit in (("global", "all", 500), ("origin", ip, 20)):
+            key = hashlib.sha256(f"{scope}:{identity}:{bucket}".encode()).hexdigest()
+            doc = await db.password_reset_requests.find_one_and_update(
+                {"_id": key}, {"$inc": {"count": 1}, "$setOnInsert": {"created_at": now}},
+                upsert=True, return_document=ReturnDocument.AFTER,
+            )
+            if doc["count"] > limit:
+                return False
+        key = hashlib.sha256(f"account:{email}".encode()).hexdigest()
+        try:
+            await db.password_reset_cooldowns.update_one(
+                {"_id": key, "$or": [{"last_allowed": {"$lte": now - timedelta(minutes=15)}},
+                                       {"last_allowed": {"$exists": False}}]},
+                {"$set": {"last_allowed": now}}, upsert=True,
+            )
+        except DuplicateKeyError:
+            return False
+        return True
+    except PyMongoError:
+        logger.warning("password_recovery_rate_limiter_unavailable")
+        return False
+
+
 @api_router.post("/auth/forgot-password")
-async def forgot(payload: ForgotIn, background_tasks: BackgroundTasks):
+async def forgot(payload: ForgotIn, background_tasks: BackgroundTasks, request: Request):
+    if payload.channel not in {"email", "whatsapp"}:
+        raise HTTPException(400, "Canal inválido")
     email = payload.email.lower()
-    since = now_utc() - timedelta(minutes=15)
-    cnt = await db.password_reset_requests.count_documents({"email": email, "created_at": {"$gt": since.isoformat()}})
-    await db.password_reset_requests.insert_one({"email": email, "created_at": now_utc().isoformat()})
-    if cnt >= 5:
+    if not await _allow_recovery_request(email, _recovery_client_ip(request)):
         return GENERIC_RESET_RESPONSE
     user = await db.hub_users.find_one({"email": email})
     ut = "staff"
@@ -479,8 +773,20 @@ async def forgot(payload: ForgotIn, background_tasks: BackgroundTasks):
         tenant = await db.tenants.find_one({"_id": ObjectId(user["tenant_id"])})
         if not tenant or tenant.get("deleted_at"):
             return GENERIC_RESET_RESPONSE
-    raw = await _issue_password_reset(str(user["_id"]), email, ut)
-    background_tasks.add_task(send_password_reset_email, user["email"], raw)
+    if payload.channel == "whatsapp":
+        if (ut != "restaurant" or user.get("status", "active") != "active"
+                or tenant.get("whatsapp_user_id") != str(user["_id"])
+                or not user.get("whatsapp_number") or not user.get("whatsapp_binding_version")):
+            return GENERIC_RESET_RESPONSE
+        try:
+            raw = await _issue_password_reset(str(user["_id"]), email, ut,
+                                              whatsapp_version=user["whatsapp_binding_version"])
+        except HTTPException:
+            return GENERIC_RESET_RESPONSE
+        background_tasks.add_task(_send_whatsapp_reset, user["whatsapp_number"], raw, "recovery")
+    else:
+        raw = await _issue_password_reset(str(user["_id"]), email, ut)
+        background_tasks.add_task(send_password_reset_email, user["email"], raw)
     return GENERIC_RESET_RESPONSE
 
 
@@ -501,18 +807,195 @@ async def reset(payload: ResetIn):
         tenant = await db.tenants.find_one({"_id": ObjectId(restaurant_user["tenant_id"])}) if restaurant_user else None
         if not restaurant_user or restaurant_user.get("deleted_at") or not tenant or tenant.get("deleted_at"):
             raise HTTPException(400, "Token inválido ou expirado")
+    user_query = {"_id": ObjectId(doc["user_id"]), "deleted_at": None}
+    # Legacy credentials predate generations. They remain valid only until a
+    # newer credential has been issued for that account.
+    user_query["password_reset_generation"] = doc.get("generation")
+    if doc.get("whatsapp_binding_version") is not None:
+        user_query["whatsapp_binding_version"] = doc["whatsapp_binding_version"]
+        user_query["status"] = "active"
     changed = await coll.update_one(
-        {"_id": ObjectId(doc["user_id"]), "deleted_at": None},
-        _version_increment_update("token_version", {"password_hash": hash_password(payload.password), "password_reset_required": False}),
+        user_query,
+        _version_increment_update("token_version", {
+            "password_hash": hash_password(payload.password), "password_reset_required": False,
+            "password_reset_generation": secrets.token_urlsafe(32),
+        }),
     )
     if changed.matched_count != 1:
         raise HTTPException(400, "Token inválido ou expirado")
     await revoke_user_sessions(
         db, user_id=doc["user_id"], user_type=doc.get("user_type", "staff"), reason="password_reset"
     )
-    await db.password_reset_tokens.delete_many({"user_id": doc["user_id"], "used": False})
     await db.login_attempts.delete_many({"email": email})
     return {"ok": True}
+
+
+@api_router.post("/hub/whatsapp/pairing-code")
+async def request_whatsapp_pairing_code(payload: WhatsAppPairingCodeIn, response: Response,
+                                         user: dict = Depends(get_super_admin)):
+    """Return one ephemeral pairing code to a re-authenticated super-admin.
+
+    The browser never receives gateway credentials and the HUB never receives
+    WHATSAPP_ADMIN_SECRET.  This endpoint is deliberately default-off and is
+    meant only for a controlled pairing window.
+    """
+    if not _pairing_self_service_enabled():
+        raise HTTPException(404, "Indisponível")
+    if not await _allow_pairing_code_request(user["_id"]):
+        raise HTTPException(429, "Tente novamente mais tarde")
+    current = await db.hub_users.find_one({"_id": ObjectId(user["_id"]), "active": True, "deleted_at": None},
+                                          {"password_hash": 1, "name": 1})
+    if not current or not verify_password(payload.password, current.get("password_hash", "")):
+        raise HTTPException(401, "Não foi possível confirmar a identidade")
+    try:
+        number = normalize_brazilian_number(payload.phone)
+    except ValueError:
+        raise HTTPException(400, "Número de WhatsApp inválido") from None
+    code = await _request_gateway_pairing_code(number, secrets.token_urlsafe(32))
+    if not code:
+        raise HTTPException(503, "Pareamento temporariamente indisponível")
+    await log_activity(actor_id=user["_id"], actor_name=current.get("name", ""),
+                       action="whatsapp_gateway.pairing_code_requested",
+                       target_type="whatsapp_gateway", metadata={"channel": "pairing_code"})
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    return {"code": code}
+
+
+@api_router.get("/hub/whatsapp/status")
+async def whatsapp_integration_status(response: Response, _user: dict = Depends(get_super_admin)):
+    """Expose only the sanitized gateway state to authenticated super-admins."""
+    status = await _get_whatsapp_integration_status()
+    pairing_enabled = bool(status.gateway_reachable and status.pairing_self_service_enabled
+                           and _pairing_self_service_enabled())
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    return {
+        "connection_state": status.connection_state if status.gateway_reachable else "unavailable",
+        "gateway_reachable": status.gateway_reachable,
+        "pairing_self_service_enabled": pairing_enabled,
+        "connected_account_phone": status.connected_account_phone if status.gateway_reachable else None,
+        "account_switch_available": bool(status.gateway_reachable and _account_switch_enabled()
+                                          and getattr(status, "account_switch_available", False)),
+    }
+
+
+@api_router.post("/hub/whatsapp/account-switch")
+async def start_whatsapp_account_switch(payload: WhatsAppAccountSwitchStartIn, request: Request, response: Response,
+                                         user: dict = Depends(get_super_admin)):
+    _require_frontend_origin(request)
+    if not _account_switch_enabled() or not payload.confirm:
+        raise HTTPException(404, "Indisponível")
+    if not await _allow_account_switch_request(user["_id"]):
+        raise HTTPException(429, "Tente novamente mais tarde")
+    current = await db.hub_users.find_one({"_id": ObjectId(user["_id"]), "active": True, "deleted_at": None},
+                                          {"password_hash": 1, "name": 1})
+    if not current or not verify_password(payload.password, current.get("password_hash", "")):
+        raise HTTPException(401, "Não foi possível confirmar a identidade")
+    try:
+        number = normalize_brazilian_number(payload.phone)
+    except ValueError:
+        raise HTTPException(400, "Número de WhatsApp inválido") from None
+    operation_id = secrets.token_hex(24)
+    now = now_utc()
+    record = {"_id": "global", "operation_id": operation_id, "actor_id": user["_id"], "state": "preparing",
+              "created_at": now, "updated_at": now, "expires_at": now + timedelta(minutes=10)}
+    try:
+        existing = await db.whatsapp_account_switches.find_one_and_update(
+            {"_id": "global", "$or": [{"expires_at": {"$lte": now}},
+                                           {"state": {"$in": ["failed", "cancelled", "expired", "promoted"]}}]},
+            {"$set": record}, upsert=True, return_document=ReturnDocument.AFTER,
+        )
+    except DuplicateKeyError:
+        raise HTTPException(409, "Já existe uma troca de conta em andamento") from None
+    if existing.get("operation_id") != operation_id:
+        raise HTTPException(409, "Já existe uma troca de conta em andamento")
+    result = await _account_switch_provider().prepare(operation_id=operation_id, number=number,
+                                                       request_id=secrets.token_urlsafe(24))
+    if not result.available:
+        await db.whatsapp_account_switches.update_one({"_id": "global", "operation_id": operation_id},
+                                                      {"$set": {"state": "failed", "updated_at": now_utc()}})
+        raise HTTPException(503, "Troca de conta temporariamente indisponível")
+    await db.whatsapp_account_switches.update_one({"_id": "global", "operation_id": operation_id},
+                                                  {"$set": {"state": result.state, "updated_at": now_utc()}})
+    await log_activity(actor_id=user["_id"], actor_name=current.get("name", ""),
+                       action="whatsapp_account_switch_started", target_type="whatsapp_gateway",
+                       metadata={"operation": "account_switch"})
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    return {"operation_id": operation_id, "state": result.state, "expires_at": result.expires_at}
+
+
+@api_router.get("/hub/whatsapp/account-switch/{operation_id}")
+async def whatsapp_account_switch_status(operation_id: str, response: Response, user: dict = Depends(get_super_admin)):
+    operation = await _owned_account_switch(user["_id"])
+    if not operation or operation.get("operation_id") != operation_id:
+        raise HTTPException(404, "Operação não encontrada")
+    result = await _account_switch_provider().status(operation_id=operation_id, request_id=secrets.token_urlsafe(24))
+    if result.available:
+        await db.whatsapp_account_switches.update_one({"_id": "global", "operation_id": operation_id},
+                                                      {"$set": {"state": result.state, "updated_at": now_utc()}})
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    return {"state": result.state if result.available else "unavailable", "expires_at": operation["expires_at"].isoformat()}
+
+
+@api_router.post("/hub/whatsapp/account-switch/{operation_id}/code")
+async def whatsapp_account_switch_code(operation_id: str, request: Request, response: Response,
+                                       user: dict = Depends(get_super_admin)):
+    _require_frontend_origin(request)
+    operation = await _owned_account_switch(user["_id"])
+    if not operation or operation.get("operation_id") != operation_id:
+        raise HTTPException(404, "Operação não encontrada")
+    if not await _allow_account_switch_request(user["_id"], "code"):
+        raise HTTPException(429, "Tente novamente mais tarde")
+    result = await _account_switch_provider().code(operation_id=operation_id, request_id=secrets.token_urlsafe(24))
+    if not result.available or not result.code:
+        raise HTTPException(409, "Código indisponível")
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    return {"code": result.code, "state": result.state}
+
+
+@api_router.post("/hub/whatsapp/account-switch/{operation_id}/cancel")
+async def cancel_whatsapp_account_switch(operation_id: str, request: Request, response: Response,
+                                         user: dict = Depends(get_super_admin)):
+    _require_frontend_origin(request)
+    operation = await _owned_account_switch(user["_id"])
+    if not operation or operation.get("operation_id") != operation_id:
+        raise HTTPException(404, "Operação não encontrada")
+    result = await _account_switch_provider().cancel(operation_id=operation_id, request_id=secrets.token_urlsafe(24))
+    if not result.available:
+        raise HTTPException(409, "Cancelamento indisponível")
+    await db.whatsapp_account_switches.update_one({"_id": "global", "operation_id": operation_id},
+                                                  {"$set": {"state": "cancelled", "updated_at": now_utc()}})
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    return {"state": "cancelled"}
+
+
+@api_router.post("/hub/whatsapp/account-switch/{operation_id}/promote")
+async def promote_whatsapp_account_switch(operation_id: str, payload: WhatsAppAccountSwitchPromoteIn, request: Request,
+                                          response: Response, user: dict = Depends(get_super_admin)):
+    _require_frontend_origin(request)
+    operation = await _owned_account_switch(user["_id"])
+    if not operation or operation.get("operation_id") != operation_id or not payload.confirm:
+        raise HTTPException(404, "Operação não encontrada")
+    current = await db.hub_users.find_one({"_id": ObjectId(user["_id"]), "active": True, "deleted_at": None},
+                                          {"password_hash": 1, "name": 1})
+    if not current or not verify_password(payload.password, current.get("password_hash", "")):
+        raise HTTPException(401, "Não foi possível confirmar a identidade")
+    result = await _account_switch_provider().promote(operation_id=operation_id, request_id=secrets.token_urlsafe(24))
+    if result.state not in {"promoted"}:
+        raise HTTPException(409, "A conta ainda não está pronta para substituição")
+    await db.whatsapp_account_switches.update_one({"_id": "global", "operation_id": operation_id},
+                                                  {"$set": {"state": "promoted", "updated_at": now_utc()}})
+    await log_activity(actor_id=user["_id"], actor_name=current.get("name", ""),
+                       action="whatsapp_account_switch_promoted", target_type="whatsapp_gateway",
+                       metadata={"operation": "account_switch"})
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    return {"state": "promoted"}
 
 
 # ─── Activity log helper ───────────────────────────────────────────────────────
@@ -533,6 +1016,7 @@ class TenantIn(BaseModel):
     owner_name: str
     email: EmailStr
     phone: Optional[str] = ""
+    whatsapp_phone: Optional[str] = ""
     status: str = "trial"
     address: Optional[str] = ""
     notes: Optional[str] = ""
@@ -542,15 +1026,26 @@ class TenantOnboardingIn(TenantIn):
     create_hub_access: bool = False
     access_name: Optional[str] = Field(default=None, min_length=1, max_length=120)
     access_email: Optional[EmailStr] = None
+    access_channel: str = "email"
 
 class TenantPatch(BaseModel):
     name: Optional[str] = None
     owner_name: Optional[str] = None
     email: Optional[EmailStr] = None
     phone: Optional[str] = None
+    whatsapp_phone: Optional[str] = None
     status: Optional[str] = None
     address: Optional[str] = None
     notes: Optional[str] = None
+
+
+class WhatsAppBindingIn(BaseModel):
+    user_id: str
+    phone: str
+
+
+class PortalOwnerIn(BaseModel):
+    user_id: str
 
 
 VALID_STATUS = {"active", "trial", "suspended", "inactive"}
@@ -580,6 +1075,11 @@ def _tenant_out(doc: dict) -> dict:
         "owner_name": doc.get("owner_name", ""),
         "email": doc.get("email", ""),
         "phone": doc.get("phone", ""),
+        "whatsapp_phone": doc.get("whatsapp_phone", ""),
+        "whatsapp_user_id": doc.get("whatsapp_user_id"),
+        # Deliberately expose only configuration state in tenant summaries.
+        # The owner identity is an authorization link, not portal profile data.
+        "portal_owner_configured": bool(doc.get("portal_owner_user_id")),
         "status": doc.get("status", "trial"),
         "address": doc.get("address", ""),
         "notes": doc.get("notes", ""),
@@ -590,12 +1090,17 @@ def _tenant_out(doc: dict) -> dict:
 def _new_tenant_doc(payload: TenantIn) -> dict:
     if payload.status not in VALID_STATUS:
         raise HTTPException(400, "Status inválido")
+    try:
+        whatsapp_phone = normalize_brazilian_number(payload.whatsapp_phone) if payload.whatsapp_phone else ""
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
     return {
         "name": payload.name.strip(),
         "slug": _slug(payload.name),
         "owner_name": payload.owner_name.strip(),
         "email": payload.email.lower(),
         "phone": payload.phone or "",
+        "whatsapp_phone": whatsapp_phone,
         "status": payload.status,
         "address": payload.address or "",
         "notes": payload.notes or "",
@@ -629,8 +1134,10 @@ async def list_tenants(status: Optional[str] = None, q: Optional[str] = None,
 
 
 @api_router.post("/hub/tenants")
-async def create_tenant(payload: TenantIn, user: dict = Depends(get_staff_write)):
+async def create_tenant(payload: TenantIn, user: dict = Depends(get_super_admin)):
     doc = _new_tenant_doc(payload)
+    if doc["whatsapp_phone"]:
+        doc["whatsapp_audit"] = [{"action": "set", "actor_id": user["_id"], "at": now_utc().isoformat()}]
     res = await db.tenants.insert_one(doc)
     tid = str(res.inserted_id)
     await log_activity(actor_id=user["_id"], actor_name=user.get("name", user["email"]),
@@ -642,7 +1149,7 @@ async def create_tenant(payload: TenantIn, user: dict = Depends(get_staff_write)
 
 @api_router.post("/hub/tenants/onboard")
 async def onboard_tenant(payload: TenantOnboardingIn, background_tasks: BackgroundTasks,
-                         user: dict = Depends(get_staff_write)):
+                         user: dict = Depends(get_super_admin)):
     """Create a tenant and, when requested, its first manager access safely.
 
     Mongo deployments are not assumed to support transactions. All validation
@@ -650,6 +1157,12 @@ async def onboard_tenant(payload: TenantOnboardingIn, background_tasks: Backgrou
     created, only the tenant inserted by this request is compensated.
     """
     doc = _new_tenant_doc(payload)
+    if payload.access_channel not in {"email", "whatsapp"}:
+        raise HTTPException(400, "Canal inválido")
+    if payload.create_hub_access and payload.access_channel == "whatsapp" and not doc["whatsapp_phone"]:
+        raise HTTPException(400, "WhatsApp do responsável é obrigatório")
+    if doc["whatsapp_phone"]:
+        doc["whatsapp_audit"] = [{"action": "set", "actor_id": user["_id"], "at": now_utc().isoformat()}]
     access_name = (payload.access_name or payload.owner_name).strip()
     access_email = (payload.access_email or payload.email).lower()
     if payload.create_hub_access:
@@ -667,7 +1180,32 @@ async def onboard_tenant(payload: TenantOnboardingIn, background_tasks: Backgrou
         access_created = False
         if payload.create_hub_access:
             created_user_id = await _create_initial_tenant_manager(tid, access_name, access_email)
-            raw_reset = await _issue_password_reset(created_user_id, access_email, "restaurant")
+            # This is the one onboarding path where owner identity is known
+            # directly from the request. Existing tenants are intentionally
+            # never inferred from names, e-mails, roles, or WhatsApp bindings.
+            owner_update = await db.tenants.update_one(
+                {"_id": inserted.inserted_id, "portal_owner_user_id": {"$exists": False}},
+                {"$set": {"portal_owner_user_id": created_user_id,
+                          "portal_owner_assigned_at": now_utc().isoformat(),
+                          "portal_owner_assigned_by": user["_id"]}},
+            )
+            if owner_update.matched_count != 1:
+                raise HTTPException(409, "Proprietário do portal já está configurado")
+            doc["portal_owner_user_id"] = created_user_id
+            version = None
+            if doc["whatsapp_phone"]:
+                version = secrets.token_urlsafe(32)
+                binding = await db.tenant_users.update_one(
+                    {"_id": ObjectId(created_user_id), "tenant_id": tid, "deleted_at": None},
+                    {"$set": {"whatsapp_number": doc["whatsapp_phone"], "whatsapp_binding_version": version},
+                     "$push": {"whatsapp_audit": {"actor_id": user["_id"], "at": now_utc().isoformat()}}},
+                )
+                if binding.matched_count != 1:
+                    raise HTTPException(409, "Responsável não está disponível")
+                await db.tenants.update_one({"_id": inserted.inserted_id}, {"$set": {"whatsapp_user_id": created_user_id}})
+                doc["whatsapp_user_id"] = created_user_id
+            raw_reset = await _issue_password_reset(created_user_id, access_email, "restaurant", first_access=True,
+                                                     whatsapp_version=version if payload.access_channel == "whatsapp" else None)
             access_created = True
         await log_activity(
             actor_id=user["_id"], actor_name=user.get("name", user["email"]),
@@ -682,11 +1220,15 @@ async def onboard_tenant(payload: TenantOnboardingIn, background_tasks: Backgrou
             await db.tenant_users.delete_one({"_id": ObjectId(created_user_id), "tenant_id": tid})
         await db.tenants.delete_one({"_id": inserted.inserted_id})
         raise
-    if raw_reset:
-        background_tasks.add_task(send_password_reset_email, access_email, raw_reset)
+    invitation = None
+    if raw_reset and payload.access_channel == "whatsapp":
+        invitation = (await _send_whatsapp_reset(doc["whatsapp_phone"], raw_reset, "first_access")).value
+    elif raw_reset:
+        background_tasks.add_task(send_password_reset_email, access_email, raw_reset, 30 * 24)
+        invitation = "queued"
     return {**_tenant_out(doc), "active_modules": 0, "users_count": 1 if payload.create_hub_access else 0,
             "initial_access_created": payload.create_hub_access,
-            "invitation": "queued" if payload.create_hub_access else None}
+            "invitation": invitation}
 
 
 @api_router.get("/hub/tenants/{tid}")
@@ -696,10 +1238,98 @@ async def get_tenant(tid: str, _u: dict = Depends(get_staff_user)):
     d = await db.tenants.find_one({"_id": ObjectId(tid), "deleted_at": None})
     if not d:
         raise HTTPException(404, "Cliente não encontrado")
+    if d.get("whatsapp_user_id") and ObjectId.is_valid(d["whatsapp_user_id"]):
+        owner = await db.tenant_users.find_one({"_id": ObjectId(d["whatsapp_user_id"]), "tenant_id": tid, "deleted_at": None})
+        d["whatsapp_phone"] = owner.get("whatsapp_number", "") if owner else ""
     base = _tenant_out(d)
     base["active_modules"] = await db.tenant_modules.count_documents({"tenant_id": tid, "active": True})
     base["users_count"] = await db.tenant_users.count_documents({"tenant_id": tid, "deleted_at": None})
     return base
+
+
+@api_router.put("/hub/tenants/{tid}/portal-owner")
+async def assign_portal_owner(tid: str, payload: PortalOwnerIn, user: dict = Depends(get_super_admin)):
+    """Assign the one explicitly-authorized restaurant portal owner.
+
+    This is the safe migration path for tenants created before the explicit
+    ownership link existed. It deliberately requires DACOT super-admin action:
+    no existing operational admin, contact record, or WhatsApp binding is
+    silently promoted to portal owner.
+    """
+    if not ObjectId.is_valid(tid) or not ObjectId.is_valid(payload.user_id):
+        raise HTTPException(404, "Cliente ou usuário não encontrado")
+    tenant = await db.tenants.find_one({"_id": ObjectId(tid), "deleted_at": None})
+    if not tenant:
+        raise HTTPException(404, "Cliente não encontrado")
+    owner = await db.tenant_users.find_one({
+        "_id": ObjectId(payload.user_id), "tenant_id": tid,
+        "deleted_at": None, "status": "active",
+    })
+    if not owner:
+        raise HTTPException(404, "Usuário ativo não encontrado neste restaurante")
+
+    previous_owner_id = tenant.get("portal_owner_user_id")
+    result = await db.tenants.update_one(
+        {"_id": ObjectId(tid), "deleted_at": None},
+        {"$set": {
+            "portal_owner_user_id": payload.user_id,
+            "portal_owner_assigned_at": now_utc().isoformat(),
+            "portal_owner_assigned_by": user["_id"],
+        }},
+    )
+    if result.matched_count != 1:
+        raise HTTPException(404, "Cliente não encontrado")
+    await log_activity(
+        actor_id=user["_id"], actor_name=user.get("name", user["email"]),
+        action="tenant.portal_owner_assigned", target_type="tenant", target_id=tid,
+        tenant_id=tid,
+        metadata={"previous_owner_configured": bool(previous_owner_id),
+                  "owner_user_id": payload.user_id},
+    )
+    return {"portal_owner_configured": True}
+
+
+@api_router.put("/hub/tenants/{tid}/whatsapp")
+async def bind_whatsapp(tid: str, payload: WhatsAppBindingIn, user: dict = Depends(get_super_admin)):
+    if not ObjectId.is_valid(tid) or not ObjectId.is_valid(payload.user_id):
+        raise HTTPException(404, "Cliente ou usuário não encontrado")
+    try:
+        phone = normalize_brazilian_number(payload.phone)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
+    async def bind(session):
+        owner = await db.tenant_users.find_one({"_id": ObjectId(payload.user_id), "tenant_id": tid,
+                                                "deleted_at": None, "status": "active"}, session=session)
+        if not owner:
+            raise HTTPException(404, "Usuário ativo não encontrado neste restaurante")
+        tenant = await db.tenants.find_one_and_update(
+            {"_id": ObjectId(tid), "deleted_at": None,
+             "$or": [{"whatsapp_user_id": None}, {"whatsapp_user_id": payload.user_id}]},
+            {"$set": {"whatsapp_user_id": payload.user_id, "whatsapp_phone": phone}},
+            return_document=ReturnDocument.AFTER, session=session,
+        )
+        if not tenant:
+            raise HTTPException(409, "Outro responsável já está vinculado ao WhatsApp")
+        result = await db.tenant_users.update_one(
+            {"_id": ObjectId(payload.user_id), "tenant_id": tid, "deleted_at": None, "status": "active"},
+            {"$set": {"whatsapp_number": phone, "whatsapp_binding_version": secrets.token_urlsafe(32)},
+             "$push": {"whatsapp_audit": {"actor_id": user["_id"], "at": now_utc().isoformat(), "action": "set"}}},
+            session=session,
+        )
+        if result.matched_count != 1:
+            raise HTTPException(409, "Responsável não está mais disponível")
+    await _whatsapp_transaction(bind)
+    return {"ok": True}
+
+
+async def _whatsapp_transaction(callback):
+    """Fail closed if the MongoDB deployment cannot provide transactions."""
+    try:
+        async with await client.start_session() as session:
+            return await session.with_transaction(callback)
+    except PyMongoError:
+        logger.warning("whatsapp_binding_transaction_unavailable")
+        raise HTTPException(503, "Alteração de WhatsApp temporariamente indisponível") from None
 
 
 @api_router.patch("/hub/tenants/{tid}")
@@ -713,13 +1343,58 @@ async def patch_tenant(tid: str, payload: TenantPatch, user: dict = Depends(get_
         raise HTTPException(400, "Status inválido")
     if "name" in update:
         update["slug"] = _slug(update["name"])
+    phone_was_unbound = False
+    if "whatsapp_phone" in update:
+        if user.get("role") != "super_admin":
+            raise HTTPException(403, "Somente super administradores podem alterar o WhatsApp")
+        try:
+            update["whatsapp_phone"] = normalize_brazilian_number(update["whatsapp_phone"]) if update["whatsapp_phone"] else ""
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from None
+    async def update_documents(session=None):
+        nonlocal phone_was_unbound
+        options = {"session": session} if session is not None else {}
+        tenant = await db.tenants.find_one({"_id": ObjectId(tid), "deleted_at": None}, **options) if "whatsapp_phone" in update else None
+        if "whatsapp_phone" in update and not tenant:
+            raise HTTPException(404, "Cliente não encontrado")
+        if tenant:
+            owner_id = tenant.get("whatsapp_user_id")
+            phone_was_unbound = not owner_id
+            if owner_id:
+                if not ObjectId.is_valid(owner_id):
+                    raise HTTPException(409, "Vínculo de WhatsApp inválido")
+                event = {"actor_id": user["_id"], "at": now_utc().isoformat(), "action": "change"}
+                changed = await db.tenant_users.update_one(
+                    {"_id": ObjectId(owner_id), "tenant_id": tid, "deleted_at": None},
+                    {"$set": {"whatsapp_number": update["whatsapp_phone"],
+                              "whatsapp_binding_version": secrets.token_urlsafe(32)},
+                     "$push": {"whatsapp_audit": event}}, **options,
+                )
+                if changed.matched_count != 1:
+                    raise HTTPException(409, "Responsável vinculado não está disponível")
+        tenant_query = {"_id": ObjectId(tid), "deleted_at": None}
+        if phone_was_unbound:
+            tenant_query["whatsapp_user_id"] = None
+        r = await db.tenants.update_one(tenant_query, mutation, **options)
+        if r.matched_count == 0:
+            raise HTTPException(409 if phone_was_unbound else 404, "Cliente não encontrado ou vínculo alterado")
+
     update["updated_at"] = now_utc().isoformat()
     mutation = {"$set": update}
     if "status" in update:
         mutation = _version_increment_update("access_version", update)
-    r = await db.tenants.update_one({"_id": ObjectId(tid), "deleted_at": None}, mutation)
-    if r.matched_count == 0:
-        raise HTTPException(404, "Cliente não encontrado")
+    if "whatsapp_phone" in update:
+        event = {"action": "set" if update["whatsapp_phone"] else "clear",
+                 "actor_id": user["_id"], "at": now_utc().isoformat()}
+        if isinstance(mutation, list):
+            mutation.append({"$set": {"whatsapp_audit": {"$concatArrays": [
+                {"$ifNull": ["$whatsapp_audit", []]}, {"$literal": [event]}]}}})
+        else:
+            mutation["$push"] = {"whatsapp_audit": event}
+    if "whatsapp_phone" in update:
+        await _whatsapp_transaction(update_documents)
+    else:
+        await update_documents()
     if "status" in update:
         await log_activity(actor_id=user["_id"], actor_name=user.get("name", user["email"]),
                            action="tenant.status_changed", target_type="tenant",
@@ -785,12 +1460,38 @@ def _validate_orders_launch_url_template(value: str) -> str:
     return template
 
 
+def _handoff_destination_diagnostics_enabled() -> bool:
+    return os.environ.get("HANDOFF_DESTINATION_DIAGNOSTICS", "").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
+
+
+def _log_handoff_destination_validation_failure(value: str) -> None:
+    """Emit only a sanitized, opt-in snapshot for the global Pedidos URL editor."""
+    diagnostic = launch_destination_diagnostics(value, ORDERS_MODULE_KEY)
+    logger.warning(
+        "handoff_destination_validation_failed "
+        "allowed_origins_present=%s allowed_origins_json_valid=%s "
+        "orders_origins=%s received_origin=%s origin_match=%s",
+        diagnostic["allowed_origins_present"],
+        diagnostic["allowed_origins_json_valid"],
+        diagnostic["orders_origins"],
+        diagnostic["received_origin"],
+        diagnostic["origin_match"],
+    )
+
+
 @api_router.patch("/hub/modules/orders/launch-url-template")
 async def set_orders_launch_url_template(payload: LaunchUrlTemplateIn, user: dict = Depends(get_staff_write)):
     module = await db.modules.find_one({"key": ORDERS_MODULE_KEY})
     if not module:
         raise HTTPException(404, "Módulo Pedidos não encontrado")
-    template = _validate_orders_launch_url_template(payload.launch_url_template)
+    try:
+        template = _validate_orders_launch_url_template(payload.launch_url_template)
+    except HTTPException:
+        if _handoff_destination_diagnostics_enabled():
+            _log_handoff_destination_validation_failure(payload.launch_url_template)
+        raise
     previous = module.get("launch_url_template", "")
     await db.modules.update_one({"_id": module["_id"]}, {"$set": {"launch_url_template": template}})
     await log_activity(
@@ -820,7 +1521,18 @@ async def _orders_responsible_user(tid: str) -> Optional[dict]:
 
 
 async def _provision_orders_tenant(tid: str, tenant: dict, activation: dict) -> None:
-    responsible = await _orders_responsible_user(tid)
+    owner_id = str(tenant.get("portal_owner_user_id") or "")
+    owner = None
+    if ObjectId.is_valid(owner_id):
+        owner = await db.tenant_users.find_one({
+            "_id": ObjectId(owner_id), "tenant_id": tid,
+            "status": "active", "deleted_at": None,
+        })
+    # Only an explicitly assigned portal owner is migrated to the
+    # passwordless Hub-managed provisioning contract. Tenants without that
+    # authoritative link retain the legacy invitation path unchanged.
+    responsible = owner or await _orders_responsible_user(tid)
+    use_direct_provision = owner is not None
     now = now_utc().isoformat()
     if not responsible:
         await db.tenant_modules.update_one(
@@ -843,19 +1555,24 @@ async def _provision_orders_tenant(tid: str, tenant: dict, activation: dict) -> 
     )
     try:
         async with httpx.AsyncClient(timeout=5.0, follow_redirects=False) as client:
+            endpoint = (
+                "/api/internal/hub/provision/direct/v1"
+                if use_direct_provision else "/api/internal/hub/provision"
+            )
+            payload = {
+                "tenant_id": tid, "tenant_name": tenant["name"],
+                "hub_user_id": uid, "name": responsible["name"],
+                "email": responsible["email"], "role": responsible["role"],
+            }
             result = await client.post(
-                f"{_orders_backend_url()}/api/internal/hub/provision",
+                f"{_orders_backend_url()}{endpoint}",
                 headers={"X-Module-Key": MODULE_ACCESS_KEYS[ORDERS_MODULE_KEY]},
-                json={
-                    "tenant_id": tid, "tenant_name": tenant["name"],
-                    "hub_user_id": uid, "name": responsible["name"],
-                    "email": responsible["email"], "role": responsible["role"],
-                },
+                json=payload,
             )
         if result.status_code != 200:
             raise ValueError(f"orders_status_{result.status_code}")
         provisioned = result.json()
-        invite_token = provisioned.get("invite_token")
+        invite_token = None if use_direct_provision else provisioned.get("invite_token")
         if invite_token and not await send_orders_first_access_email(responsible["email"], invite_token):
             await db.tenant_modules.update_one(
                 {"tenant_id": tid, "module_key": ORDERS_MODULE_KEY},
@@ -1038,6 +1755,7 @@ class TenantUserIn(BaseModel):
     email: EmailStr
     role: str
     password: Optional[str] = Field(default=None, min_length=6)
+    custom_role_id: Optional[str] = Field(default=None, min_length=1, max_length=64)
 
 
 class TenantUserPatch(BaseModel):
@@ -1045,6 +1763,34 @@ class TenantUserPatch(BaseModel):
     email: Optional[EmailStr] = None
     role: Optional[str] = None
     status: Optional[str] = None
+    custom_role_id: Optional[str] = Field(default=None, min_length=1, max_length=64)
+
+
+class PortalPasswordIn(BaseModel):
+    password: str = Field(min_length=6, max_length=256)
+
+
+class PortalCustomRoleIn(BaseModel):
+    custom_role_id: Optional[str] = Field(default=None, min_length=1, max_length=64)
+
+
+async def _orders_portal_request(method: str, path: str, *, params=None, payload=None) -> dict:
+    try:
+        async with httpx.AsyncClient(timeout=5.0, follow_redirects=False, trust_env=False) as client:
+            response = await client.request(method, f"{_orders_backend_url()}{path}", params=params, json=payload, headers={"X-Module-Key": MODULE_ACCESS_KEYS[ORDERS_MODULE_KEY]})
+        data = response.json() if response.status_code == 200 else None
+        if not isinstance(data, dict): raise ValueError("orders")
+        return data
+    except (httpx.HTTPError, ValueError, TypeError):
+        raise HTTPException(503, "Integração com Pedidos indisponível")
+
+
+async def _provision_portal_orders_user(target: dict, tenant: dict) -> None:
+    await _orders_portal_request("POST", "/api/internal/hub/provision/direct/v1", payload={"tenant_id": str(tenant["_id"]), "tenant_name": tenant["name"], "hub_user_id": str(target["_id"]), "name": target["name"], "email": target["email"], "role": target["role"]})
+
+
+async def _set_portal_orders_grant(tid: str, uid: str, active: bool) -> None:
+    await db.module_user_grants.update_one({"tenant_id": tid, "user_id": uid, "module_key": ORDERS_MODULE_KEY}, {"$set": {"active": active, "source": "portal", "updated_at": now_utc().isoformat()}, "$setOnInsert": {"created_at": now_utc().isoformat()}}, upsert=True)
 
 
 @api_router.get("/hub/tenants/{tid}/users")
@@ -1155,7 +1901,8 @@ async def _apply_tenant_user_patch(tid: str, uid: str, payload: TenantUserPatch,
                                    actor: dict) -> dict:
     if not ObjectId.is_valid(tid) or not ObjectId.is_valid(uid):
         raise HTTPException(404, "Usuário não encontrado")
-    if not await db.tenants.find_one({"_id": ObjectId(tid), "deleted_at": None}):
+    tenant = await db.tenants.find_one({"_id": ObjectId(tid), "deleted_at": None})
+    if not tenant:
         raise HTTPException(404, "Cliente não encontrado")
     oid = ObjectId(uid)
     existing = await db.tenant_users.find_one(
@@ -1177,6 +1924,9 @@ async def _apply_tenant_user_patch(tid: str, uid: str, payload: TenantUserPatch,
         raise HTTPException(400, "Papel inválido")
     if "status" in update and update["status"] not in VALID_TENANT_USER_STATUS:
         raise HTTPException(400, "Status inválido")
+    if (str(tenant.get("portal_owner_user_id") or "") == uid
+            and update.get("status") == "inactive"):
+        raise HTTPException(409, "Atribua outro proprietário do portal antes de desativar esta conta")
     if (actor.get("user_type") == "restaurant" and actor["_id"] == uid
             and ("role" in update or update.get("status") == "inactive")):
         raise HTTPException(400, "Você não pode alterar seu próprio papel nem desativar sua própria conta")
@@ -1269,7 +2019,8 @@ async def delete_tenant_user(tid: str, uid: str, user: dict = Depends(get_staff_
     """Logically remove one restaurant identity without erasing its history."""
     if not ObjectId.is_valid(tid) or not ObjectId.is_valid(uid):
         raise HTTPException(404, "Usuário não encontrado")
-    if not await db.tenants.find_one({"_id": ObjectId(tid), "deleted_at": None}):
+    tenant = await db.tenants.find_one({"_id": ObjectId(tid), "deleted_at": None})
+    if not tenant:
         raise HTTPException(404, "Cliente não encontrado")
     oid = ObjectId(uid)
     existing = await db.tenant_users.find_one(
@@ -1277,6 +2028,8 @@ async def delete_tenant_user(tid: str, uid: str, user: dict = Depends(get_staff_
     )
     if not existing:
         raise HTTPException(404, "Usuário não encontrado")
+    if str(tenant.get("portal_owner_user_id") or "") == uid:
+        raise HTTPException(409, "Atribua outro proprietário do portal antes de remover esta conta")
 
     lock_owner = None
     try:
@@ -1513,6 +2266,141 @@ def require_module_key(mkey: str, request: Request):
         raise HTTPException(401, "Chave de módulo inválida")
 
 
+def _orders_direct_login_enabled() -> bool:
+    """Default-off migration gate for direct Pedidos authentication."""
+    return os.environ.get("ORDERS_DIRECT_LOGIN_ENABLED", "false").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
+
+
+def _orders_direct_login_rate_key(scope: str, value: str) -> str:
+    """Derive an opaque, stable key without retaining email or origin values."""
+    return hmac.new(
+        JWT_SECRET.encode("utf-8"),
+        f"orders-direct-login:v1:{scope}:{value}".encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+async def _reserve_orders_direct_login_limit(scope: str, value: str, limit: int) -> bool:
+    """Atomically admit one credential attempt into a fixed 15-minute window.
+
+    One document represents one protected dimension.  The predicate and update
+    run as one MongoDB operation, so workers and FastAPI instances cannot admit
+    more than ``limit`` requests in the same active window.  A duplicate-key
+    retry only handles simultaneous first inserts; all other uncertainty is a
+    denial.
+    """
+    now = now_utc()
+    window_start = now - ORDERS_DIRECT_LOGIN_WINDOW
+    expires_at = now + ORDERS_DIRECT_LOGIN_WINDOW
+    key = _orders_direct_login_rate_key(scope, value)
+    can_reset_window = {
+        "$or": [
+            {"$eq": [{"$type": "$window_started_at"}, "missing"]},
+            {"$lte": ["$window_started_at", window_start]},
+        ],
+    }
+    query = {
+        "_id": key,
+        "$or": [
+            {"window_started_at": {"$exists": False}},
+            {"window_started_at": {"$lte": window_start}},
+            {"$and": [{"count": {"$gte": 0}}, {"count": {"$lt": limit}}]},
+        ],
+    }
+    update = [{"$set": {
+        "window_started_at": {"$cond": [can_reset_window, now, "$window_started_at"]},
+        "count": {"$cond": [can_reset_window, 1, {"$add": ["$count", 1]}]},
+        "expires_at": {"$cond": [can_reset_window, expires_at, "$expires_at"]},
+    }}]
+    for _ in range(3):
+        try:
+            result = await db.orders_direct_login_rate_limits.find_one_and_update(
+                query, update, upsert=True, return_document=ReturnDocument.AFTER,
+            )
+        except DuplicateKeyError:
+            # Another instance created this bucket between this request's read
+            # and upsert. Retry against its now-visible counter.
+            continue
+        if not result:
+            return False
+        return type(result.get("count")) is int and result["count"] <= limit
+    return False
+
+
+async def _allow_orders_direct_login_attempt(email: str, origin: str) -> bool:
+    """Reserve both independent rate-limit dimensions; failure is fail-closed."""
+    try:
+        for scope, value, limit in (
+            ("account", email, ORDERS_DIRECT_LOGIN_ACCOUNT_LIMIT),
+            ("origin", origin, ORDERS_DIRECT_LOGIN_ORIGIN_LIMIT),
+        ):
+            if not await _reserve_orders_direct_login_limit(scope, value, limit):
+                return False
+        return True
+    except PyMongoError:
+        # Deliberately omit account and network identifiers from logs.
+        logger.warning("orders_direct_login_rate_limiter_unavailable")
+        return False
+
+
+async def _orders_direct_login_access(user: dict) -> Optional[dict]:
+    """Resolve all current Pedidos access authority from the HUB database.
+
+    The tenant and the user id always come from the authenticated credential
+    record.  No caller-provided restaurant, role, or module can influence this
+    decision.
+    """
+    user_id = str(user["_id"])
+    tenant_id = user.get("tenant_id", "")
+    role = user.get("role", "")
+    return await _current_module_access(
+        tenant_id, ORDERS_MODULE_KEY, f"tenant_user:{user_id}", role,
+    )
+
+
+@api_router.post("/internal/modules/orders/direct-login/v1")
+async def orders_direct_login(payload: OrdersDirectLoginIn, request: Request, response: Response):
+    """Authenticate one restaurant user for Pedidos without issuing HUB sessions.
+
+    This endpoint is intentionally not a browser login API.  It is hidden until
+    explicitly enabled and requires the existing service-to-service module key.
+    Every authorization fact is resolved from the authoritative HUB records so
+    tenant, module and individual-grant revocations fail closed.
+    """
+    if not _orders_direct_login_enabled():
+        raise HTTPException(404, "Recurso não encontrado")
+    require_module_key(ORDERS_MODULE_KEY, request)
+
+    email = payload.email.lower()
+    ip = _client_ip(request)
+    if not await _allow_orders_direct_login_attempt(email, ip):
+        raise HTTPException(429, "Muitas tentativas de login. Tente novamente em 15 minutos.")
+
+    user = await db.tenant_users.find_one({"email": email})
+    valid = bool(user) and bool(user.get("password_hash")) and verify_password(
+        payload.password, user.get("password_hash", ""),
+    )
+    access = await _orders_direct_login_access(user) if valid else None
+    if not access:
+        # Do not reveal whether credentials, tenant state, module state, or an
+        # individual grant caused the denial.
+        raise HTTPException(401, "Credenciais inválidas")
+
+    response.headers["Cache-Control"] = "no-store"
+    return {
+        "contract_version": ORDERS_DIRECT_LOGIN_VERSION,
+        "user_id": str(user["_id"]),
+        "restaurant_id": user["tenant_id"],
+        "name": user.get("name", ""),
+        "email": email,
+        "module": ORDERS_MODULE_KEY,
+        "role": user["role"],
+        "access_versions": access,
+    }
+
+
 @api_router.get("/public/tenants/{tid}/modules/{mkey}/status")
 async def public_module_status(tid: str, mkey: str, request: Request):
     require_module_key(mkey, request)
@@ -1685,18 +2573,104 @@ async def portal_users(user: dict = Depends(get_restaurant_admin)):
 @api_router.post("/portal/users")
 async def create_portal_user(payload: TenantUserIn, user: dict = Depends(get_restaurant_admin)):
     # tenant_id is deliberately derived from the authenticated database identity.
-    return await _create_tenant_user(user["tenant_id"], payload, user)
+    if payload.custom_role_id is not None and payload.role != "waiter":
+        raise HTTPException(409, "Cargo personalizado requer papel básico waiter")
+    created = await _create_tenant_user(user["tenant_id"], payload, user)
+    active = await db.tenant_modules.find_one({"tenant_id": user["tenant_id"], "module_key": ORDERS_MODULE_KEY, "active": True})
+    if active:
+        await _set_portal_orders_grant(user["tenant_id"], created["id"], False)
+        target = await db.tenant_users.find_one({"_id": ObjectId(created["id"]), "tenant_id": user["tenant_id"]})
+        try:
+            await _provision_portal_orders_user(target, user["tenant"])
+            if payload.custom_role_id is not None:
+                await _orders_portal_request("PUT", f"/api/internal/hub/users/{created['id']}/custom-role/v1", payload={"tenant_id": user["tenant_id"], "custom_role_id": payload.custom_role_id})
+            await _set_portal_orders_grant(user["tenant_id"], created["id"], True)
+        except HTTPException:
+            await _set_portal_orders_grant(user["tenant_id"], created["id"], False)
+            raise
+    return created
 
 
 @api_router.patch("/portal/users/{uid}")
 async def patch_portal_user(uid: str, payload: TenantUserPatch,
                             user: dict = Depends(get_restaurant_admin)):
-    return await _apply_tenant_user_patch(user["tenant_id"], uid, payload, user)
+    if not ObjectId.is_valid(uid): raise HTTPException(404, "Usuário não encontrado")
+    target = await db.tenant_users.find_one({"_id": ObjectId(uid), "tenant_id": user["tenant_id"], "deleted_at": None})
+    if not target: raise HTTPException(404, "Usuário não encontrado")
+    requested = payload.model_dump(exclude_unset=True)
+    custom_role_requested = "custom_role_id" in requested
+    custom_role_id = requested.pop("custom_role_id", None)
+    target_role = requested.get("role", target.get("role"))
+    if custom_role_requested and custom_role_id is not None and target_role != "waiter":
+        raise HTTPException(409, "Cargo personalizado requer papel básico waiter")
+    security_change = "role" in requested or "status" in requested or custom_role_requested
+    if security_change:
+        await _set_portal_orders_grant(user["tenant_id"], uid, False)
+    updated = await _apply_tenant_user_patch(user["tenant_id"], uid, TenantUserPatch(**requested), user)
+    if security_change and updated["status"] == "active":
+        try:
+            if custom_role_requested:
+                await _orders_portal_request("PUT", f"/api/internal/hub/users/{uid}/custom-role/v1", payload={"tenant_id": user["tenant_id"], "custom_role_id": custom_role_id})
+            else:
+                current = await _orders_portal_request("GET", f"/api/internal/hub/users/{uid}/custom-role/v1", params={"tenant_id": user["tenant_id"]})
+                role = current.get("custom_role")
+                if role is not None and updated["role"] != "waiter":
+                    await _orders_portal_request("PUT", f"/api/internal/hub/users/{uid}/custom-role/v1", payload={"tenant_id": user["tenant_id"], "custom_role_id": None})
+            await _provision_portal_orders_user(await db.tenant_users.find_one({"_id": ObjectId(uid)}), user["tenant"])
+            await _set_portal_orders_grant(user["tenant_id"], uid, True)
+        except HTTPException:
+            await _set_portal_orders_grant(user["tenant_id"], uid, False)
+            raise
+    return updated
 
 
 @api_router.post("/portal/users/{uid}/reset-password")
 async def reset_portal_user_password(uid: str, user: dict = Depends(get_restaurant_admin)):
     return await _reset_tenant_user_password(user["tenant_id"], uid, user)
+
+
+@api_router.post("/portal/users/{uid}/password")
+async def set_portal_user_password(uid: str, payload: PortalPasswordIn, user: dict = Depends(get_restaurant_admin)):
+    if not ObjectId.is_valid(uid) or str(user["_id"]) == uid: raise HTTPException(400, "Operação não permitida")
+    result = await db.tenant_users.update_one({"_id": ObjectId(uid), "tenant_id": user["tenant_id"], "deleted_at": None}, _version_increment_update("token_version", {"password_hash": hash_password(payload.password), "password_reset_required": False}))
+    if result.matched_count != 1: raise HTTPException(404, "Usuário não encontrado")
+    await revoke_user_sessions(db, user_id=uid, user_type="restaurant", reason="password_reset")
+    return {"ok": True}
+
+
+@api_router.get("/portal/orders/custom-roles")
+async def portal_orders_custom_roles(user: dict = Depends(get_restaurant_admin)):
+    data = await _orders_portal_request("GET", "/api/internal/hub/custom-roles/v1", params={"tenant_id": user["tenant_id"]})
+    roles = data.get("custom_roles")
+    if not isinstance(roles, list) or any(not isinstance(r, dict) or set(r) != {"id", "name"} for r in roles): raise HTTPException(503, "Integração com Pedidos indisponível")
+    return {"custom_roles": roles}
+
+
+@api_router.get("/portal/users/{uid}/custom-role")
+async def portal_user_custom_role(uid: str, user: dict = Depends(get_restaurant_admin)):
+    if not ObjectId.is_valid(uid) or not await db.tenant_users.find_one({"_id": ObjectId(uid), "tenant_id": user["tenant_id"], "deleted_at": None}):
+        raise HTTPException(404, "Usuário não encontrado")
+    data = await _orders_portal_request("GET", f"/api/internal/hub/users/{uid}/custom-role/v1", params={"tenant_id": user["tenant_id"]})
+    role = data.get("custom_role")
+    if role is not None and (not isinstance(role, dict) or set(role) != {"id", "name"}): raise HTTPException(503, "Integração com Pedidos indisponível")
+    return {"custom_role": role}
+
+
+@api_router.put("/portal/users/{uid}/custom-role")
+async def set_portal_custom_role(uid: str, payload: PortalCustomRoleIn, user: dict = Depends(get_restaurant_admin)):
+    if not ObjectId.is_valid(uid) or str(user["_id"]) == uid: raise HTTPException(400, "Operação não permitida")
+    target = await db.tenant_users.find_one({"_id": ObjectId(uid), "tenant_id": user["tenant_id"], "deleted_at": None})
+    if not target: raise HTTPException(404, "Usuário não encontrado")
+    if payload.custom_role_id is not None and target.get("role") != "waiter": raise HTTPException(409, "Cargo personalizado requer papel básico waiter")
+    await _set_portal_orders_grant(user["tenant_id"], uid, False)
+    try:
+        await _provision_portal_orders_user(target, user["tenant"])
+        await _orders_portal_request("PUT", f"/api/internal/hub/users/{uid}/custom-role/v1", payload={"tenant_id": user["tenant_id"], "custom_role_id": payload.custom_role_id})
+        await _set_portal_orders_grant(user["tenant_id"], uid, target.get("status") == "active")
+    except HTTPException:
+        await _set_portal_orders_grant(user["tenant_id"], uid, False)
+        raise
+    return {"ok": True}
 
 
 @api_router.post("/portal/modules/{mkey}/launch-token")
@@ -1830,10 +2804,14 @@ async def startup():
     await db.activity_log.create_index([("created_at", -1)])
     await db.login_attempts.create_index("email")
     await db.login_attempts.create_index("identifier")
+    await db.orders_direct_login_rate_limits.create_index("expires_at", expireAfterSeconds=0)
     await db.password_reset_tokens.create_index("token_hash", unique=True)
     await db.password_reset_tokens.create_index("expires_at", expireAfterSeconds=0)
     await db.password_reset_requests.create_index("email")
     await db.password_reset_requests.create_index("created_at", expireAfterSeconds=900)
+    await db.password_reset_cooldowns.create_index("last_allowed", expireAfterSeconds=3600)
+    await db.whatsapp_pairing_requests.create_index("created_at", expireAfterSeconds=900)
+    await db.whatsapp_account_switch_rate.create_index("created_at", expireAfterSeconds=900)
     await ensure_indexes(db)
 
     # Seed admin
@@ -1988,7 +2966,7 @@ async def serve_frontend(frontend_path: str):
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
-    allow_origins=[FRONTEND_URL, "http://localhost:3000"],
+    allow_origins=CORS_ALLOWED_ORIGINS,
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["Content-Type", "Authorization", "X-Module-Key", TAB_SESSION_HEADER],
 )

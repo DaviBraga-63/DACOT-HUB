@@ -351,8 +351,7 @@ class TestAuthPlaybook:
     def test_cors_backend_config_explicit_origins(self, api, anon):
         """The edge proxy rewrites CORS headers in this preview env (returns "*"),
         so assert the backend app config instead of the proxied response."""
-        import re
         src = open("/app/backend/server.py").read()
         assert "allow_credentials=True" in src
-        m = re.search(r"allow_origins=\[([^\]]*)\]", src)
-        assert m and "*" not in m.group(1), m.group(1) if m else "allow_origins missing"
+        assert "allow_origins=CORS_ALLOWED_ORIGINS" in src
+        assert '"*" in value' in src

@@ -6,33 +6,23 @@ import jwt
 from bson import ObjectId
 
 
-def _create_restaurant_user(services, tenant_id):
-    email = f"orders-grant-{secrets.token_hex(6)}@example.com"
-    response = services.call("POST", f"/hub/tenants/{tenant_id}/users", json={
-        "name": "Access Grant QA", "email": email, "role": "waiter",
-        "password": services.password,
-    })
-    response.raise_for_status()
-    return response.json(), services.login(email, services.password)
-
-
 def test_orders_grant_is_required_and_revocation_takes_effect(services):
     service, restaurant = services, services.restaurant()
-    created, headers = _create_restaurant_user(service, restaurant["tid"])
     launch_path = "/portal/modules/orders/launch-token"
-
-    # Creating a user after the one-time migration never implicitly grants access.
-    assert service.call("POST", launch_path, headers=headers).status_code == 403
-
     grant_path = (
-        f"/hub/tenants/{restaurant['tid']}/modules/orders/users/{created['id']}/access"
+        f"/hub/tenants/{restaurant['tid']}/modules/orders/users/{restaurant['uid']}/access"
     )
+
+    # The explicit portal owner still uses the existing handoff, while
+    # operational employees use the separate direct-login contract.
+    assert service.call("PUT", grant_path, json={"active": False}).status_code == 200
+    assert service.call("POST", launch_path, headers=restaurant["headers"]).status_code == 403
     assert service.call("PUT", grant_path, json={"active": True}).status_code == 200
-    assert service.call("POST", launch_path, headers=headers).status_code == 200
+    assert service.call("POST", launch_path, headers=restaurant["headers"]).status_code == 200
 
     # An explicit revocation is durable and immediately blocks a new handoff.
     assert service.call("PUT", grant_path, json={"active": False}).status_code == 200
-    assert service.call("POST", launch_path, headers=headers).status_code == 403
+    assert service.call("POST", launch_path, headers=restaurant["headers"]).status_code == 403
 
 
 def test_orders_grants_are_tenant_scoped_and_staff_write_protected(services):
@@ -71,6 +61,49 @@ def test_orders_template_requires_single_slug_and_authorized_origin(services):
     assert accepted.json()["launch_url_template"] == "https://orders.example.test/{slug}"
 
 
+def test_orders_template_diagnostics_are_opt_in_sanitized_and_keep_response(services):
+    service = services
+    endpoint = "/hub/modules/orders/launch-url-template"
+    original_env = service.env.copy()
+
+    def latest_hub_log():
+        service.logs[-1].flush()
+        return service.logs[-1].name and open(service.logs[-1].name, encoding="utf-8").read()
+
+    try:
+        service.env["HANDOFF_ALLOWED_ORIGINS_JSON"] = '{"orders":["https://orders.example.test"]}'
+        service.env.pop("HANDOFF_DESTINATION_DIAGNOSTICS", None)
+        service.restart_hub()
+        disabled = service.call("PATCH", endpoint, json={
+            "launch_url_template": "https://untrusted.example.test/{slug}",
+        })
+        assert disabled.status_code == 400
+        assert "handoff_destination_validation_failed" not in latest_hub_log()
+
+        service.env["HANDOFF_DESTINATION_DIAGNOSTICS"] = "true"
+        service.env["HANDOFF_ALLOWED_ORIGINS_JSON"] = (
+            '{"orders":["https://orders.example.test?secret=synthetic-secret"]}'
+        )
+        service.restart_hub()
+        enabled = service.call("PATCH", endpoint, json={
+            "launch_url_template": "https://untrusted.example.test/{slug}",
+        })
+        assert enabled.status_code == disabled.status_code == 400
+        log = latest_hub_log()
+        assert "handoff_destination_validation_failed" in log
+        assert "allowed_origins_present=True" in log
+        assert "allowed_origins_json_valid=True" in log
+        assert "orders_origins=[]" in log
+        assert "received_origin=https://untrusted.example.test" in log
+        assert "origin_match=False" in log
+        assert "synthetic-secret" not in log
+        assert "https://untrusted.example.test/{slug}" not in log
+    finally:
+        service.env.clear()
+        service.env.update(original_env)
+        service.restart_hub()
+
+
 def test_public_revalidation_denies_a_revoked_orders_grant(services):
     service, restaurant = services, services.restaurant()
     handoff = service.handoff(restaurant)
@@ -97,7 +130,7 @@ def test_orders_template_http_is_rejected_by_endpoint_in_production(services):
     try:
         service.env["APP_ENV"] = "production"
         service.env["HANDOFF_ALLOWED_ORIGINS_JSON"] = (
-            '{"orders":["https://orders.example.test","https://dacot-pedidos-frontend.onrender.com"]}'
+            '{"orders":["https://orders.example.test","https://pedidos.dacot.com.br"]}'
         )
         service.restart_hub()
         response = service.call("PATCH", "/hub/modules/orders/launch-url-template", json={

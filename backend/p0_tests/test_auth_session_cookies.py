@@ -12,6 +12,46 @@ def _binding(headers):
     return headers["Cookie"].split("=", 1)[1]
 
 
+def _preflight(services, origin):
+    return requests.options(
+        services.hub + "/api/auth/login",
+        headers={
+            "Origin": origin,
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "content-type,x-dacot-tab-session",
+        },
+        timeout=10,
+    )
+
+
+def test_cors_allows_explicit_frontend_origins_and_fails_closed(services):
+    canonical = services.env["FRONTEND_URL"]
+    legacy = "https://legacy-hub.example.test"
+    attacker = "https://attacker.example.test"
+    previous = services.env.pop("FRONTEND_ALLOWED_ORIGINS", None)
+    try:
+        services.restart_hub()
+        assert _preflight(services, canonical).headers["Access-Control-Allow-Origin"] == canonical
+        assert _preflight(services, legacy).status_code == 400
+
+        services.env["FRONTEND_ALLOWED_ORIGINS"] = legacy
+        services.restart_hub()
+        for origin in (canonical, legacy):
+            response = _preflight(services, origin)
+            assert response.status_code == 200
+            assert response.headers["Access-Control-Allow-Origin"] == origin
+            assert response.headers["Access-Control-Allow-Credentials"] == "true"
+            assert response.headers["Access-Control-Allow-Origin"] != "*"
+        assert _preflight(services, "http://localhost:3000").status_code == 200
+        assert _preflight(services, attacker).status_code == 400
+    finally:
+        if previous is None:
+            services.env.pop("FRONTEND_ALLOWED_ORIGINS", None)
+        else:
+            services.env["FRONTEND_ALLOWED_ORIGINS"] = previous
+        services.restart_hub()
+
+
 def test_browser_binding_is_secure_http_only_session_cookie(services):
     login = requests.post(
         services.hub + "/api/auth/login",

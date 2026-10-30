@@ -55,17 +55,22 @@ class Services:
         self.mongo = None
         data = self.temp / "db"
         data.mkdir()
-        self.start("mongo", [str(mongod), "--bind_ip", "127.0.0.1", "--port", str(mp), "--dbpath", str(data), "--quiet"], self.temp, env)
+        self.start("mongo", [str(mongod), "--bind_ip", "127.0.0.1", "--port", str(mp), "--dbpath", str(data), "--replSet", "p0", "--quiet"], self.temp, env)
         self.mongo = MongoClient(env["MONGO_URL"], serverSelectionTimeoutMS=200)
         self.wait(lambda: self.mongo.admin.command("ping"), "mongo")
+        self.mongo.admin.command("replSetInitiate", {"_id": "p0", "members": [{"_id": 0, "host": f"127.0.0.1:{mp}"}]})
+        self.wait(lambda: self.mongo.admin.command("hello").get("isWritablePrimary") or (_ for _ in ()).throw(RuntimeError("not primary")), "mongo")
         self.db = self.mongo.hub_p0
         self.odb = self.mongo.orders_p0
         self.hport, self.oport = hp, op
         self.restart_hub()
-        orders_env = {**env, "DB_NAME": "orders_p0", "JWT_SECRET": secrets.token_urlsafe(40),
-                      "DEFAULT_RESTAURANT_NAME": "Isolated test bootstrap"}
-        self.start("orders", [sys.executable, "-m", "uvicorn", "server:app", "--host", "127.0.0.1", "--port", str(op)], orders, orders_env)
-        self.wait(lambda: requests.get(self.orders + "/api/health", timeout=1).raise_for_status(), "orders")
+        self.orders_env = {
+            **env,
+            "DB_NAME": "orders_p0",
+            "JWT_SECRET": secrets.token_urlsafe(40),
+            "DEFAULT_RESTAURANT_NAME": "Isolated test bootstrap",
+        }
+        self.restart_orders()
         assert self.db.tenants.count_documents({}) == 0, "Hub must not seed demo tenants"
         assert self.db.tenant_users.count_documents({}) == 0
         self.staff = self.login(self.admin_email, self.password)
@@ -99,8 +104,18 @@ class Services:
 
     def restart_hub(self):
         self.stop("hub")
-        self.start("hub", [sys.executable, "-m", "uvicorn", "server:app", "--host", "127.0.0.1", "--port", str(self.hport)], self.hub_backend, self.env)
+        self.start("hub", [sys.executable, "-m", "uvicorn", "server:app", "--host", "127.0.0.1", "--port", str(self.hport), "--no-proxy-headers"], self.hub_backend, self.env)
         self.wait(lambda: requests.get(self.hub + "/api/", timeout=1).raise_for_status(), "hub")
+
+    def restart_orders(self):
+        self.stop("orders")
+        self.start(
+            "orders",
+            [sys.executable, "-m", "uvicorn", "server:app", "--host", "127.0.0.1", "--port", str(self.oport)],
+            self.orders_backend,
+            self.orders_env,
+        )
+        self.wait(lambda: requests.get(self.orders + "/api/health", timeout=1).raise_for_status(), "orders")
 
     def login(self, email, password, *, browser_binding=None, tab_session_id=None):
         """Return the HTTP representation of one browser-tab session.
@@ -137,6 +152,9 @@ class Services:
         r = self.call("POST", f"/hub/tenants/{tid}/users", json={"name": "Test", "email": f"u{tag}@example.com", "role": "admin", "password": self.password})
         r.raise_for_status()
         uid = r.json()["id"]
+        # Tests that exercise the restaurant portal must make the ownership
+        # link explicit, exactly as DACOT staff do for legacy tenants.
+        self.call("PUT", f"/hub/tenants/{tid}/portal-owner", json={"user_id": uid}).raise_for_status()
         self.call("POST", f"/hub/tenants/{tid}/modules/orders/activate").raise_for_status()
         self.call("PATCH", f"/hub/tenants/{tid}/modules/orders", json={"launch_url": f"https://orders.example.test/{tag}"}).raise_for_status()
         return {"tid": tid, "uid": uid, "headers": self.login(f"u{tag}@example.com", self.password)}

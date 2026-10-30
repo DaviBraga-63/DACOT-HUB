@@ -11,7 +11,6 @@ module.exports = defineConfig({
   use: {
     browserName: "chromium",
     headless: !process.env.E2E_HEADED,
-    ignoreHTTPSErrors: true,
     screenshot: "only-on-failure",
     // Browser requests carry the ephemeral Pedidos bearer session. Keep failure
     // evidence to screenshots/report only so no token can land in an artifact.

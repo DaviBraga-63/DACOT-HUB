@@ -90,6 +90,16 @@ def test_resend_request_uses_official_endpoint_and_safe_payload(monkeypatch):
     assert "https://hub.example.test/reset-password?token=synthetic-one-time-token" in call["json"]["html"]
 
 
+def test_email_states_the_actual_link_validity(monkeypatch):
+    request = httpx.Request("POST", email_delivery.RESEND_EMAILS_URL)
+    client = _Client(response=httpx.Response(202, request=request))
+    _install_client(monkeypatch, client)
+    assert _send(validity_hours=720) is True
+    assert "30 dias" in client.calls[-1]["json"]["html"]
+    assert _send(validity_hours=24) is True
+    assert "24 horas" in client.calls[-1]["json"]["html"]
+
+
 def test_resend_http_and_network_failures_return_false_without_logging_secrets(monkeypatch, caplog):
     for status in (400, 500):
         request = httpx.Request("POST", email_delivery.RESEND_EMAILS_URL)

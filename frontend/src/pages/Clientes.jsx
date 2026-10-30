@@ -74,7 +74,7 @@ export default function Clientes() {
         )}
       </div>
 
-      <div className="dh-card overflow-hidden">
+      <div className="dh-card overflow-hidden" style={{ borderRadius: 0 }}>
         <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100 gap-4 flex-wrap">
           <div className="flex gap-2 flex-wrap">
             {FILTERS.map((f) => (
