@@ -6,6 +6,12 @@ export function createConnection({ makeSocket, auth, logger, loggedOutCode, sche
       if (connection.state !== 'open' || !socket) throw new Error('Not connected');
       await socket.sendMessage(`${number.slice(1)}@s.whatsapp.net`, { text });
     },
+    async requestPairingCode(number) {
+      // Pairing codes are valid only while this instance owns an unregistered
+      // connection.  Never expose the socket or QR outside this narrow method.
+      if (!socket || !['connecting', 'pairing'].includes(connection.state)) throw new Error('Pairing unavailable');
+      return socket.requestPairingCode(number);
+    },
     resetPairing() {
       if (connection.state !== 'logged_out' || stopped) return false;
       auth.reset();

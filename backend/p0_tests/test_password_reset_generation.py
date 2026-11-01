@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, MagicMock
 import motor.motor_asyncio
 import pytest
 from bson import ObjectId
-from fastapi import HTTPException
+from fastapi import HTTPException, Response
 
 
 @pytest.fixture
@@ -250,3 +250,35 @@ def test_invalid_status_never_changes_whatsapp(hub, monkeypatch):
     assert exc.value.status_code == 400
     users.update_one.assert_not_awaited()
     tenants.update_one.assert_not_awaited()
+
+
+def test_pairing_code_requires_super_admin_route_and_never_persists_phone_or_code(hub, monkeypatch):
+    route = next(route for route in hub.app.routes if route.path == "/api/hub/whatsapp/pairing-code")
+    assert any(dep.call is hub.get_super_admin for dep in route.dependant.dependencies)
+    actor_id = str(ObjectId())
+    users = SimpleNamespace(find_one=AsyncMock(return_value={"password_hash": "stored", "name": "Founder"}))
+    monkeypatch.setattr(hub, "db", SimpleNamespace(hub_users=users))
+    monkeypatch.setenv("WHATSAPP_PAIRING_SELF_SERVICE_ENABLED", "true")
+    monkeypatch.setattr(hub, "verify_password", lambda supplied, stored: supplied == "correct" and stored == "stored")
+    monkeypatch.setattr(hub, "_allow_pairing_code_request", AsyncMock(return_value=True))
+    request_code = AsyncMock(return_value="ABCD1234")
+    monkeypatch.setattr(hub, "_request_gateway_pairing_code", request_code)
+    audit = AsyncMock()
+    monkeypatch.setattr(hub, "log_activity", audit)
+    response = Response()
+    result = asyncio.run(hub.request_whatsapp_pairing_code(
+        hub.WhatsAppPairingCodeIn(phone="11912345678", password="correct"), response,
+        {"_id": actor_id, "role": "super_admin"},
+    ))
+    assert result == {"code": "ABCD1234"}
+    assert response.headers["cache-control"] == "no-store"
+    assert request_code.call_args.args[0] == "+5511912345678"
+    assert "11912345678" not in str(audit.call_args.kwargs)
+    assert "ABCD1234" not in str(audit.call_args.kwargs)
+    monkeypatch.setenv("WHATSAPP_PAIRING_SELF_SERVICE_ENABLED", "false")
+    with pytest.raises(HTTPException) as disabled:
+        asyncio.run(hub.request_whatsapp_pairing_code(
+            hub.WhatsAppPairingCodeIn(phone="11912345678", password="correct"), Response(),
+            {"_id": actor_id, "role": "super_admin"},
+        ))
+    assert disabled.value.status_code == 404

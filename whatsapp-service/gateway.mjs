@@ -5,16 +5,21 @@ function sameSecret(candidate, expected) {
   return a.length === b.length && a.length >= 32 && timingSafeEqual(a, b);
 }
 
-export function createGateway({ secret, adminSecret, frontendOrigin, connection, store, now = Date.now }) {
+export function createGateway({ secret, adminSecret, pairingSecret, pairingEnabled = false,
+  frontendOrigin, connection, store, now = Date.now }) {
   const origin = new URL(frontendOrigin);
   if (origin.protocol !== 'https:' || origin.origin !== frontendOrigin.replace(/\/$/, '') || origin.username || origin.password)
     throw new Error('Invalid frontend origin');
   if (Buffer.byteLength(secret || '') < 32) throw new Error('Invalid service secret');
   if (Buffer.byteLength(adminSecret || '') < 32 || sameSecret(secret, adminSecret)) throw new Error('Invalid administrative secret');
+  if (pairingEnabled && (Buffer.byteLength(pairingSecret || '') < 32 || sameSecret(secret, pairingSecret) || sameSecret(adminSecret, pairingSecret)))
+    throw new Error('Invalid pairing secret');
   return {
     async handle({ method, path, authorization, id, body, rawBody, timestamp, signature }) {
       const administrative = ['/internal/status', '/internal/pairing', '/internal/pairing/reset'].includes(path);
-      const expected = administrative ? adminSecret : secret;
+      const pairing = path === '/internal/pairing/code';
+      if (pairing && !pairingEnabled) return { status: 404 };
+      const expected = administrative ? adminSecret : (pairing ? pairingSecret : secret);
       if (!authorization?.startsWith('Bearer ') || !sameSecret(authorization.slice(7), expected)) return { status: 401 };
       if (method === 'GET' && path === '/internal/status') return { status: 200, body: { state: connection.state } };
       if (method === 'GET' && path === '/internal/pairing') {
@@ -22,6 +27,26 @@ export function createGateway({ secret, adminSecret, frontendOrigin, connection,
       }
       if (method === 'POST' && path === '/internal/pairing/reset') {
         return connection.resetPairing() ? { status: 202, body: { state: 'connecting' } } : { status: 409 };
+      }
+      if (pairing) {
+        if (method !== 'POST' || !/^[A-Za-z0-9_-]{1,128}$/.test(id || '') || !body ||
+            !/^55[1-9][0-9]{9,10}$/.test(body.destination || '') || !/^[a-f0-9]{64}$/.test(signature || '') ||
+            !Buffer.isBuffer(rawBody) || !/^\d{10}$/.test(timestamp || '') ||
+            Math.abs(Math.floor(now() / 1000) - Number(timestamp)) > 120) return { status: 400 };
+        const expectedSignature = createHmac('sha256', pairingSecret).update(timestamp + '.').update(rawBody).digest('hex');
+        if (!sameSecret(signature, expectedSignature)) return { status: 401 };
+        const reservation = store.reservePairing(id, body.destination);
+        if (reservation === 'limited') return { status: 429 };
+        if (reservation !== 'new') return { status: 409 };
+        try {
+          const code = await connection.requestPairingCode(body.destination);
+          if (typeof code !== 'string' || !/^[A-Z0-9]{4}-?[A-Z0-9]{4}$/.test(code)) throw new Error('Invalid pairing code');
+          store.completePairing(id, 'accepted');
+          return { status: 202, body: { code } };
+        } catch {
+          store.completePairing(id, 'unavailable');
+          return { status: 503 };
+        }
       }
       if (method !== 'POST' || path !== '/internal/auth-messages') return { status: 404 };
       if (!/^\d{10}$/.test(timestamp || '') || Math.abs(Math.floor(now() / 1000) - Number(timestamp)) > 120 ||

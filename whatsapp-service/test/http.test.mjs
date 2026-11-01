@@ -69,12 +69,13 @@ test('real entrypoint starts in maintenance without importing Baileys or touchin
   await Promise.all([once(publicProbe, 'listening'), once(adminProbe, 'listening')]);
   const port = publicProbe.address().port, adminPort = adminProbe.address().port;
   await Promise.all([publicProbe, adminProbe].map(s => new Promise(r => s.close(r))));
-  const secret = randomBytes(32).toString('hex'), adminSecret = randomBytes(32).toString('hex');
+  const secret = randomBytes(32).toString('hex'), adminSecret = randomBytes(32).toString('hex'), pairingSecret = randomBytes(32).toString('hex');
   const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => ['PATH', 'SYSTEMROOT', 'WINDIR', 'TEMP', 'TMP'].includes(k.toUpperCase())));
   Object.assign(env, { WHATSAPP_TRANSPORT: 'proxy-http', WHATSAPP_ENABLED: 'false', HOST: '127.0.0.1',
     PORT: String(port), WHATSAPP_ADMIN_PORT: String(adminPort), WHATSAPP_DB_PATH: join(dir, 'test.sqlite'),
     WHATSAPP_STORAGE_KEY: randomBytes(32).toString('base64'), WHATSAPP_SERVICE_SECRET: secret,
-    WHATSAPP_ADMIN_SECRET: adminSecret, WHATSAPP_FRONTEND_ORIGIN: 'https://hub.example.test' });
+    WHATSAPP_ADMIN_SECRET: adminSecret, WHATSAPP_PAIRING_SERVICE_SECRET: pairingSecret,
+    WHATSAPP_FRONTEND_ORIGIN: 'https://hub.example.test' });
   const before = openStore(env.WHATSAPP_DB_PATH, Buffer.from(env.WHATSAPP_STORAGE_KEY, 'base64'));
   before.setMany({ creds: 'synthetic-session-preserved-in-maintenance' }); before.close();
   const child = spawn(process.execPath, [fileURLToPath(new URL('../server.mjs', import.meta.url))], { env, stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true });
@@ -98,7 +99,7 @@ test('real entrypoint starts in maintenance without importing Baileys or touchin
         'X-DACOT-Signature': signed, 'Idempotency-Key': createHash('sha256').update(token).digest('hex') } });
     assert.equal(unavailable.status, 503);
     assert.equal((await fetch(`http://127.0.0.1:${port}/internal/pairing`, { headers: { Authorization: `Bearer ${adminSecret}` } })).status, 404);
-    assert.equal(errors.includes(secret) || errors.includes(adminSecret), false);
+    assert.equal(errors.includes(secret) || errors.includes(adminSecret) || errors.includes(pairingSecret), false);
   } finally {
     const exited = once(child, 'exit'); child.kill(); await exited;
     const after = openStore(env.WHATSAPP_DB_PATH, Buffer.from(env.WHATSAPP_STORAGE_KEY, 'base64'));

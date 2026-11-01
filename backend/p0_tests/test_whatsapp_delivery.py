@@ -200,3 +200,40 @@ def test_private_transport_never_allows_http_frontend_links():
     assert asyncio.run(provider.send(number="11912345678", token="synthetic-token", purpose="recovery",
                                     request_id="r")) == module.DeliveryResult.UNAVAILABLE
     assert client.calls == []
+
+
+def test_pairing_code_delegation_uses_a_distinct_signed_secret_without_logging_it(caplog):
+    import hashlib
+    import hmac
+    import json
+
+    class PairingClient:
+        def __init__(self): self.calls = []
+        async def __aenter__(self): return self
+        async def __aexit__(self, *_): return False
+        async def post(self, url, *, headers, content):
+            self.calls.append((url, headers, json.loads(content)))
+            return httpx.Response(202, json={"code": "ABCD1234"})
+
+    client, options = PairingClient(), {}
+    def factory(**kwargs):
+        options.update(kwargs)
+        return client
+    provider = module.WhatsAppPairingProvider(service_url="http://dacot-whatsapp:3002",
+        service_transport="speedtrail-private-http", service_key="p" * 32, client_factory=factory)
+    result = asyncio.run(provider.request_code(number="11912345678", request_id="pairing-request"))
+    assert result.code == "ABCD1234"
+    url, headers, body = client.calls[0]
+    assert url == "http://dacot-whatsapp:3002/internal/pairing/code"
+    assert body == {"destination": "5511912345678"}
+    raw = json.dumps(body, separators=(",", ":"), ensure_ascii=True).encode()
+    assert headers["X-DACOT-Signature"] == hmac.new(
+        b"p" * 32, headers["X-DACOT-Timestamp"].encode() + b"." + raw, hashlib.sha256).hexdigest()
+    assert options == {"timeout": 10.0, "follow_redirects": False, "trust_env": False}
+    assert not caplog.text
+
+
+def test_pairing_code_fails_closed_for_bad_origin_or_bad_gateway_response():
+    provider = module.WhatsAppPairingProvider(service_url="http://gateway.example.test:3002",
+        service_transport="speedtrail-private-http", service_key="p" * 32)
+    assert asyncio.run(provider.request_code(number="11912345678", request_id="r")).code is None

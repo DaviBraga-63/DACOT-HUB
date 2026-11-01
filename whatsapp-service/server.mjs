@@ -7,12 +7,15 @@ const env = process.env;
 const config = transportConfiguration(env);
 const key = Buffer.from(env.WHATSAPP_STORAGE_KEY || '', 'base64');
 const store = openStore(env.WHATSAPP_DB_PATH || '/var/data/whatsapp.sqlite', key);
-let connection = { state: 'disabled', qr: null, stop() {}, resetPairing() { return false; } };
+let connection = { state: 'disabled', qr: null, stop() {}, resetPairing() { return false; }, requestPairingCode() { throw new Error('Pairing unavailable'); } };
 const proxyConnection = {
   get state() { return connection.state; }, get qr() { return connection.qr; },
   send(...args) { return connection.send(...args); }, resetPairing() { return connection.resetPairing(); },
+  requestPairingCode(...args) { return connection.requestPairingCode(...args); },
 };
 const gateway = createGateway({ secret: env.WHATSAPP_SERVICE_SECRET, adminSecret: env.WHATSAPP_ADMIN_SECRET,
+  pairingSecret: env.WHATSAPP_PAIRING_SERVICE_SECRET,
+  pairingEnabled: env.WHATSAPP_PAIRING_SELF_SERVICE_ENABLED === 'true',
   frontendOrigin: env.WHATSAPP_FRONTEND_ORIGIN, connection: proxyConnection, store });
 const server = createListener({ gateway, tls: config.tls });
 // Administration is loopback-only, reachable through an authorized shell/SSH tunnel.
