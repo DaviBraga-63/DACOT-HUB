@@ -12,6 +12,8 @@ import logging
 import re
 import secrets
 import hashlib
+import hmac
+import ipaddress
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional, Annotated, Any
 from urllib.parse import urlparse
@@ -81,6 +83,10 @@ MODULE_ACCESS_KEYS = {
 }
 VALID_HANDOFF_ROLES = {"admin", "manager", "waiter", "kitchen"}
 HUB_ADMIN_ROLES = {"super_admin", "admin"}
+ORDERS_DIRECT_LOGIN_VERSION = 1
+ORDERS_DIRECT_LOGIN_WINDOW = timedelta(minutes=15)
+ORDERS_DIRECT_LOGIN_ACCOUNT_LIMIT = 5
+ORDERS_DIRECT_LOGIN_ORIGIN_LIMIT = 50
 
 app = FastAPI(title="DACOT Hub API")
 api_router = APIRouter(prefix="/api")
@@ -256,6 +262,13 @@ async def get_staff_write(user: dict = Depends(get_staff_user)) -> dict:
     return user
 
 
+async def get_super_admin(user: dict = Depends(get_staff_user)) -> dict:
+    """Operations reserved for DACOT super-administrators."""
+    if user.get("role") != "super_admin":
+        raise HTTPException(403, "Permissão restrita a super administradores")
+    return user
+
+
 async def get_restaurant_user(user: dict = Depends(get_current_user)) -> dict:
     """Restaurant client — tenant_id always comes from the authenticated identity.
     Also gates on the tenant being operational: a suspended/inactive tenant loses
@@ -267,14 +280,14 @@ async def get_restaurant_user(user: dict = Depends(get_current_user)) -> dict:
     tenant = await db.tenants.find_one({"_id": ObjectId(user["tenant_id"])})
     if not tenant or not _tenant_operational(tenant):
         raise HTTPException(403, "Restaurante suspenso ou inativo")
+    if str(tenant.get("portal_owner_user_id") or "") != str(user["_id"]):
+        raise HTTPException(403, "Acesso restrito ao proprietário do restaurante")
     user["tenant"] = tenant
     return user
 
 
 async def get_restaurant_admin(user: dict = Depends(get_restaurant_user)) -> dict:
-    """Tenant-scoped administration; never grants access to DACOT staff APIs."""
-    if user.get("role") != "admin":
-        raise HTTPException(403, "Permissão restrita ao administrador do restaurante")
+    """Tenant-scoped administration for the explicit portal owner only."""
     return user
 
 
@@ -323,6 +336,15 @@ class LoginIn(BaseModel):
     email: EmailStr
     password: str
 
+
+class OrdersDirectLoginIn(BaseModel):
+    """The private Pedidos-to-HUB credential contract accepts no other fields."""
+    model_config = ConfigDict(extra="forbid")
+
+    email: EmailStr
+    password: str = Field(min_length=1, max_length=256)
+
+
 class ForgotIn(BaseModel):
     email: EmailStr
 
@@ -344,13 +366,27 @@ async def _issue_password_reset(user_id: str, email: str, user_type: str) -> str
 
 
 # ─── Auth endpoints ────────────────────────────────────────────────────────────
+def _recovery_client_ip(request: Request) -> str:
+    """Trust forwarded client addresses only from explicitly trusted proxies."""
+    try:
+        peer = ipaddress.ip_address(request.client.host)
+        networks = [ipaddress.ip_network(value.strip()) for value in
+                    os.environ.get("RECOVERY_TRUSTED_PROXY_CIDRS", "").split(",") if value.strip()]
+        if not any(peer in network for network in networks):
+            return peer.compressed
+        hops = [ipaddress.ip_address(value.strip()) for value in request.headers.get("x-forwarded-for", "").split(",") if value.strip()]
+        if len(hops) > 20:
+            return "unknown"
+        for hop in reversed(hops):
+            if not any(hop in network for network in networks):
+                return hop.compressed
+        return peer.compressed
+    except (ValueError, AttributeError):
+        return "unknown"
+
+
 def _client_ip(request: Request) -> str:
-    # Behind the k8s ingress, request.client.host is the proxy pod IP — use the
-    # first X-Forwarded-For hop (set by the edge proxy) for the real client.
-    xff = request.headers.get("x-forwarded-for", "")
-    if xff:
-        return xff.split(",")[0].strip()
-    return request.client.host if request.client else "unknown"
+    return _recovery_client_ip(request)
 
 
 @api_router.post("/auth/login")
@@ -381,6 +417,8 @@ async def login(payload: LoginIn, request: Request, response: Response):
         # A restaurant account tied to a suspended/inactive tenant is treated
         # the same as an inactive user — no session is issued.
         if not tenant or not _tenant_operational(tenant):
+            valid = False
+        elif str(tenant.get("portal_owner_user_id") or "") != str(user["_id"]):
             valid = False
     if not valid:
         await _record_attempt(ip, email, False)
@@ -553,6 +591,10 @@ class TenantPatch(BaseModel):
     notes: Optional[str] = None
 
 
+class PortalOwnerIn(BaseModel):
+    user_id: str
+
+
 VALID_STATUS = {"active", "trial", "suspended", "inactive"}
 # A tenant is operational (can log in, use the portal, or receive a handoff
 # into an external module) only in "active"/"trial". "suspended"/"inactive"
@@ -580,6 +622,7 @@ def _tenant_out(doc: dict) -> dict:
         "owner_name": doc.get("owner_name", ""),
         "email": doc.get("email", ""),
         "phone": doc.get("phone", ""),
+        "portal_owner_configured": bool(doc.get("portal_owner_user_id")),
         "status": doc.get("status", "trial"),
         "address": doc.get("address", ""),
         "notes": doc.get("notes", ""),
@@ -667,6 +710,15 @@ async def onboard_tenant(payload: TenantOnboardingIn, background_tasks: Backgrou
         access_created = False
         if payload.create_hub_access:
             created_user_id = await _create_initial_tenant_manager(tid, access_name, access_email)
+            owner_update = await db.tenants.update_one(
+                {"_id": inserted.inserted_id, "portal_owner_user_id": {"$exists": False}},
+                {"$set": {"portal_owner_user_id": created_user_id,
+                          "portal_owner_assigned_at": now_utc().isoformat(),
+                          "portal_owner_assigned_by": user["_id"]}},
+            )
+            if owner_update.matched_count != 1:
+                raise HTTPException(409, "Proprietário do portal já está configurado")
+            doc["portal_owner_user_id"] = created_user_id
             raw_reset = await _issue_password_reset(created_user_id, access_email, "restaurant")
             access_created = True
         await log_activity(
@@ -700,6 +752,38 @@ async def get_tenant(tid: str, _u: dict = Depends(get_staff_user)):
     base["active_modules"] = await db.tenant_modules.count_documents({"tenant_id": tid, "active": True})
     base["users_count"] = await db.tenant_users.count_documents({"tenant_id": tid, "deleted_at": None})
     return base
+
+
+@api_router.put("/hub/tenants/{tid}/portal-owner")
+async def assign_portal_owner(tid: str, payload: PortalOwnerIn, user: dict = Depends(get_super_admin)):
+    """Assign the one explicitly-authorized restaurant portal owner."""
+    if not ObjectId.is_valid(tid) or not ObjectId.is_valid(payload.user_id):
+        raise HTTPException(404, "Cliente ou usuário não encontrado")
+    tenant = await db.tenants.find_one({"_id": ObjectId(tid), "deleted_at": None})
+    if not tenant:
+        raise HTTPException(404, "Cliente não encontrado")
+    owner = await db.tenant_users.find_one({
+        "_id": ObjectId(payload.user_id), "tenant_id": tid,
+        "deleted_at": None, "status": "active",
+    })
+    if not owner:
+        raise HTTPException(404, "Usuário ativo não encontrado neste restaurante")
+    previous_owner_id = tenant.get("portal_owner_user_id")
+    result = await db.tenants.update_one(
+        {"_id": ObjectId(tid), "deleted_at": None},
+        {"$set": {"portal_owner_user_id": payload.user_id,
+                  "portal_owner_assigned_at": now_utc().isoformat(),
+                  "portal_owner_assigned_by": user["_id"]}},
+    )
+    if result.matched_count != 1:
+        raise HTTPException(404, "Cliente não encontrado")
+    await log_activity(
+        actor_id=user["_id"], actor_name=user.get("name", user["email"]),
+        action="tenant.portal_owner_assigned", target_type="tenant", target_id=tid,
+        tenant_id=tid, metadata={"previous_owner_configured": bool(previous_owner_id),
+                                 "owner_user_id": payload.user_id},
+    )
+    return {"portal_owner_configured": True}
 
 
 @api_router.patch("/hub/tenants/{tid}")
@@ -820,7 +904,18 @@ async def _orders_responsible_user(tid: str) -> Optional[dict]:
 
 
 async def _provision_orders_tenant(tid: str, tenant: dict, activation: dict) -> None:
-    responsible = await _orders_responsible_user(tid)
+    owner_id = str(tenant.get("portal_owner_user_id") or "")
+    owner = None
+    if ObjectId.is_valid(owner_id):
+        owner = await db.tenant_users.find_one({
+            "_id": ObjectId(owner_id), "tenant_id": tid,
+            "status": "active", "deleted_at": None,
+        })
+    # Only an explicitly assigned portal owner is migrated to the
+    # passwordless Hub-managed provisioning contract. Tenants without that
+    # authoritative link retain the legacy invitation path unchanged.
+    responsible = owner or await _orders_responsible_user(tid)
+    use_direct_provision = owner is not None
     now = now_utc().isoformat()
     if not responsible:
         await db.tenant_modules.update_one(
@@ -843,19 +938,24 @@ async def _provision_orders_tenant(tid: str, tenant: dict, activation: dict) -> 
     )
     try:
         async with httpx.AsyncClient(timeout=5.0, follow_redirects=False) as client:
+            endpoint = (
+                "/api/internal/hub/provision/direct/v1"
+                if use_direct_provision else "/api/internal/hub/provision"
+            )
+            payload = {
+                "tenant_id": tid, "tenant_name": tenant["name"],
+                "hub_user_id": uid, "name": responsible["name"],
+                "email": responsible["email"], "role": responsible["role"],
+            }
             result = await client.post(
-                f"{_orders_backend_url()}/api/internal/hub/provision",
+                f"{_orders_backend_url()}{endpoint}",
                 headers={"X-Module-Key": MODULE_ACCESS_KEYS[ORDERS_MODULE_KEY]},
-                json={
-                    "tenant_id": tid, "tenant_name": tenant["name"],
-                    "hub_user_id": uid, "name": responsible["name"],
-                    "email": responsible["email"], "role": responsible["role"],
-                },
+                json=payload,
             )
         if result.status_code != 200:
             raise ValueError(f"orders_status_{result.status_code}")
         provisioned = result.json()
-        invite_token = provisioned.get("invite_token")
+        invite_token = None if use_direct_provision else provisioned.get("invite_token")
         if invite_token and not await send_orders_first_access_email(responsible["email"], invite_token):
             await db.tenant_modules.update_one(
                 {"tenant_id": tid, "module_key": ORDERS_MODULE_KEY},
@@ -1038,6 +1138,7 @@ class TenantUserIn(BaseModel):
     email: EmailStr
     role: str
     password: Optional[str] = Field(default=None, min_length=6)
+    custom_role_id: Optional[str] = Field(default=None, min_length=1, max_length=64)
 
 
 class TenantUserPatch(BaseModel):
@@ -1045,6 +1146,34 @@ class TenantUserPatch(BaseModel):
     email: Optional[EmailStr] = None
     role: Optional[str] = None
     status: Optional[str] = None
+    custom_role_id: Optional[str] = Field(default=None, min_length=1, max_length=64)
+
+
+class PortalPasswordIn(BaseModel):
+    password: str = Field(min_length=6, max_length=256)
+
+
+class PortalCustomRoleIn(BaseModel):
+    custom_role_id: Optional[str] = Field(default=None, min_length=1, max_length=64)
+
+
+async def _orders_portal_request(method: str, path: str, *, params=None, payload=None) -> dict:
+    try:
+        async with httpx.AsyncClient(timeout=5.0, follow_redirects=False, trust_env=False) as client:
+            response = await client.request(method, f"{_orders_backend_url()}{path}", params=params, json=payload, headers={"X-Module-Key": MODULE_ACCESS_KEYS[ORDERS_MODULE_KEY]})
+        data = response.json() if response.status_code == 200 else None
+        if not isinstance(data, dict): raise ValueError("orders")
+        return data
+    except (httpx.HTTPError, ValueError, TypeError):
+        raise HTTPException(503, "Integração com Pedidos indisponível")
+
+
+async def _provision_portal_orders_user(target: dict, tenant: dict) -> None:
+    await _orders_portal_request("POST", "/api/internal/hub/provision/direct/v1", payload={"tenant_id": str(tenant["_id"]), "tenant_name": tenant["name"], "hub_user_id": str(target["_id"]), "name": target["name"], "email": target["email"], "role": target["role"]})
+
+
+async def _set_portal_orders_grant(tid: str, uid: str, active: bool) -> None:
+    await db.module_user_grants.update_one({"tenant_id": tid, "user_id": uid, "module_key": ORDERS_MODULE_KEY}, {"$set": {"active": active, "source": "portal", "updated_at": now_utc().isoformat()}, "$setOnInsert": {"created_at": now_utc().isoformat()}}, upsert=True)
 
 
 @api_router.get("/hub/tenants/{tid}/users")
@@ -1155,7 +1284,8 @@ async def _apply_tenant_user_patch(tid: str, uid: str, payload: TenantUserPatch,
                                    actor: dict) -> dict:
     if not ObjectId.is_valid(tid) or not ObjectId.is_valid(uid):
         raise HTTPException(404, "Usuário não encontrado")
-    if not await db.tenants.find_one({"_id": ObjectId(tid), "deleted_at": None}):
+    tenant = await db.tenants.find_one({"_id": ObjectId(tid), "deleted_at": None})
+    if not tenant:
         raise HTTPException(404, "Cliente não encontrado")
     oid = ObjectId(uid)
     existing = await db.tenant_users.find_one(
@@ -1177,6 +1307,9 @@ async def _apply_tenant_user_patch(tid: str, uid: str, payload: TenantUserPatch,
         raise HTTPException(400, "Papel inválido")
     if "status" in update and update["status"] not in VALID_TENANT_USER_STATUS:
         raise HTTPException(400, "Status inválido")
+    if (str(tenant.get("portal_owner_user_id") or "") == uid
+            and update.get("status") == "inactive"):
+        raise HTTPException(409, "Atribua outro proprietário do portal antes de desativar esta conta")
     if (actor.get("user_type") == "restaurant" and actor["_id"] == uid
             and ("role" in update or update.get("status") == "inactive")):
         raise HTTPException(400, "Você não pode alterar seu próprio papel nem desativar sua própria conta")
@@ -1269,7 +1402,8 @@ async def delete_tenant_user(tid: str, uid: str, user: dict = Depends(get_staff_
     """Logically remove one restaurant identity without erasing its history."""
     if not ObjectId.is_valid(tid) or not ObjectId.is_valid(uid):
         raise HTTPException(404, "Usuário não encontrado")
-    if not await db.tenants.find_one({"_id": ObjectId(tid), "deleted_at": None}):
+    tenant = await db.tenants.find_one({"_id": ObjectId(tid), "deleted_at": None})
+    if not tenant:
         raise HTTPException(404, "Cliente não encontrado")
     oid = ObjectId(uid)
     existing = await db.tenant_users.find_one(
@@ -1277,6 +1411,8 @@ async def delete_tenant_user(tid: str, uid: str, user: dict = Depends(get_staff_
     )
     if not existing:
         raise HTTPException(404, "Usuário não encontrado")
+    if str(tenant.get("portal_owner_user_id") or "") == uid:
+        raise HTTPException(409, "Atribua outro proprietário do portal antes de remover esta conta")
 
     lock_owner = None
     try:
@@ -1513,6 +1649,117 @@ def require_module_key(mkey: str, request: Request):
         raise HTTPException(401, "Chave de módulo inválida")
 
 
+def _orders_direct_login_enabled() -> bool:
+    """Default-off migration gate for direct Pedidos authentication."""
+    return os.environ.get("ORDERS_DIRECT_LOGIN_ENABLED", "false").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
+
+
+def _orders_direct_login_rate_key(scope: str, value: str) -> str:
+    """Derive an opaque, stable key without retaining email or origin values."""
+    return hmac.new(
+        JWT_SECRET.encode("utf-8"),
+        f"orders-direct-login:v1:{scope}:{value}".encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+async def _reserve_orders_direct_login_limit(scope: str, value: str, limit: int) -> bool:
+    """Atomically admit one credential attempt into a fixed 15-minute window."""
+    now = now_utc()
+    window_start = now - ORDERS_DIRECT_LOGIN_WINDOW
+    expires_at = now + ORDERS_DIRECT_LOGIN_WINDOW
+    key = _orders_direct_login_rate_key(scope, value)
+    can_reset_window = {
+        "$or": [
+            {"$eq": [{"$type": "$window_started_at"}, "missing"]},
+            {"$lte": ["$window_started_at", window_start]},
+        ],
+    }
+    query = {
+        "_id": key,
+        "$or": [
+            {"window_started_at": {"$exists": False}},
+            {"window_started_at": {"$lte": window_start}},
+            {"$and": [{"count": {"$gte": 0}}, {"count": {"$lt": limit}}]},
+        ],
+    }
+    update = [{"$set": {
+        "window_started_at": {"$cond": [can_reset_window, now, "$window_started_at"]},
+        "count": {"$cond": [can_reset_window, 1, {"$add": ["$count", 1]}]},
+        "expires_at": {"$cond": [can_reset_window, expires_at, "$expires_at"]},
+    }}]
+    for _ in range(3):
+        try:
+            result = await db.orders_direct_login_rate_limits.find_one_and_update(
+                query, update, upsert=True, return_document=ReturnDocument.AFTER,
+            )
+        except DuplicateKeyError:
+            continue
+        if not result:
+            return False
+        return type(result.get("count")) is int and result["count"] <= limit
+    return False
+
+
+async def _allow_orders_direct_login_attempt(email: str, origin: str) -> bool:
+    """Reserve both independent rate-limit dimensions; failure is fail-closed."""
+    try:
+        for scope, value, limit in (
+            ("account", email, ORDERS_DIRECT_LOGIN_ACCOUNT_LIMIT),
+            ("origin", origin, ORDERS_DIRECT_LOGIN_ORIGIN_LIMIT),
+        ):
+            if not await _reserve_orders_direct_login_limit(scope, value, limit):
+                return False
+        return True
+    except PyMongoError:
+        logger.warning("orders_direct_login_rate_limiter_unavailable")
+        return False
+
+
+async def _orders_direct_login_access(user: dict) -> Optional[dict]:
+    """Resolve Pedidos authority solely from authoritative HUB records."""
+    user_id = str(user["_id"])
+    tenant_id = user.get("tenant_id", "")
+    role = user.get("role", "")
+    return await _current_module_access(
+        tenant_id, ORDERS_MODULE_KEY, f"tenant_user:{user_id}", role,
+    )
+
+
+@api_router.post("/internal/modules/orders/direct-login/v1")
+async def orders_direct_login(payload: OrdersDirectLoginIn, request: Request, response: Response):
+    """Authenticate one restaurant user for Pedidos without issuing HUB sessions."""
+    if not _orders_direct_login_enabled():
+        raise HTTPException(404, "Recurso não encontrado")
+    require_module_key(ORDERS_MODULE_KEY, request)
+
+    email = payload.email.lower()
+    if not await _allow_orders_direct_login_attempt(email, _client_ip(request)):
+        raise HTTPException(429, "Muitas tentativas de login. Tente novamente em 15 minutos.")
+
+    user = await db.tenant_users.find_one({"email": email})
+    valid = bool(user) and bool(user.get("password_hash")) and verify_password(
+        payload.password, user.get("password_hash", ""),
+    )
+    access = await _orders_direct_login_access(user) if valid else None
+    if not access:
+        raise HTTPException(401, "Credenciais inválidas")
+
+    response.headers["Cache-Control"] = "no-store"
+    return {
+        "contract_version": ORDERS_DIRECT_LOGIN_VERSION,
+        "user_id": str(user["_id"]),
+        "restaurant_id": user["tenant_id"],
+        "name": user.get("name", ""),
+        "email": email,
+        "module": ORDERS_MODULE_KEY,
+        "role": user["role"],
+        "access_versions": access,
+    }
+
+
 @api_router.get("/public/tenants/{tid}/modules/{mkey}/status")
 async def public_module_status(tid: str, mkey: str, request: Request):
     require_module_key(mkey, request)
@@ -1685,18 +1932,104 @@ async def portal_users(user: dict = Depends(get_restaurant_admin)):
 @api_router.post("/portal/users")
 async def create_portal_user(payload: TenantUserIn, user: dict = Depends(get_restaurant_admin)):
     # tenant_id is deliberately derived from the authenticated database identity.
-    return await _create_tenant_user(user["tenant_id"], payload, user)
+    if payload.custom_role_id is not None and payload.role != "waiter":
+        raise HTTPException(409, "Cargo personalizado requer papel básico waiter")
+    created = await _create_tenant_user(user["tenant_id"], payload, user)
+    active = await db.tenant_modules.find_one({"tenant_id": user["tenant_id"], "module_key": ORDERS_MODULE_KEY, "active": True})
+    if active:
+        await _set_portal_orders_grant(user["tenant_id"], created["id"], False)
+        target = await db.tenant_users.find_one({"_id": ObjectId(created["id"]), "tenant_id": user["tenant_id"]})
+        try:
+            await _provision_portal_orders_user(target, user["tenant"])
+            if payload.custom_role_id is not None:
+                await _orders_portal_request("PUT", f"/api/internal/hub/users/{created['id']}/custom-role/v1", payload={"tenant_id": user["tenant_id"], "custom_role_id": payload.custom_role_id})
+            await _set_portal_orders_grant(user["tenant_id"], created["id"], True)
+        except HTTPException:
+            await _set_portal_orders_grant(user["tenant_id"], created["id"], False)
+            raise
+    return created
 
 
 @api_router.patch("/portal/users/{uid}")
 async def patch_portal_user(uid: str, payload: TenantUserPatch,
                             user: dict = Depends(get_restaurant_admin)):
-    return await _apply_tenant_user_patch(user["tenant_id"], uid, payload, user)
+    if not ObjectId.is_valid(uid): raise HTTPException(404, "Usuário não encontrado")
+    target = await db.tenant_users.find_one({"_id": ObjectId(uid), "tenant_id": user["tenant_id"], "deleted_at": None})
+    if not target: raise HTTPException(404, "Usuário não encontrado")
+    requested = payload.model_dump(exclude_unset=True)
+    custom_role_requested = "custom_role_id" in requested
+    custom_role_id = requested.pop("custom_role_id", None)
+    target_role = requested.get("role", target.get("role"))
+    if custom_role_requested and custom_role_id is not None and target_role != "waiter":
+        raise HTTPException(409, "Cargo personalizado requer papel básico waiter")
+    security_change = "role" in requested or "status" in requested or custom_role_requested
+    if security_change:
+        await _set_portal_orders_grant(user["tenant_id"], uid, False)
+    updated = await _apply_tenant_user_patch(user["tenant_id"], uid, TenantUserPatch(**requested), user)
+    if security_change and updated["status"] == "active":
+        try:
+            if custom_role_requested:
+                await _orders_portal_request("PUT", f"/api/internal/hub/users/{uid}/custom-role/v1", payload={"tenant_id": user["tenant_id"], "custom_role_id": custom_role_id})
+            else:
+                current = await _orders_portal_request("GET", f"/api/internal/hub/users/{uid}/custom-role/v1", params={"tenant_id": user["tenant_id"]})
+                role = current.get("custom_role")
+                if role is not None and updated["role"] != "waiter":
+                    await _orders_portal_request("PUT", f"/api/internal/hub/users/{uid}/custom-role/v1", payload={"tenant_id": user["tenant_id"], "custom_role_id": None})
+            await _provision_portal_orders_user(await db.tenant_users.find_one({"_id": ObjectId(uid)}), user["tenant"])
+            await _set_portal_orders_grant(user["tenant_id"], uid, True)
+        except HTTPException:
+            await _set_portal_orders_grant(user["tenant_id"], uid, False)
+            raise
+    return updated
 
 
 @api_router.post("/portal/users/{uid}/reset-password")
 async def reset_portal_user_password(uid: str, user: dict = Depends(get_restaurant_admin)):
     return await _reset_tenant_user_password(user["tenant_id"], uid, user)
+
+
+@api_router.post("/portal/users/{uid}/password")
+async def set_portal_user_password(uid: str, payload: PortalPasswordIn, user: dict = Depends(get_restaurant_admin)):
+    if not ObjectId.is_valid(uid) or str(user["_id"]) == uid: raise HTTPException(400, "Operação não permitida")
+    result = await db.tenant_users.update_one({"_id": ObjectId(uid), "tenant_id": user["tenant_id"], "deleted_at": None}, _version_increment_update("token_version", {"password_hash": hash_password(payload.password), "password_reset_required": False}))
+    if result.matched_count != 1: raise HTTPException(404, "Usuário não encontrado")
+    await revoke_user_sessions(db, user_id=uid, user_type="restaurant", reason="password_reset")
+    return {"ok": True}
+
+
+@api_router.get("/portal/orders/custom-roles")
+async def portal_orders_custom_roles(user: dict = Depends(get_restaurant_admin)):
+    data = await _orders_portal_request("GET", "/api/internal/hub/custom-roles/v1", params={"tenant_id": user["tenant_id"]})
+    roles = data.get("custom_roles")
+    if not isinstance(roles, list) or any(not isinstance(r, dict) or set(r) != {"id", "name"} for r in roles): raise HTTPException(503, "Integração com Pedidos indisponível")
+    return {"custom_roles": roles}
+
+
+@api_router.get("/portal/users/{uid}/custom-role")
+async def portal_user_custom_role(uid: str, user: dict = Depends(get_restaurant_admin)):
+    if not ObjectId.is_valid(uid) or not await db.tenant_users.find_one({"_id": ObjectId(uid), "tenant_id": user["tenant_id"], "deleted_at": None}):
+        raise HTTPException(404, "Usuário não encontrado")
+    data = await _orders_portal_request("GET", f"/api/internal/hub/users/{uid}/custom-role/v1", params={"tenant_id": user["tenant_id"]})
+    role = data.get("custom_role")
+    if role is not None and (not isinstance(role, dict) or set(role) != {"id", "name"}): raise HTTPException(503, "Integração com Pedidos indisponível")
+    return {"custom_role": role}
+
+
+@api_router.put("/portal/users/{uid}/custom-role")
+async def set_portal_custom_role(uid: str, payload: PortalCustomRoleIn, user: dict = Depends(get_restaurant_admin)):
+    if not ObjectId.is_valid(uid) or str(user["_id"]) == uid: raise HTTPException(400, "Operação não permitida")
+    target = await db.tenant_users.find_one({"_id": ObjectId(uid), "tenant_id": user["tenant_id"], "deleted_at": None})
+    if not target: raise HTTPException(404, "Usuário não encontrado")
+    if payload.custom_role_id is not None and target.get("role") != "waiter": raise HTTPException(409, "Cargo personalizado requer papel básico waiter")
+    await _set_portal_orders_grant(user["tenant_id"], uid, False)
+    try:
+        await _provision_portal_orders_user(target, user["tenant"])
+        await _orders_portal_request("PUT", f"/api/internal/hub/users/{uid}/custom-role/v1", payload={"tenant_id": user["tenant_id"], "custom_role_id": payload.custom_role_id})
+        await _set_portal_orders_grant(user["tenant_id"], uid, target.get("status") == "active")
+    except HTTPException:
+        await _set_portal_orders_grant(user["tenant_id"], uid, False)
+        raise
+    return {"ok": True}
 
 
 @api_router.post("/portal/modules/{mkey}/launch-token")
@@ -1830,6 +2163,7 @@ async def startup():
     await db.activity_log.create_index([("created_at", -1)])
     await db.login_attempts.create_index("email")
     await db.login_attempts.create_index("identifier")
+    await db.orders_direct_login_rate_limits.create_index("expires_at", expireAfterSeconds=0)
     await db.password_reset_tokens.create_index("token_hash", unique=True)
     await db.password_reset_tokens.create_index("expires_at", expireAfterSeconds=0)
     await db.password_reset_requests.create_index("email")

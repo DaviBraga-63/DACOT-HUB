@@ -21,6 +21,7 @@ import ModuloPedidos from "@/pages/ModuloPedidos";
 import Equipe from "@/pages/Equipe";
 import Portal from "@/pages/Portal";
 import PortalModulos from "@/pages/PortalModulos";
+import PortalEquipe from "@/pages/PortalEquipe";
 
 export default function App() {
   return (
@@ -46,6 +47,7 @@ export default function App() {
             <Route element={<ProtectedRoute><RestaurantRoute><PortalLayout /></RestaurantRoute></ProtectedRoute>}>
               <Route path="/portal" element={<Portal />} />
               <Route path="/portal/modulos" element={<PortalModulos />} />
+              <Route path="/portal/equipe" element={<PortalEquipe />} />
             </Route>
             <Route path="*" element={<Navigate to="/login" replace />} />
           </Routes>

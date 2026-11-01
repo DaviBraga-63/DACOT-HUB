@@ -1,9 +1,95 @@
 """Backend-only launch destinations. Empty allowlist denies every destination."""
+import ipaddress
 import json
 import os
+import re
 from urllib.parse import urlsplit
 
 from fastapi import HTTPException
+
+
+_CONFIGURED_HANDOFF_MODULES = frozenset({"orders"})
+_HOST_LABEL_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
+
+
+class HandoffOriginConfigurationError(ValueError):
+    """The configured allowlist cannot be used safely."""
+
+
+def _canonical_host(hostname: str) -> str:
+    """Return an unambiguous, ASCII host or raise for an invalid hostname."""
+    try:
+        return str(ipaddress.ip_address(hostname))
+    except ValueError:
+        pass
+
+    try:
+        host = hostname.encode("idna").decode("ascii").lower()
+    except UnicodeError as exc:
+        raise HandoffOriginConfigurationError() from exc
+    if len(host) > 253 or not all(_HOST_LABEL_RE.fullmatch(label) for label in host.split(".")):
+        raise HandoffOriginConfigurationError()
+    return host
+
+
+def _canonical_allowed_origin(value: object) -> str:
+    """Parse one configured HTTPS origin into its sole comparison representation."""
+    if not isinstance(value, str) or not value or value != value.strip() or any(char.isspace() for char in value):
+        raise HandoffOriginConfigurationError()
+    if "*" in value or "\\" in value:
+        raise HandoffOriginConfigurationError()
+    try:
+        parsed = urlsplit(value)
+        port = parsed.port
+    except (TypeError, ValueError) as exc:
+        raise HandoffOriginConfigurationError() from exc
+    if (parsed.scheme.lower() != "https" or not parsed.hostname or parsed.username is not None
+            or parsed.password is not None or parsed.path not in ("", "/")
+            or parsed.query or parsed.fragment or "%" in parsed.netloc):
+        raise HandoffOriginConfigurationError()
+
+    host = _canonical_host(parsed.hostname)
+    rendered_host = f"[{host}]" if ":" in host else host
+    return f"https://{rendered_host}" + (f":{port}" if port and port != 443 else "")
+
+
+def allowed_handoff_origins(module: str) -> frozenset[str]:
+    """Load, validate and canonicalize the complete handoff allowlist once."""
+    if module not in _CONFIGURED_HANDOFF_MODULES:
+        raise HandoffOriginConfigurationError()
+    try:
+        configured = json.loads(os.environ.get("HANDOFF_ALLOWED_ORIGINS_JSON", "{}"))
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise HandoffOriginConfigurationError() from exc
+    if not isinstance(configured, dict) or set(configured) != _CONFIGURED_HANDOFF_MODULES:
+        raise HandoffOriginConfigurationError()
+
+    raw_origins = configured.get(module)
+    if not isinstance(raw_origins, list) or not raw_origins:
+        raise HandoffOriginConfigurationError()
+    origins = frozenset(_canonical_allowed_origin(origin) for origin in raw_origins)
+    if len(origins) != len(raw_origins):
+        raise HandoffOriginConfigurationError()
+    return origins
+
+
+def _destination_origin(value: object) -> str:
+    """Return the canonical origin of a complete handoff destination URL."""
+    if not isinstance(value, str) or not value or any(ord(char) <= 32 or ord(char) == 127 for char in value):
+        raise ValueError()
+    if "\\" in value:
+        raise ValueError()
+    try:
+        parsed = urlsplit(value)
+        port = parsed.port
+    except (TypeError, ValueError) as exc:
+        raise ValueError() from exc
+    if (parsed.scheme.lower() != "https" or not parsed.hostname or parsed.username is not None
+            or parsed.password is not None or parsed.query or parsed.fragment or "%" in parsed.netloc):
+        raise ValueError()
+    host = _canonical_host(parsed.hostname)
+    rendered_host = f"[{host}]" if ":" in host else host
+    return f"https://{rendered_host}" + (f":{port}" if port and port != 443 else "")
 
 
 def validate_handoff_configuration(secret: str, issuer: str, audiences: dict,
@@ -25,19 +111,8 @@ def validate_handoff_configuration(secret: str, issuer: str, audiences: dict,
         errors.append("MODULE_API_KEY deve ter ao menos 32 caracteres")
 
     try:
-        configured = json.loads(os.environ.get("HANDOFF_ALLOWED_ORIGINS_JSON", "{}"))
-        origins = configured.get("orders")
-        if not isinstance(origins, list) or not origins:
-            raise ValueError()
-        for origin in origins:
-            parsed = urlsplit(origin)
-            _ = parsed.port
-            if (not isinstance(origin, str) or parsed.scheme != "https" or not parsed.hostname
-                    or parsed.username is not None or parsed.password is not None
-                    or parsed.path not in ("", "/") or parsed.query or parsed.fragment
-                    or "*" in origin or "\\" in origin):
-                raise ValueError()
-    except (ValueError, TypeError, AttributeError, json.JSONDecodeError):
+        allowed_handoff_origins("orders")
+    except HandoffOriginConfigurationError:
         errors.append("HANDOFF_ALLOWED_ORIGINS_JSON deve autorizar ao menos uma origem HTTPS exata para orders")
 
     if errors:
@@ -53,29 +128,8 @@ def orders_module_key():
 
 def validate_launch_url(value: str, module: str) -> str:
     try:
-        allowed = json.loads(os.environ.get("HANDOFF_ALLOWED_ORIGINS_JSON", "{}"))
-        origins = allowed.get(module, [])
-        if not isinstance(origins, list) or not all(isinstance(x, str) for x in origins):
-            raise ValueError()
-        # Reject ambiguous browser parsing, redirect parameters and token fragments.
-        if not value or any(ord(c) <= 32 or ord(c) == 127 for c in value) or "\\" in value:
-            raise ValueError()
-        parsed = urlsplit(value)
-        if not parsed.hostname or parsed.username is not None or parsed.password is not None:
-            raise ValueError()
-        if parsed.query or parsed.fragment or "%" in parsed.netloc:
-            raise ValueError()
-        port = parsed.port  # validates invalid/out-of-range ports
-        local = os.environ.get("APP_ENV", "production") == "development"
-        if parsed.scheme != "https" and not (
-            local and parsed.scheme == "http" and parsed.hostname in {"localhost", "127.0.0.1", "::1"}
-        ):
-            raise ValueError()
-        host = f"[{parsed.hostname}]" if ":" in parsed.hostname else parsed.hostname
-        default_port = 443 if parsed.scheme == "https" else 80
-        origin = f"{parsed.scheme}://{host}" + (f":{port}" if port and port != default_port else "")
-        if origin not in origins:
+        if _destination_origin(value) not in allowed_handoff_origins(module):
             raise ValueError()
         return value
-    except (ValueError, TypeError, AttributeError):
+    except (HandoffOriginConfigurationError, TypeError, ValueError, AttributeError):
         raise HTTPException(400, "Destino de handoff inválido ou não autorizado")

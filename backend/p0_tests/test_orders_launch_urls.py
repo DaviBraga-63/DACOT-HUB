@@ -87,19 +87,59 @@ async def _run_orders_launch_url_migration_test():
     assert overrides["other-module"]["launch_url"] == "https://pedidos.dacot.app/tenant-a"
 
 
-def test_orders_template_uses_render_origin_slug_and_allowlist(monkeypatch):
+def test_orders_template_uses_public_origin_slug_and_allowlist(monkeypatch):
     launch_urls = load("orders_launch_urls_template", BACKEND / "orders_launch_urls.py")
     policy = load("handoff_policy_orders_template", BACKEND / "handoff_policy.py")
     monkeypatch.setenv("APP_ENV", "production")
     monkeypatch.setenv(
         "HANDOFF_ALLOWED_ORIGINS_JSON",
-        '{"orders":["https://dacot-pedidos-frontend.onrender.com"]}',
+        '{"orders":["https://pedidos.dacot.com.br"]}',
     )
 
     assert launch_urls.ORDERS_LAUNCH_URL_TEMPLATE.endswith("/{slug}")
     final_url = launch_urls.ORDERS_LAUNCH_URL_TEMPLATE.replace("{slug}", "restaurant-a")
-    assert final_url == "https://dacot-pedidos-frontend.onrender.com/restaurant-a"
+    assert final_url == "https://pedidos.dacot.com.br/restaurant-a"
     assert policy.validate_launch_url(final_url, "orders") == final_url
     with pytest.raises(Exception) as rejected:
         policy.validate_launch_url("https://pedidos.dacot.app/restaurant-a", "orders")
+    assert rejected.value.status_code == 400
+
+
+@pytest.mark.parametrize("configured", [
+    '{"orders":["https://pedidos.dacot.com.br"]}',
+    '{"orders":["https://pedidos.dacot.com.br/"]}',
+    '{"orders":["https://pedidos.dacot.com.br:443"]}',
+])
+def test_allowlist_canonicalization_is_consistent_for_startup_and_requests(monkeypatch, configured):
+    policy = load("handoff_policy_canonical", BACKEND / "handoff_policy.py")
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("HANDOFF_ALLOWED_ORIGINS_JSON", configured)
+
+    policy.validate_handoff_configuration(
+        "s" * 32, "dacot-hub", {"orders": "dacot-orders"}, 1, {"orders": "k" * 32},
+    )
+    assert policy.validate_launch_url("https://pedidos.dacot.com.br/restaurant-a", "orders")
+
+
+@pytest.mark.parametrize("configured", [
+    '{"orders":[" https://pedidos.dacot.com.br"]}',
+    '{"orders":["https://pedidos.dacot.com.br "]}',
+    '"{\\"orders\\":[\\"https://pedidos.dacot.com.br\\"]}"',
+    '{"Orders":["https://pedidos.dacot.com.br"]}',
+    '{"orders":["https://pedidos.dacot.com.br"],"Orders":["https://evil.example.test"]}',
+    '{"orders":["https://pedidos.dacot.com.br","https://pedidos.dacot.com.br/"]}',
+    '{"orders":["http://pedidos.dacot.com.br"]}',
+    '{"orders":["https://pedidos.dacot.com.br/path"]}',
+])
+def test_invalid_allowlist_is_rejected_consistently_at_startup_and_request(monkeypatch, configured):
+    policy = load("handoff_policy_invalid", BACKEND / "handoff_policy.py")
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("HANDOFF_ALLOWED_ORIGINS_JSON", configured)
+
+    with pytest.raises(RuntimeError):
+        policy.validate_handoff_configuration(
+            "s" * 32, "dacot-hub", {"orders": "dacot-orders"}, 1, {"orders": "k" * 32},
+        )
+    with pytest.raises(Exception) as rejected:
+        policy.validate_launch_url("https://pedidos.dacot.com.br/restaurant-a", "orders")
     assert rejected.value.status_code == 400

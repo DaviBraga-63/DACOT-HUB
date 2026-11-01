@@ -3,6 +3,7 @@
 import secrets
 
 from bson import ObjectId
+import requests
 
 
 def _onboard_payload(tag, **extra):
@@ -39,6 +40,9 @@ def test_staff_can_onboard_tenant_without_or_with_initial_manager_access(service
     assert manager and manager["role"] == "manager"
     assert manager["user_type"] == "restaurant"
     assert manager["password_reset_required"] is True
+    tenant = service.db.tenants.find_one({"_id": ObjectId(body["id"])})
+    assert tenant["portal_owner_user_id"] == str(manager["_id"])
+    assert body["portal_owner_configured"] is True
     assert service.db.password_reset_tokens.count_documents({"user_id": str(manager["_id"]), "used": False}) == 1
     # Onboarding never activates a product or assumes an individual grant.
     assert service.db.tenant_modules.count_documents({"tenant_id": body["id"]}) == 0
@@ -66,7 +70,7 @@ def test_onboarding_is_staff_write_only_and_duplicate_access_leaves_no_partial_t
     assert service.db.tenants.count_documents({}) == before
 
 
-def test_portal_exposes_only_active_released_orders_and_manager_cannot_manage_users(services):
+def test_portal_exposes_only_active_released_orders_and_non_owner_cannot_log_in(services):
     service, restaurant = services, services.restaurant()
     context = service.call("GET", "/portal/context", headers=restaurant["headers"])
     assert context.status_code == 200, context.text
@@ -77,14 +81,16 @@ def test_portal_exposes_only_active_released_orders_and_manager_cannot_manage_us
         "name": "Gerente", "email": manager_email, "role": "manager", "password": service.password,
     })
     manager.raise_for_status()
-    manager_headers = service.login(manager_email, service.password)
     grant = service.call(
         "PUT", f"/hub/tenants/{restaurant['tid']}/modules/orders/users/{manager.json()['id']}/access",
         json={"active": True},
     )
     assert grant.status_code == 200
-    assert service.call("GET", "/portal/context", headers=manager_headers).status_code == 200
-    assert service.call("GET", "/portal/users", headers=manager_headers).status_code == 403
+    non_owner_login = requests.post(
+        service.hub + "/api/auth/login", json={"email": manager_email, "password": service.password},
+        headers={"X-DACOT-Tab-Session": secrets.token_urlsafe(24)}, timeout=10,
+    )
+    assert non_owner_login.status_code == 401
 
     assert service.call("POST", f"/hub/tenants/{restaurant['tid']}/modules/orders/deactivate").status_code == 200
     inactive_context = service.call("GET", "/portal/context", headers=restaurant["headers"])

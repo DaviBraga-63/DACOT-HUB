@@ -1,5 +1,5 @@
 import { NavLink, Outlet, useNavigate } from "react-router-dom";
-import { LayoutDashboard, Blocks, LogOut, Moon, Sun } from "lucide-react";
+import { LayoutDashboard, Blocks, Users, LogOut, Moon, Sun } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 import { useTheme } from "@/context/ThemeContext";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -20,6 +20,7 @@ export default function PortalLayout() {
         <nav className="flex items-center gap-1 flex-1" aria-label="Navegação do portal">
           <PortalLink to="/portal" end icon={LayoutDashboard} label="Painel" testid="portal-nav-dashboard" />
           <PortalLink to="/portal/modulos" icon={Blocks} label="Módulos" testid="portal-nav-modules" />
+          <PortalLink to="/portal/equipe" icon={Users} label="Equipe" testid="portal-nav-team" />
         </nav>
         <div className="flex items-center gap-2">
           <div className="hidden sm:block text-right leading-tight mr-2">
