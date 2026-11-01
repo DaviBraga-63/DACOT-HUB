@@ -239,6 +239,13 @@ test('connection enters pairing, opens, reconnects, and stops on logout', async 
   assert.equal(connection.state, 'disconnected');
   scheduled.shift()();
   assert.equal(sockets.length, 2);
+  sockets[1].ev.emit('connection.update', { connection: 'open' });
+  assert.equal(connection.state, 'open');
+  // A delayed close from the replaced socket must not report the healthy
+  // replacement as disconnected or schedule a second reconnect.
+  sockets[0].ev.emit('connection.update', { connection: 'close' });
+  assert.equal(connection.state, 'open');
+  assert.equal(scheduled.length, 0);
   sockets[1].ev.emit('connection.update', { connection: 'close', lastDisconnect: { error: { output: { statusCode: 401 } } } });
   assert.equal(connection.state, 'logged_out');
   assert.equal(scheduled.length, 0);

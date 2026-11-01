@@ -1,7 +1,9 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Navigate } from "react-router-dom";
 import { CheckCircle2, CircleOff, LoaderCircle, Phone, RefreshCw, ShieldCheck, TriangleAlert } from "lucide-react";
 import { api, formatApiErrorDetail } from "@/lib/api";
+import { canStartAccountSwitch, clearedAccountSwitchDraft } from "@/lib/accountSwitchForm";
+import { createLatestRequestGate } from "@/lib/latestRequest";
 import { useAuth } from "@/context/AuthContext";
 
 const CONNECTION_STATES = {
@@ -54,18 +56,25 @@ export default function WhatsAppPairing() {
   const [switchCode, setSwitchCode] = useState("");
   const [switchError, setSwitchError] = useState("");
   const [switchBusy, setSwitchBusy] = useState(false);
+  const statusRequestGate = useRef(null);
+  if (!statusRequestGate.current) statusRequestGate.current = createLatestRequestGate();
 
   const loadStatus = useCallback(async () => {
-    setStatusLoading(true);
-    setStatusError("");
+    const requestId = statusRequestGate.current.begin();
+    if (statusRequestGate.current.isCurrent(requestId)) {
+      setStatusLoading(true);
+      setStatusError("");
+    }
     try {
       const { data } = await api.get("/hub/whatsapp/status");
-      setStatus(data);
+      if (statusRequestGate.current.isCurrent(requestId)) setStatus(data);
     } catch {
-      setStatus({ connection_state: "unavailable", gateway_reachable: false, pairing_self_service_enabled: false });
-      setStatusError("Não foi possível consultar o status do gateway neste momento.");
+      if (statusRequestGate.current.isCurrent(requestId)) {
+        setStatus({ connection_state: "unavailable", gateway_reachable: false, pairing_self_service_enabled: false });
+        setStatusError("Não foi possível consultar o status do gateway neste momento.");
+      }
     } finally {
-      setStatusLoading(false);
+      if (statusRequestGate.current.isCurrent(requestId)) setStatusLoading(false);
     }
   }, []);
 
@@ -78,6 +87,21 @@ export default function WhatsAppPairing() {
   const connection = connectionDetails(status);
   const pairingEnabled = status?.pairing_self_service_enabled === true;
   const switchAvailable = status?.account_switch_available === true;
+  const canStartSwitch = canStartAccountSwitch({
+    phone: switchPhone, password: switchPassword, available: switchAvailable, busy: switchBusy,
+  });
+
+  function closeUnstartedSwitch() {
+    if (switchOperation || switchBusy) return;
+    const cleared = clearedAccountSwitchDraft();
+    setSwitchOpen(false);
+    setSwitchPhone(cleared.phone);
+    setSwitchPassword(cleared.password);
+    setSwitchConfirm(cleared.confirm);
+    setSwitchCode(cleared.code);
+    setSwitchState(cleared.state);
+    setSwitchError(cleared.error);
+  }
 
   async function refreshSwitch(operationId = switchOperation) {
     if (!operationId) return;
@@ -96,7 +120,9 @@ export default function WhatsAppPairing() {
     setSwitchBusy(true); setSwitchError(""); setSwitchCode("");
     try {
       const { data } = await api.post("/hub/whatsapp/account-switch", {
-        phone: switchPhone, password: switchPassword, confirm: switchConfirm,
+        // Starting a candidate never replaces the active account. The explicit
+        // confirmation remains exclusively on the irreversible promotion.
+        phone: switchPhone, password: switchPassword, confirm: true,
       });
       setSwitchOperation(data.operation_id); setSwitchState(data.state || "preparing"); setSwitchPassword(""); setSwitchConfirm(false);
       await refreshSwitch(data.operation_id);
@@ -191,10 +217,17 @@ export default function WhatsAppPairing() {
           </p>
 
           <div className="mt-auto border-t border-[var(--dh-border-soft)] pt-7 sm:pt-9">
-            <button type="button" className="dh-btn dh-btn-outline w-full py-4 text-base sm:text-lg" disabled={!switchAvailable || switchBusy}
-                    onClick={() => { setSwitchOpen(true); setSwitchError(""); }} data-testid="whatsapp-account-switch-open">
-              Trocar número do WhatsApp
-            </button>
+            {switchOpen && !switchOperation ? (
+              <button type="button" className="dh-btn dh-btn-outline w-full py-4 text-base sm:text-lg" disabled={switchBusy}
+                      onClick={closeUnstartedSwitch} data-testid="whatsapp-account-switch-close">
+                Cancelar troca
+              </button>
+            ) : (
+              <button type="button" className="dh-btn dh-btn-outline w-full py-4 text-base sm:text-lg" disabled={!switchAvailable || switchBusy}
+                      onClick={() => { setSwitchOpen(true); setSwitchError(""); }} data-testid="whatsapp-account-switch-open">
+                Trocar número do WhatsApp
+              </button>
+            )}
             <p className="mt-4 text-sm leading-relaxed text-[var(--dh-muted)]">{switchAvailable ? "A troca mantém a conta atual ativa até a confirmação final." : "A troca segura está indisponível enquanto o gateway não estiver configurado."}</p>
             {switchOpen && !switchOperation && (
               <form onSubmit={startSwitch} className="mt-6 space-y-4 border-t border-[var(--dh-border-soft)] pt-6" autoComplete="off">
@@ -204,10 +237,8 @@ export default function WhatsAppPairing() {
                 <label className="block text-sm text-[var(--dh-text)]">Confirme sua senha de superadministrador
                   <input className="dh-input mt-2" type="password" required value={switchPassword} onChange={(event) => setSwitchPassword(event.target.value)} autoComplete="current-password" data-testid="whatsapp-account-switch-password" />
                 </label>
-                <label className="flex items-start gap-3 text-sm text-[var(--dh-muted)]"><input type="checkbox" checked={switchConfirm} onChange={(event) => setSwitchConfirm(event.target.checked)} required />
-                  Entendo que confirmarei a substituição somente depois de validar a nova conta.</label>
                 {switchError && <div className="dh-chip dh-chip-error" role="alert">{switchError}</div>}
-                <button type="submit" className="dh-btn dh-btn-primary w-full" disabled={switchBusy || !switchConfirm}>{switchBusy ? "Preparando…" : "Iniciar troca segura"}</button>
+                <button type="submit" className="dh-btn dh-btn-primary w-full" disabled={!canStartSwitch}>{switchBusy ? "Preparando…" : "Iniciar troca segura"}</button>
               </form>
             )}
             {switchOpen && switchOperation && (
