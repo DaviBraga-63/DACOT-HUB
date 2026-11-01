@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback } from "react";
 import { useParams, Link } from "react-router-dom";
-import { api } from "@/lib/api";
+import { api, formatApiErrorDetail } from "@/lib/api";
+import { formatBrazilianPhone } from "@/lib/phone";
 import { useAuth } from "@/context/AuthContext";
 import { isReleasedModule } from "@/lib/releasedModules";
 import { ArrowLeft, ExternalLink, Mail, Phone, MapPin, Calendar, Settings2, Trash2, Users as UsersIcon, UserPlus } from "lucide-react";
@@ -111,6 +112,7 @@ export default function ClienteDetalhes() {
               <InfoRow icon={Calendar} label="Cadastrado em"
                        value={tenant.created_at ? new Date(tenant.created_at).toLocaleString("pt-BR") : "—"} />
             </div>
+            <WhatsAppContact tenant={tenant} users={users} canWrite={user?.role === "super_admin"} reload={load} />
             {tenant.notes && (
               <div className="pt-5 mt-5 border-t border-slate-100">
                 <div className="text-[11px] uppercase tracking-wider font-semibold text-slate-400 mb-1.5">Observações</div>
@@ -144,6 +146,53 @@ export default function ClienteDetalhes() {
 
       {tab === "users" && <UsersTab tenantId={id} tenantName={tenant.name} users={users} reload={load} canWrite={canWrite} />}
     </div>
+  );
+}
+
+function WhatsAppContact({ tenant, users, canWrite, reload }) {
+  const [number, setNumber] = useState(formatBrazilianPhone(tenant.whatsapp_phone || ""));
+  const [owner, setOwner] = useState(tenant.whatsapp_user_id || "");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => setNumber(formatBrazilianPhone(tenant.whatsapp_phone || "")), [tenant.whatsapp_phone]);
+
+  const save = async (event) => {
+    event.preventDefault();
+    setBusy(true);
+    setError("");
+    try {
+      if (!tenant.whatsapp_user_id && owner) {
+        await api.put(`/hub/tenants/${tenant.id}/whatsapp`, { user_id: owner, phone: number });
+      } else {
+        await api.patch(`/hub/tenants/${tenant.id}`, { whatsapp_phone: number });
+      }
+      await reload();
+      toast.success("WhatsApp atualizado");
+    } catch (err) {
+      setError(formatApiErrorDetail(err.response?.data?.detail) || "Não foi possível atualizar o WhatsApp.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <form onSubmit={save} className="pt-5 mt-5 border-t border-slate-100 space-y-2">
+      <label className="block text-[13px] font-medium text-slate-700" htmlFor="tenant-whatsapp">WhatsApp do responsável</label>
+      {!tenant.whatsapp_user_id && canWrite && <label className="block text-[13px]">Vincular ao usuário responsável
+        <select className="dh-input mt-1" value={owner} onChange={(event) => setOwner(event.target.value)}>
+          <option value="">Somente contato, sem acesso por WhatsApp</option>
+          {users.filter((item) => item.status === "active").map((item) => <option key={item.id} value={item.id}>{item.name} — {item.email}</option>)}
+        </select>
+      </label>}
+      <div className="flex flex-wrap gap-2">
+        <input id="tenant-whatsapp" type="tel" className="dh-input flex-1 min-w-0" value={number}
+               onChange={(e) => setNumber(formatBrazilianPhone(e.target.value))} disabled={!canWrite || busy} />
+        {canWrite && <button type="submit" className="dh-btn dh-btn-ghost" disabled={busy}>{busy ? "Salvando…" : "Salvar"}</button>}
+      </div>
+      <p className="text-[12px] text-[var(--dh-muted)]">{tenant.whatsapp_user_id ? "Número vinculado ao responsável; alterações invalidam os links anteriores do WhatsApp." : "Sem vínculo com usuário, este número é apenas um contato."}</p>
+      {error && <p role="alert" className="dh-chip dh-chip-error">{error}</p>}
+    </form>
   );
 }
 
