@@ -4,6 +4,7 @@ import { api, formatApiErrorDetail } from "@/lib/api";
 
 export default function ForgotPassword() {
   const [email, setEmail] = useState("");
+  const [channel, setChannel] = useState("email");
   const [done, setDone] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState(null);
@@ -12,7 +13,7 @@ export default function ForgotPassword() {
     e.preventDefault();
     setBusy(true); setErr(null);
     try {
-      await api.post("/auth/forgot-password", { email: email.trim() });
+      await api.post("/auth/forgot-password", { email: email.trim(), channel });
       setDone(true);
     } catch (e) {
       setErr(formatApiErrorDetail(e.response?.data?.detail) || e.message);
@@ -27,7 +28,7 @@ export default function ForgotPassword() {
         {done ? (
           <>
             <p className="text-[15px] text-slate-600 mb-8">
-              Se este e-mail estiver cadastrado, enviaremos um link de redefinição em instantes.
+              Se a conta for elegível para o canal escolhido, enviaremos um link de redefinição.
             </p>
             <Link to="/login" className="dh-btn dh-btn-primary w-full" data-testid="back-to-login">Voltar ao login</Link>
           </>
@@ -38,6 +39,11 @@ export default function ForgotPassword() {
             </p>
             <input type="email" required value={email} onChange={(e) => setEmail(e.target.value)}
                    className="dh-input" placeholder="voce@dacot.com" data-testid="forgot-email" />
+            <label className="block text-[13px]">Canal de recuperação
+              <select className="dh-input mt-1" value={channel} onChange={(e) => setChannel(e.target.value)}>
+                <option value="email">E-mail</option><option value="whatsapp">WhatsApp</option>
+              </select>
+            </label>
             {err && <div className="dh-chip dh-chip-error">{err}</div>}
             <button type="submit" className="dh-btn dh-btn-primary w-full py-3 font-semibold" disabled={busy} data-testid="forgot-submit">
               {busy ? "Enviando…" : "Enviar link"}

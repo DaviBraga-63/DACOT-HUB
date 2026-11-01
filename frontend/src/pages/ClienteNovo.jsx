@@ -3,6 +3,8 @@ import { useNavigate, Link, Navigate } from "react-router-dom";
 import { api, formatApiErrorDetail } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
 import { ArrowLeft } from "lucide-react";
+import { formatBrazilianPhone } from "@/lib/phone";
+import { toast } from "sonner";
 
 const STATUS = [
   { v: "active", l: "Ativo" },
@@ -15,16 +17,15 @@ export default function ClienteNovo() {
   const nav = useNavigate();
   const { user } = useAuth();
   const [form, setForm] = useState({
-    name: "", owner_name: "", email: "", phone: "",
+    name: "", owner_name: "", email: "", phone: "", whatsapp_phone: "",
     status: "trial", address: "", notes: "",
-    create_hub_access: false, access_name: "", access_email: "",
+    create_hub_access: false, access_name: "", access_email: "", access_channel: "email",
   });
   const [err, setErr] = useState(null);
   const [busy, setBusy] = useState(false);
 
-  // Backend already rejects this for viewer (get_staff_write) — redirect
-  // away instead of showing a form that can only ever fail.
-  if (user?.role === "viewer") return <Navigate to="/clientes" replace />;
+  // O backend também exige super_admin para criar restaurantes.
+  if (user && user.role !== "super_admin") return <Navigate to="/clientes" replace />;
 
   const submit = async (e) => {
     e.preventDefault();
@@ -38,6 +39,7 @@ export default function ClienteNovo() {
         access_email: form.access_email.trim() || undefined,
       };
       const { data } = await api.post("/hub/tenants/onboard", payload);
+      if (data.invitation === "unavailable") toast.error("Cadastro concluído, mas o WhatsApp está indisponível. Solicite um novo link mais tarde.");
       nav(`/clientes/${data.id}`);
     } catch (e) {
       setErr(formatApiErrorDetail(e.response?.data?.detail) || e.message);
@@ -69,6 +71,11 @@ export default function ClienteNovo() {
           </Field>
           <Field label="Telefone">
             <input className="dh-input" value={form.phone} onChange={set("phone")} data-testid="input-phone" />
+          </Field>
+          <Field label="WhatsApp do responsável">
+            <input type="tel" className="dh-input" value={form.whatsapp_phone}
+                   onChange={(e) => setForm((f) => ({ ...f, whatsapp_phone: formatBrazilianPhone(e.target.value) }))}
+                   data-testid="input-whatsapp-phone" />
           </Field>
           <Field label="Status">
             <select className="dh-input" value={form.status} onChange={set("status")} data-testid="input-status">
@@ -106,6 +113,11 @@ export default function ClienteNovo() {
               </Field>
             </div>
           )}
+          {form.create_hub_access && <Field label="Enviar primeiro acesso por">
+            <select className="dh-input" value={form.access_channel} onChange={set("access_channel")}>
+              <option value="email">E-mail</option><option value="whatsapp">WhatsApp</option>
+            </select>
+          </Field>}
           {form.create_hub_access && <p className="text-[12px] text-[var(--dh-muted)]">O responsável receberá um link seguro para definir a própria senha.</p>}
         </section>
 
