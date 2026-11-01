@@ -3,6 +3,7 @@ import { createServer as httpsServer } from 'node:https';
 import { readFileSync } from 'node:fs';
 
 const adminPaths = new Set(['/internal/status', '/internal/pairing', '/internal/pairing/reset']);
+const serviceStatusPath = '/internal/integration-status';
 
 export function createListener({ gateway, administrative = false, tls, now = Date.now }) {
   let windowStart = now(), attempts = 0;
@@ -20,7 +21,11 @@ export function createListener({ gateway, administrative = false, tls, now = Dat
       if (!['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.socket.remoteAddress)) return reply(404);
       if (!adminPaths.has(req.url)) return reply(404);
       if ((req.url === '/internal/pairing/reset' ? 'POST' : 'GET') !== req.method) return reply(405);
-    } else if (!['/internal/auth-messages', '/internal/pairing/code'].includes(req.url) || req.method !== 'POST') return reply(404);
+    } else {
+      const isStatusRequest = req.url === serviceStatusPath && req.method === 'GET';
+      const isServicePost = ['/internal/auth-messages', '/internal/pairing/code'].includes(req.url) && req.method === 'POST';
+      if (!isStatusRequest && !isServicePost) return reply(404);
+    }
     const chunks = [];
     let length = 0, oversized = false;
     req.on('data', chunk => {
