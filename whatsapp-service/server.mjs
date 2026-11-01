@@ -1,45 +1,53 @@
-import { createServer } from 'node:https';
-import { readFileSync } from 'node:fs';
-import pino from 'pino';
-import makeWASocket, { BufferJSON, initAuthCreds, proto, DisconnectReason } from '@whiskeysockets/baileys';
 import { baileysState, openStore } from './store.mjs';
 import { createConnection } from './connection.mjs';
 import { createGateway } from './gateway.mjs';
+import { createListener, transportConfiguration } from './http-app.mjs';
 
 const env = process.env;
+const config = transportConfiguration(env);
 const key = Buffer.from(env.WHATSAPP_STORAGE_KEY || '', 'base64');
-if (!env.WHATSAPP_DB_PATH || !env.WHATSAPP_TLS_KEY_FILE || !env.WHATSAPP_TLS_CERT_FILE)
-  throw new Error('Missing required service configuration');
-const store = openStore(env.WHATSAPP_DB_PATH, key);
-const auth = baileysState(store, { BufferJSON, initAuthCreds, proto });
-const connection = createConnection({ makeSocket: makeWASocket, auth, logger: pino({ level: 'silent' }),
-                                      loggedOutCode: DisconnectReason.loggedOut });
-const gateway = createGateway({ secret: env.WHATSAPP_SERVICE_SECRET, adminSecret: env.WHATSAPP_ADMIN_SECRET, frontendOrigin: env.WHATSAPP_FRONTEND_ORIGIN,
-                                connection, store });
-const server = createServer({ key: readFileSync(env.WHATSAPP_TLS_KEY_FILE), cert: readFileSync(env.WHATSAPP_TLS_CERT_FILE) }, (req, res) => {
-  res.setHeader('Cache-Control', 'no-store');
-  res.setHeader('Content-Type', 'application/json');
-  const chunks = [];
-  let length = 0;
-  req.on('data', chunk => {
-    length += chunk.length;
-    if (length > 4096) req.destroy();
-    else chunks.push(chunk);
-  });
-  req.on('end', async () => {
-    try {
-      const rawBody = Buffer.concat(chunks);
-      const body = chunks.length ? JSON.parse(rawBody.toString('utf8')) : null;
-      const result = await gateway.handle({ method: req.method, path: req.url, authorization: req.headers.authorization,
-                                            id: req.headers['idempotency-key'], body, rawBody,
-                                            timestamp: req.headers['x-dacot-timestamp'], signature: req.headers['x-dacot-signature'] });
-      res.writeHead(result.status);
-      res.end(JSON.stringify(result.body || {}));
-    } catch { res.writeHead(400); res.end('{}'); }
-  });
-});
-server.listen(Number(env.PORT || 3002), env.HOST || '127.0.0.1');
-for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => {
+const store = openStore(env.WHATSAPP_DB_PATH || '/var/data/whatsapp.sqlite', key);
+let connection = { state: 'disabled', qr: null, stop() {}, resetPairing() { return false; } };
+const proxyConnection = {
+  get state() { return connection.state; }, get qr() { return connection.qr; },
+  send(...args) { return connection.send(...args); }, resetPairing() { return connection.resetPairing(); },
+};
+const gateway = createGateway({ secret: env.WHATSAPP_SERVICE_SECRET, adminSecret: env.WHATSAPP_ADMIN_SECRET,
+  frontendOrigin: env.WHATSAPP_FRONTEND_ORIGIN, connection: proxyConnection, store });
+const server = createListener({ gateway, tls: config.tls });
+// Administration is loopback-only, reachable through an authorized shell/SSH tunnel.
+const admin = createListener({ gateway, administrative: true });
+let stopping = false;
+async function shutdown(code = 0) {
+  if (stopping) return;
+  stopping = true;
+  clearInterval(cleanup);
   connection.stop();
-  server.close(() => { store.close(); process.exit(0); });
-});
+  const deadline = setTimeout(() => process.exit(1), 10000);
+  deadline.unref();
+  await Promise.all([server, admin].map(listener => new Promise(resolve => {
+    listener.close(resolve); listener.closeIdleConnections();
+  })));
+  store.close();
+  process.exit(code);
+}
+store.cleanup();
+const cleanup = setInterval(() => {
+  try { store.cleanup(); } catch { console.error('whatsapp_storage_failure'); void shutdown(1); }
+}, 3600000);
+cleanup.unref();
+for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => { void shutdown(); });
+try {
+  await Promise.all([[server, config.port, config.host], [admin, config.adminPort, '127.0.0.1']].map(
+    ([listener, port, host]) => new Promise((resolve, reject) => {
+      listener.once('error', reject); listener.listen(port, host, resolve);
+    })));
+  // Credentials and listeners must be valid before connecting to WhatsApp.
+  if (config.enabled) {
+    const { default: makeWASocket, BufferJSON, initAuthCreds, proto, DisconnectReason } = await import('@whiskeysockets/baileys');
+    const { default: pino } = await import('pino');
+    const auth = baileysState(store, { BufferJSON, initAuthCreds, proto });
+    connection = createConnection({ makeSocket: makeWASocket, auth, logger: pino({ level: 'silent' }),
+      loggedOutCode: DisconnectReason.loggedOut });
+  }
+} catch { console.error('whatsapp_startup_failure'); await shutdown(1); }

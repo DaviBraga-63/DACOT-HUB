@@ -485,6 +485,7 @@ def _recovery_client_ip(request: Request) -> str:
 
 
 def _client_ip(request: Request) -> str:
+    # Login and recovery must apply the same explicit proxy trust policy.
     return _recovery_client_ip(request)
 
 

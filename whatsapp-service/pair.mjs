@@ -1,5 +1,5 @@
 // Run in a private interactive terminal; do not redirect output to logs/files.
-import { request } from 'node:https';
+import { request } from 'node:http';
 import qrcode from 'qrcode-terminal';
 
 const base = process.env.WHATSAPP_SERVICE_URL;
@@ -7,7 +7,8 @@ const secret = process.env.WHATSAPP_ADMIN_SECRET;
 if (!base || !secret || secret.length < 32) throw new Error('Service URL and secret are required');
 const reset = process.argv.includes('--reset');
 const endpoint = new URL(reset ? '/internal/pairing/reset' : '/internal/pairing', base);
-if (endpoint.protocol !== 'https:') throw new Error('HTTPS is required');
+if (endpoint.protocol !== 'http:' || endpoint.hostname !== '127.0.0.1' || endpoint.username || endpoint.password)
+  throw new Error('Use the loopback administrative listener through a private terminal or SSH tunnel');
 const req = request(endpoint, { method: reset ? 'POST' : 'GET', headers: { Authorization: `Bearer ${secret}` }, timeout: 10000 }, res => {
   let text = '';
   res.setEncoding('utf8');
