@@ -4,7 +4,7 @@ import { api, formatApiErrorDetail } from "@/lib/api";
 import { formatBrazilianPhone } from "@/lib/phone";
 import { useAuth } from "@/context/AuthContext";
 import { isReleasedModule } from "@/lib/releasedModules";
-import { ArrowLeft, ExternalLink, Mail, Phone, MapPin, Calendar, Settings2, Trash2, Users as UsersIcon, UserPlus } from "lucide-react";
+import { ArrowLeft, ExternalLink, Mail, Phone, MapPin, Calendar, Settings2, Trash2, Users as UsersIcon, UserPlus, ShieldCheck } from "lucide-react";
 import StatusBadge from "@/components/StatusBadge";
 import { toast } from "sonner";
 import {
@@ -113,6 +113,9 @@ export default function ClienteDetalhes() {
                        value={tenant.created_at ? new Date(tenant.created_at).toLocaleString("pt-BR") : "—"} />
             </div>
             <WhatsAppContact tenant={tenant} users={users} canWrite={user?.role === "super_admin"} reload={load} />
+            {user?.role === "super_admin" && (
+              <PortalOwnerAssignment tenant={tenant} users={users} reload={load} />
+            )}
             {tenant.notes && (
               <div className="pt-5 mt-5 border-t border-slate-100">
                 <div className="text-[11px] uppercase tracking-wider font-semibold text-slate-400 mb-1.5">Observações</div>
@@ -146,6 +149,81 @@ export default function ClienteDetalhes() {
 
       {tab === "users" && <UsersTab tenantId={id} tenantName={tenant.name} users={users} reload={load} canWrite={canWrite} />}
     </div>
+  );
+}
+
+function PortalOwnerAssignment({ tenant, users, reload }) {
+  const [selectedUserId, setSelectedUserId] = useState("");
+  const [pendingUserId, setPendingUserId] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const activeUsers = users.filter((item) => item.status === "active");
+  const pendingUser = activeUsers.find((item) => item.id === pendingUserId);
+
+  const assignOwner = async () => {
+    if (!pendingUser) return;
+    setBusy(true);
+    setError("");
+    try {
+      await api.put(`/hub/tenants/${tenant.id}/portal-owner`, { user_id: pendingUser.id });
+      setSelectedUserId("");
+      setPendingUserId(null);
+      await reload();
+      toast.success("Proprietário do portal atualizado");
+    } catch (err) {
+      setError(formatApiErrorDetail(err.response?.data?.detail) || "Não foi possível atribuir o proprietário do portal.");
+      setPendingUserId(null);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className="pt-5 mt-5 border-t border-slate-100 space-y-3" data-testid="portal-owner-assignment">
+      <div className="flex items-start gap-3">
+        <span className="dh-icon-tile-neutral w-8 h-8 shrink-0"><ShieldCheck size={14} strokeWidth={1.8} /></span>
+        <div>
+          <h3 className="text-[13px] font-semibold text-slate-800">Proprietário do portal</h3>
+          <p className="text-[12px] text-slate-500 mt-0.5">
+            {tenant.portal_owner_configured
+              ? "Configurado. Uma nova atribuição substitui o vínculo atual após confirmação."
+              : "Não configurado. Restaurantes antigos exigem atribuição explícita para acessar o portal."}
+          </p>
+        </div>
+      </div>
+      <div className="flex flex-wrap gap-2 items-end">
+        <label className="flex-1 min-w-[220px] text-[12px] font-medium text-slate-700">
+          Usuário ativo do restaurante
+          <select value={selectedUserId} onChange={(event) => setSelectedUserId(event.target.value)}
+                  disabled={busy || activeUsers.length === 0} className="dh-input mt-1" data-testid="portal-owner-select">
+            <option value="">Selecione o proprietário legítimo</option>
+            {activeUsers.map((item) => <option key={item.id} value={item.id}>{item.name} — {item.email}</option>)}
+          </select>
+        </label>
+        <button type="button" className="dh-btn dh-btn-outline" disabled={!selectedUserId || busy}
+                onClick={() => { setError(""); setPendingUserId(selectedUserId); }} data-testid="portal-owner-assign">
+          Atribuir proprietário
+        </button>
+      </div>
+      {activeUsers.length === 0 && <p className="text-[12px] text-[var(--dh-muted)]">Nenhum usuário ativo está disponível para atribuição.</p>}
+      {error && <p role="alert" className="dh-chip dh-chip-error">{error}</p>}
+      <AlertDialog open={Boolean(pendingUserId)} onOpenChange={(open) => { if (!open && !busy) setPendingUserId(null); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{tenant.portal_owner_configured ? "Substituir proprietário do portal?" : "Atribuir proprietário do portal?"}</AlertDialogTitle>
+            <AlertDialogDescription>
+              {pendingUser ? `Confirme que ${pendingUser.name} é o proprietário legítimo de ${tenant.name}. Esta pessoa passará a ter acesso administrativo ao portal do restaurante.` : ""}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={busy}>Cancelar</AlertDialogCancel>
+            <button type="button" className="dh-btn dh-btn-primary" onClick={assignOwner} disabled={busy} data-testid="confirm-portal-owner">
+              {busy ? "Atribuindo…" : "Confirmar atribuição"}
+            </button>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </section>
   );
 }
 

@@ -60,14 +60,37 @@ def test_owner_assignment_is_tenant_scoped_and_audited(services):
 
 def test_only_dacot_super_admin_can_assign_portal_owner(services):
     tenant = services.restaurant()
-    email = f"viewer-{secrets.token_hex(6)}@example.com"
+    email = f"admin-{secrets.token_hex(6)}@example.com"
     created = services.call("POST", "/hub/users", json={
-        "name": "Leitura", "email": email, "role": "viewer", "password": services.password,
+        "name": "Admin operacional DACOT", "email": email, "role": "admin", "password": services.password,
     })
     created.raise_for_status()
-    viewer = services.login(email, services.password)
+    staff_admin = services.login(email, services.password)
     denied = services.call(
-        "PUT", f"/hub/tenants/{tenant['tid']}/portal-owner", headers=viewer,
+        "PUT", f"/hub/tenants/{tenant['tid']}/portal-owner", headers=staff_admin,
         json={"user_id": tenant["uid"]},
     )
     assert denied.status_code == 403
+    restaurant_denied = services.call(
+        "PUT", f"/hub/tenants/{tenant['tid']}/portal-owner", headers=tenant["headers"],
+        json={"user_id": tenant["uid"]},
+    )
+    assert restaurant_denied.status_code == 403
+    assert services.db.tenants.find_one({"_id": ObjectId(tenant["tid"])}).get("portal_owner_user_id") == tenant["uid"]
+
+
+def test_portal_owner_assignment_rejects_inactive_user_from_same_tenant(services):
+    tenant = services.restaurant()
+    email = f"inactive-{secrets.token_hex(6)}@example.com"
+    created = services.call("POST", f"/hub/tenants/{tenant['tid']}/users", json={
+        "name": "Inativo", "email": email, "role": "waiter", "password": services.password,
+    })
+    created.raise_for_status()
+    uid = created.json()["id"]
+    services.call("PATCH", f"/hub/tenants/{tenant['tid']}/users/{uid}", json={"status": "inactive"}).raise_for_status()
+
+    denied = services.call(
+        "PUT", f"/hub/tenants/{tenant['tid']}/portal-owner", json={"user_id": uid},
+    )
+    assert denied.status_code == 404
+    assert services.db.tenants.find_one({"_id": ObjectId(tenant["tid"])}).get("portal_owner_user_id") == tenant["uid"]
