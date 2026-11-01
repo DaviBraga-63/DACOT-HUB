@@ -294,22 +294,36 @@ def test_whatsapp_status_requires_super_admin_and_fails_closed_for_gateway_unava
     monkeypatch.setenv("WHATSAPP_PAIRING_SELF_SERVICE_ENABLED", "true")
     monkeypatch.setattr(hub, "_get_whatsapp_integration_status", AsyncMock(return_value=SimpleNamespace(
         connection_state="open", gateway_reachable=True, pairing_self_service_enabled=True,
+        connected_account_phone="+5511912345678",
     )))
     response = Response()
     result = asyncio.run(hub.whatsapp_integration_status(response, {"_id": "founder", "role": "super_admin"}))
-    assert result == {"connection_state": "open", "gateway_reachable": True, "pairing_self_service_enabled": True}
+    assert result == {
+        "connection_state": "open",
+        "gateway_reachable": True,
+        "pairing_self_service_enabled": True,
+        "connected_account_phone": "+5511912345678",
+    }
     assert response.headers["cache-control"] == "no-store"
     assert response.headers["referrer-policy"] == "no-referrer"
 
     monkeypatch.setattr(hub, "_get_whatsapp_integration_status", AsyncMock(return_value=SimpleNamespace(
         connection_state="disconnected", gateway_reachable=False, pairing_self_service_enabled=True,
+        connected_account_phone=None,
     )))
     unavailable = asyncio.run(hub.whatsapp_integration_status(Response(), {"_id": "founder", "role": "super_admin"}))
-    assert unavailable == {"connection_state": "unavailable", "gateway_reachable": False, "pairing_self_service_enabled": False}
+    assert unavailable == {
+        "connection_state": "unavailable",
+        "gateway_reachable": False,
+        "pairing_self_service_enabled": False,
+        "connected_account_phone": None,
+    }
 
     monkeypatch.setenv("WHATSAPP_PAIRING_SELF_SERVICE_ENABLED", "false")
     monkeypatch.setattr(hub, "_get_whatsapp_integration_status", AsyncMock(return_value=SimpleNamespace(
         connection_state="open", gateway_reachable=True, pairing_self_service_enabled=True,
+        connected_account_phone=None,
     )))
     blocked = asyncio.run(hub.whatsapp_integration_status(Response(), {"_id": "founder", "role": "super_admin"}))
     assert blocked["pairing_self_service_enabled"] is False
+    assert blocked["connected_account_phone"] is None

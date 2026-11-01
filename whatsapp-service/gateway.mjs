@@ -5,6 +5,14 @@ function sameSecret(candidate, expected) {
   return a.length === b.length && a.length >= 32 && timingSafeEqual(a, b);
 }
 
+export function connectedBrazilianAccountPhone(accountId) {
+  // Baileys identities may be phone JIDs or internal LIDs. Only return a
+  // validated Brazilian phone JID; never surface an internal identifier.
+  const match = /^(\d+)(?::\d+)?@s\.whatsapp\.net$/.exec(accountId || '');
+  if (!match || !/^55[1-9][0-9][0-9]{8,9}$/.test(match[1])) return null;
+  return '+' + match[1];
+}
+
 export function createGateway({ secret, adminSecret, pairingSecret, pairingEnabled = false,
   frontendOrigin, connection, store, now = Date.now }) {
   const origin = new URL(frontendOrigin);
@@ -47,6 +55,8 @@ export function createGateway({ secret, adminSecret, pairingSecret, pairingEnabl
         return { status: 200, body: {
           connection_state: connection.state,
           pairing_self_service_enabled: pairingEnabled,
+          connected_account_phone: connection.state === 'open'
+            ? connectedBrazilianAccountPhone(connection.accountId?.()) : null,
         } };
       }
       if (method === 'GET' && path === '/internal/pairing') {

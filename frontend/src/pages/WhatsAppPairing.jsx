@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { Navigate } from "react-router-dom";
-import { CheckCircle2, CircleOff, LoaderCircle, RefreshCw, ShieldCheck, TriangleAlert } from "lucide-react";
+import { CheckCircle2, CircleOff, LoaderCircle, Phone, RefreshCw, ShieldCheck, TriangleAlert } from "lucide-react";
 import { api, formatApiErrorDetail } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
 
@@ -18,6 +18,15 @@ const CONNECTION_STATES = {
 
 function connectionDetails(status) {
   return CONNECTION_STATES[status?.connection_state] || CONNECTION_STATES.unavailable;
+}
+
+function formatConnectedBrazilianPhone(phone) {
+  const digits = typeof phone === "string" ? phone.replace(/\D/g, "") : "";
+  if (!/^55[1-9]\d{9,10}$/.test(digits)) return "Número não disponível";
+  const ddd = digits.slice(2, 4);
+  const subscriber = digits.slice(4);
+  const splitAt = subscriber.length === 9 ? 5 : 4;
+  return "+55 (" + ddd + ") " + subscriber.slice(0, splitAt) + "-" + subscriber.slice(splitAt);
 }
 
 function StatusChip({ tone, children }) {
@@ -120,6 +129,19 @@ export default function WhatsAppPairing() {
           <div className="mt-4">
             <StatusChip tone={status?.gateway_reachable ? "success" : "neutral"}>{status?.gateway_reachable ? "Disponível" : "Indisponível"}</StatusChip>
           </div>
+        </article>
+
+        <article className="dh-card p-5 sm:col-span-2" data-testid="whatsapp-connected-account">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <p className="dh-kpi-label">Conta WhatsApp</p>
+              <h2 className="mt-2 text-lg font-semibold text-[var(--dh-text)]">{formatConnectedBrazilianPhone(status?.connected_account_phone)}</h2>
+            </div>
+            <Phone size={22} className="text-[var(--dh-accent)]" />
+          </div>
+          <p className="mt-3 text-sm text-[var(--dh-muted)]">
+            {status?.connected_account_phone ? "Número da conta ativa reconhecida pelo gateway." : "O gateway não informou um número confiável para a sessão atual."}
+          </p>
         </article>
       </div>
 

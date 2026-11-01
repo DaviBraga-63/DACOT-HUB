@@ -12,6 +12,13 @@ export function createConnection({ makeSocket, auth, logger, loggedOutCode, sche
       if (!socket || !['connecting', 'pairing'].includes(connection.state)) throw new Error('Pairing unavailable');
       return socket.requestPairingCode(number);
     },
+    accountId() {
+      // The connected identity comes from Baileys credentials/socket state. Keep
+      // it internal; the gateway sanitizes it before any status response.
+      if (connection.state !== 'open') return null;
+      return typeof socket?.user?.id === 'string' ? socket.user.id
+        : (typeof auth.state.creds.me?.id === 'string' ? auth.state.creds.me.id : null);
+    },
     resetPairing() {
       if (connection.state !== 'logged_out' || stopped) return false;
       auth.reset();
