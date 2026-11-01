@@ -262,6 +262,13 @@ async def get_staff_write(user: dict = Depends(get_staff_user)) -> dict:
     return user
 
 
+async def get_super_admin(user: dict = Depends(get_staff_user)) -> dict:
+    """Operations reserved for DACOT super-administrators."""
+    if user.get("role") != "super_admin":
+        raise HTTPException(403, "Permissão restrita a super administradores")
+    return user
+
+
 async def get_restaurant_user(user: dict = Depends(get_current_user)) -> dict:
     """Restaurant client — tenant_id always comes from the authenticated identity.
     Also gates on the tenant being operational: a suspended/inactive tenant loses
