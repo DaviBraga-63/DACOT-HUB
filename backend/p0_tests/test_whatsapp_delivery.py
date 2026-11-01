@@ -4,6 +4,7 @@ from pathlib import Path
 import sys
 
 import httpx
+import pytest
 
 
 backend = Path(__file__).resolve().parents[1]
@@ -105,3 +106,97 @@ def test_tls_failure_is_unavailable_without_leaking_credentials(caplog):
     assert asyncio.run(provider.send(number="11912345678", token="synthetic-token",
                                     purpose="recovery", request_id="r")) == module.DeliveryResult.UNAVAILABLE
     assert not caplog.text
+
+
+@pytest.mark.parametrize("purpose", ["first_access", "recovery"])
+@pytest.mark.parametrize("origin", ["http://dacot-whatsapp:3002", "http://dacot-whatsapp:3002/"])
+def test_explicit_private_transport_keeps_authentication_and_https_links(origin, purpose):
+    import hashlib
+    import hmac
+    import json
+    client, options = FakeClient(), {}
+    def factory(**kwargs):
+        options.update(kwargs)
+        return client
+    provider = module.WhatsAppDeliveryProvider(
+        service_url=origin, service_transport="speedtrail-private-http", service_key="x" * 32,
+        frontend_url="https://hub.example.test", client_factory=factory)
+    assert asyncio.run(provider.send(number="11912345678", token="synthetic-token", purpose=purpose,
+                                    request_id="private-request")) == module.DeliveryResult.ACCEPTED
+    url, headers, body = client.calls[0]
+    assert url == "http://dacot-whatsapp:3002/internal/auth-messages"
+    assert headers["Authorization"] == "Bearer " + "x" * 32
+    assert headers["Idempotency-Key"] == "private-request"
+    raw = json.dumps(body, separators=(",", ":"), ensure_ascii=True).encode()
+    assert headers["X-DACOT-Signature"] == hmac.new(
+        b"x" * 32, headers["X-DACOT-Timestamp"].encode() + b"." + raw, hashlib.sha256).hexdigest()
+    assert body["link"].startswith("https://hub.example.test/reset-password?token=")
+    assert options == {"timeout": 10.0, "follow_redirects": False, "trust_env": False}
+
+
+@pytest.mark.parametrize("origin", [
+    "http://dacot-whatsapp", "http://dacot-whatsapp:80", "http://dacot-whatsapp:3003",
+    "http://dacot-whatsapp:03002", "http://dacot-whatsapp:3002//",
+    "http://dacot-whatsapp:3002/internal/auth-messages", "http://dacot-whatsapp:3002?x=1",
+    "http://dacot-whatsapp:3002#fragment", "http://user:pass@dacot-whatsapp:3002",
+    "http://dacot-whatsapp.evil.example:3002", "http://dacot-whatsapp.:3002",
+    "http://DACOT-WHATSAPP:3002", "http://dacot-principal:8000",
+    "http://dacot-whatsapp.speedtrail.com.br:3002", "http://public.example.test:3002",
+    "http://127.0.0.1:3002", "http://169.254.169.254:3002", "http://[::1]:3002",
+    "http://dacot-whatsapp:3002\n", "http://dacot-whatsapp:3002\\@evil.example",
+])
+def test_private_transport_rejects_every_other_http_destination_without_request(origin):
+    client = FakeClient()
+    provider = module.WhatsAppDeliveryProvider(service_url=origin, service_transport="speedtrail-private-http",
+        service_key="x" * 32, frontend_url="https://hub.example.test", client_factory=lambda **_: client)
+    assert asyncio.run(provider.send(number="11912345678", token="synthetic-token", purpose="recovery",
+                                    request_id="r")) == module.DeliveryResult.UNAVAILABLE
+    assert client.calls == []
+
+
+@pytest.mark.parametrize("mode", ["https", "", "http", "private-http", "SPEEDTRAIL-PRIVATE-HTTP"])
+def test_private_http_requires_exact_explicit_configuration(mode):
+    client = FakeClient()
+    provider = module.WhatsAppDeliveryProvider(service_url="http://dacot-whatsapp:3002", service_transport=mode,
+        service_key="x" * 32, frontend_url="https://hub.example.test", client_factory=lambda **_: client)
+    assert asyncio.run(provider.send(number="11912345678", token="synthetic-token", purpose="recovery",
+                                    request_id="r")) == module.DeliveryResult.UNAVAILABLE
+    assert client.calls == []
+
+
+@pytest.mark.parametrize("mode", ["https", "speedtrail-private-http"])
+def test_public_https_stays_valid_in_both_supported_modes(mode):
+    client = FakeClient()
+    provider = module.WhatsAppDeliveryProvider(service_url="https://sender.example.test", service_transport=mode,
+        service_key="x" * 32, frontend_url="https://hub.example.test", client_factory=lambda **_: client)
+    assert asyncio.run(provider.send(number="11912345678", token="synthetic-token", purpose="recovery",
+                                    request_id="r")) == module.DeliveryResult.ACCEPTED
+
+
+def test_actual_httpx_private_client_never_follows_redirect_or_environment_proxy(monkeypatch):
+    monkeypatch.setenv("HTTP_PROXY", "http://proxy.example.test:8080")
+    monkeypatch.setenv("HTTPS_PROXY", "http://proxy.example.test:8080")
+    calls = []
+    def handler(request):
+        calls.append(str(request.url))
+        return httpx.Response(302, headers={"Location": "http://evil.example.test/collect"})
+    def factory(**options):
+        assert options["trust_env"] is False
+        assert options["follow_redirects"] is False
+        return httpx.AsyncClient(transport=httpx.MockTransport(handler), **options)
+    provider = module.WhatsAppDeliveryProvider(service_url="http://dacot-whatsapp:3002",
+        service_transport="speedtrail-private-http", service_key="x" * 32,
+        frontend_url="https://hub.example.test", client_factory=factory)
+    assert asyncio.run(provider.send(number="11912345678", token="synthetic-token", purpose="recovery",
+                                    request_id="r")) == module.DeliveryResult.UNAVAILABLE
+    assert calls == ["http://dacot-whatsapp:3002/internal/auth-messages"]
+
+
+def test_private_transport_never_allows_http_frontend_links():
+    client = FakeClient()
+    provider = module.WhatsAppDeliveryProvider(service_url="http://dacot-whatsapp:3002",
+        service_transport="speedtrail-private-http", service_key="x" * 32,
+        frontend_url="http://dacot-frontend:3000", client_factory=lambda **_: client)
+    assert asyncio.run(provider.send(number="11912345678", token="synthetic-token", purpose="recovery",
+                                    request_id="r")) == module.DeliveryResult.UNAVAILABLE
+    assert client.calls == []

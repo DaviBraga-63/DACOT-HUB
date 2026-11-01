@@ -32,23 +32,43 @@ def _https_origin(value: str) -> bool:
         return False
 
 
+def _service_origin(value: str, transport: str) -> bool:
+    """Only the explicitly selected SpeedTrail service may use plaintext HTTP.
+
+    Compare the complete configured origin, not a suffix, IP range or forwarded
+    header. No user-controlled destination can opt into this transport.
+    """
+    if transport not in {"https", "speedtrail-private-http"}:
+        return False
+    if _https_origin(value):
+        return True
+    return transport == "speedtrail-private-http" and value in {
+        "http://dacot-whatsapp:3002", "http://dacot-whatsapp:3002/",
+    }
+
+
 class WhatsAppDeliveryProvider:
-    def __init__(self, *, service_url: str, service_key: str, frontend_url: str, client_factory=None, ca_file=None):
+    def __init__(self, *, service_url: str, service_key: str, frontend_url: str, client_factory=None,
+                 ca_file=None, service_transport: str = "https"):
+        self.configured_service_url = service_url
         self.service_url = service_url.rstrip("/")
+        self.service_transport = service_transport
         self.service_key = service_key
         self.frontend_url = frontend_url.rstrip("/")
         self.client_factory = client_factory or httpx.AsyncClient
         self.ca_file = ca_file
 
     async def send(self, *, number: str, token: str, purpose: str, request_id: str) -> DeliveryResult:
-        if (not _https_origin(self.service_url) or not _https_origin(self.frontend_url)
+        if (not _service_origin(self.configured_service_url, self.service_transport) or not _https_origin(self.frontend_url)
                 or len(self.service_key) < 32 or purpose not in {"first_access", "recovery"}
                 or not request_id or len(request_id) > 128 or not token):
             return DeliveryResult.UNAVAILABLE
         try:
             destination = normalize_brazilian_number(number)
             link = f"{self.frontend_url}/reset-password?token={quote(token, safe='')}"
-            options = {"timeout": 10.0, "follow_redirects": False}
+            # Never leak internal credentials/body through HTTP(S)_PROXY or
+            # proxy auto-configuration inherited from the execution environment.
+            options = {"timeout": 10.0, "follow_redirects": False, "trust_env": False}
             if self.ca_file:
                 options["verify"] = self.ca_file
             async with self.client_factory(**options) as client:
