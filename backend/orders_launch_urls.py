@@ -1,8 +1,11 @@
 """Safe, one-time-compatible launch URL migration for the Pedidos module."""
 
 ORDERS_LEGACY_LAUNCH_ORIGIN = "https://pedidos.dacot.app"
-ORDERS_LAUNCH_ORIGIN = "https://dacot-pedidos-frontend.onrender.com"
+# Default only for newly seeded module records. Existing records are deliberately
+# not rewritten here; a production migration requires its own explicit approval.
+ORDERS_LAUNCH_ORIGIN = "https://pedidos.dacot.com.br"
 ORDERS_LAUNCH_URL_TEMPLATE = f"{ORDERS_LAUNCH_ORIGIN}/{{slug}}"
+_LEGACY_MIGRATION_TARGET_ORIGIN = "https://dacot-pedidos-frontend.onrender.com"
 _LEGACY_ORDERS_LAUNCH_URL_REGEX = r"^https://pedidos\.dacot\.app(?:/|$)"
 
 
@@ -30,7 +33,7 @@ async def migrate_legacy_orders_launch_urls(db) -> None:
     )
     async for override in legacy_overrides:
         legacy_url = override["launch_url"]
-        migrated_url = ORDERS_LAUNCH_ORIGIN + legacy_url[len(ORDERS_LEGACY_LAUNCH_ORIGIN):]
+        migrated_url = _LEGACY_MIGRATION_TARGET_ORIGIN + legacy_url[len(ORDERS_LEGACY_LAUNCH_ORIGIN):]
         await db.tenant_modules.update_one(
             {"_id": override["_id"], "launch_url": legacy_url},
             {"$set": {"launch_url": migrated_url}},
