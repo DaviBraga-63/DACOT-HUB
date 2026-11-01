@@ -1,5 +1,9 @@
-export function createConnection({ makeSocket, auth, logger, loggedOutCode, schedule = setTimeout }) {
+export function createConnection({ makeSocket, auth, logger, loggedOutCode, schedule = setTimeout, onStateChange }) {
   let socket, stopped = false, delay = 1000, reconnectScheduled = false;
+  const setState = state => {
+    connection.state = state;
+    try { onStateChange?.(state); } catch { /* State observers must not affect the session. */ }
+  };
   const connection = {
     state: 'connecting', qr: null,
     async send(number, text) {
@@ -25,25 +29,26 @@ export function createConnection({ makeSocket, auth, logger, loggedOutCode, sche
       start();
       return true;
     },
-    stop() { stopped = true; connection.state = 'stopped'; connection.qr = null; if (socket) socket.end(); },
+    stop() { stopped = true; setState('stopped'); connection.qr = null; if (socket) socket.end(); },
   };
   function start() {
     if (stopped) return;
     reconnectScheduled = false;
-    connection.state = 'connecting';
+    setState('connecting');
     socket = makeSocket({ auth: auth.state, logger, syncFullHistory: false, markOnlineOnConnect: false });
     socket.ev.on('creds.update', () => {
+      if (stopped) return;
       try { auth.saveCreds(); }
-      catch { stopped = true; connection.state = 'error'; connection.qr = null; socket.end(); }
+      catch { stopped = true; setState('error'); connection.qr = null; socket.end(); }
     });
     socket.ev.on('connection.update', ({ connection: status, lastDisconnect, qr }) => {
       if (stopped) return;
-      if (qr) { connection.qr = qr; connection.state = 'pairing'; }
-      if (status === 'open') { connection.state = 'open'; connection.qr = null; delay = 1000; }
+      if (qr) { connection.qr = qr; setState('pairing'); }
+      if (status === 'open') { setState('open'); connection.qr = null; delay = 1000; }
       if (status === 'close') {
         connection.qr = null;
-        if (lastDisconnect?.error?.output?.statusCode === loggedOutCode) { connection.state = 'logged_out'; return; }
-        connection.state = 'disconnected';
+        if (lastDisconnect?.error?.output?.statusCode === loggedOutCode) { setState('logged_out'); return; }
+        setState('disconnected');
         if (!reconnectScheduled) { reconnectScheduled = true; schedule(start, delay); delay = Math.min(delay * 2, 30000); }
       }
     });

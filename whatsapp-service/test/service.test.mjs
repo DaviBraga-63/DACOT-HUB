@@ -110,6 +110,7 @@ test('integration status is authenticated, replay-safe, and exposes only sanitiz
       body: {
         connection_state: 'open',
         pairing_self_service_enabled: false,
+        account_switch_available: false,
         connected_account_phone: '+5511912345678',
       },
     });
@@ -120,9 +121,10 @@ test('integration status is authenticated, replay-safe, and exposes only sanitiz
       assert.deepEqual(response.body, {
         connection_state: state,
         pairing_self_service_enabled: false,
+        account_switch_available: false,
         connected_account_phone: null,
       });
-      assert.equal(Object.keys(response.body).length, 3);
+      assert.equal(Object.keys(response.body).length, 4);
     }
     store.close();
   } finally { removeTestDirectory(dir); }
@@ -156,6 +158,47 @@ test('pairing-code delegation is opt-in, separately signed, replay-safe, and nev
   } finally { removeTestDirectory(dir); }
 });
 
+test('account switch controls require their own HMAC secret, are replay-safe, and expose only candidate state/code', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dacot-wa-'));
+  try {
+    const store = openStore(join(dir, 'state.sqlite'), randomBytes(32));
+    const secret = 'x'.repeat(32), adminSecret = 'y'.repeat(32), pairingSecret = 'z'.repeat(32), switchSecret = 'w'.repeat(32);
+    const calls = [];
+    const controller = {
+      available: () => true,
+      prepare: ({ operationId, requestedPhone }) => { calls.push(['prepare', operationId, requestedPhone]); return { state: 'connecting', expiresAt: 12345 }; },
+      status: () => ({ state: 'ready', expiresAt: 12345 }),
+      requestPairingCode: async () => 'ABCD1234', cancel: () => true, promote: () => ({ status: 'promoted' }),
+    };
+    const gateway = createGateway({ secret, adminSecret, pairingSecret, switchSecret, switchController: controller,
+      frontendOrigin: 'https://hub.example.test', connection: { state: 'open' }, store });
+    const operationId = 'a'.repeat(48);
+    const request = (action, id, body = {}) => {
+      const path = `/internal/account-switch/${operationId}/${action}`;
+      const method = action === 'status' ? 'GET' : 'POST';
+      const rawBody = method === 'GET' ? Buffer.alloc(0) : Buffer.from(JSON.stringify(body));
+      const timestamp = String(Math.floor(Date.now() / 1000));
+      const digest = createHash('sha256').update(rawBody).digest('hex');
+      const signed = `${method}\n${path}\n${timestamp}\n${id}\n${digest}`;
+      return { method, path, id, body: method === 'GET' ? null : body, rawBody, timestamp,
+        authorization: `Bearer ${switchSecret}`, signature: createHmac('sha256', switchSecret).update(signed).digest('hex') };
+    };
+    const prepared = request('prepare', 'switch-request-one-1234', { phone: '+5511912345678' });
+    assert.equal((await gateway.handle({ ...prepared, authorization: `Bearer ${secret}` })).status, 401);
+    assert.equal((await gateway.handle({ ...prepared, signature: '0'.repeat(64) })).status, 401);
+    assert.deepEqual(await gateway.handle(prepared), { status: 202, body: { state: 'connecting', expires_at: 12345 } });
+    assert.equal((await gateway.handle(prepared)).status, 409);
+    assert.deepEqual(calls, [['prepare', operationId, '+5511912345678']]);
+    const status = await gateway.handle(request('status', 'switch-request-two-1234'));
+    assert.deepEqual(status, { status: 200, body: { state: 'ready', expires_at: 12345 } });
+    const code = await gateway.handle(request('code', 'switch-request-three-12'));
+    assert.deepEqual(code, { status: 202, body: { code: 'ABCD1234', state: 'ready', expires_at: 12345 } });
+    const promote = await gateway.handle(request('promote', 'switch-request-four-123', { confirm: true }));
+    assert.deepEqual(promote, { status: 200, body: { state: 'promoted' } });
+    store.close();
+  } finally { removeTestDirectory(dir); }
+});
+
 test('storage failure stops the connection without reconnecting', () => {
   const events = new EventEmitter(), scheduled = [];
   const socket = { ev: events, end() { events.emit('connection.update', { connection: 'close' }); } };
@@ -184,8 +227,8 @@ test('retention preserves auth and replay records beyond all valid link lifetime
 test('connection enters pairing, opens, reconnects, and stops on logout', async () => {
   const sockets = [], scheduled = [];
   const makeSocket = () => { const ev = new EventEmitter(); const socket = { ev, end() {}, sendMessage: async () => {} }; sockets.push(socket); return socket; };
-  let resets = 0;
-  const connection = createConnection({ makeSocket, auth: { state: {}, saveCreds() {}, reset() { resets++; } }, logger: {}, loggedOutCode: 401,
+  let resets = 0, saves = 0;
+  const connection = createConnection({ makeSocket, auth: { state: {}, saveCreds() { saves++; }, reset() { resets++; } }, logger: {}, loggedOutCode: 401,
     schedule: (fn) => scheduled.push(fn) });
   sockets[0].ev.emit('connection.update', { qr: 'synthetic-qr' });
   assert.equal(connection.state, 'pairing');
@@ -204,4 +247,6 @@ test('connection enters pairing, opens, reconnects, and stops on logout', async 
   assert.equal(sockets.length, 3);
   assert.equal(connection.resetPairing(), false);
   connection.stop();
+  sockets[2].ev.emit('creds.update');
+  assert.equal(saves, 0, 'a stopped candidate or active connection cannot rewrite cleared credentials');
 });

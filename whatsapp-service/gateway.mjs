@@ -13,8 +13,8 @@ export function connectedBrazilianAccountPhone(accountId) {
   return '+' + match[1];
 }
 
-export function createGateway({ secret, adminSecret, pairingSecret, pairingEnabled = false,
-  frontendOrigin, connection, store, now = Date.now }) {
+export function createGateway({ secret, adminSecret, pairingSecret, switchSecret = '', pairingEnabled = false,
+  frontendOrigin, connection, store, switchController = null, now = Date.now }) {
   const origin = new URL(frontendOrigin);
   if (origin.protocol !== 'https:' || origin.origin !== frontendOrigin.replace(/\/$/, '') || origin.username || origin.password)
     throw new Error('Invalid frontend origin');
@@ -22,6 +22,9 @@ export function createGateway({ secret, adminSecret, pairingSecret, pairingEnabl
   if (Buffer.byteLength(adminSecret || '') < 32 || sameSecret(secret, adminSecret)) throw new Error('Invalid administrative secret');
   if (pairingEnabled && (Buffer.byteLength(pairingSecret || '') < 32 || sameSecret(secret, pairingSecret) || sameSecret(adminSecret, pairingSecret)))
     throw new Error('Invalid pairing secret');
+  if (switchSecret && (Buffer.byteLength(switchSecret) < 32 || sameSecret(secret, switchSecret)
+      || sameSecret(adminSecret, switchSecret) || sameSecret(pairingSecret, switchSecret)))
+    throw new Error('Invalid account-switch secret');
   const recentStatusRequests = new Map();
 
   function reserveStatusRequest(id, timestamp) {
@@ -35,11 +38,51 @@ export function createGateway({ secret, adminSecret, pairingSecret, pairingEnabl
     return true;
   }
 
+  function validSwitchSignature({ method, path, id, rawBody, timestamp, signature, authorization }) {
+    if (!switchSecret || !switchController?.available?.() || !authorization?.startsWith('Bearer ') || !sameSecret(authorization.slice(7), switchSecret)
+        || !/^[A-Za-z0-9_-]{16,128}$/.test(id || '') || !/^\d{10}$/.test(timestamp || '')
+        || Math.abs(Math.floor(now() / 1000) - Number(timestamp)) > 120 || !/^[a-f0-9]{64}$/.test(signature || '')
+        || !Buffer.isBuffer(rawBody)) return false;
+    const digest = createHash('sha256').update(rawBody).digest('hex');
+    const signed = `${method}\n${path}\n${timestamp}\n${id}\n${digest}`;
+    return sameSecret(signature, createHmac('sha256', switchSecret).update(signed).digest('hex'));
+  }
+
   return {
     async handle({ method, path, authorization, id, body, rawBody, timestamp, signature }) {
       const administrative = ['/internal/status', '/internal/pairing', '/internal/pairing/reset'].includes(path);
       const pairing = path === '/internal/pairing/code';
       const integrationStatus = path === '/internal/integration-status';
+      const switchMatch = /^\/internal\/account-switch\/([a-f0-9]{32,64})\/(prepare|status|code|promote|cancel)$/.exec(path || '');
+      if (switchMatch) {
+        if (!validSwitchSignature({ method, path, id, rawBody, timestamp, signature, authorization })) return { status: 401 };
+        if (!store.reserveSwitchRequest(id)) return { status: 409 };
+        const [, operationId, action] = switchMatch;
+        if ((action === 'status' && method !== 'GET') || (action !== 'status' && method !== 'POST')) return { status: 405 };
+        if (action === 'prepare') {
+          if (!body || Object.keys(body).length !== 1 || typeof body.phone !== 'string') return { status: 400 };
+          const candidate = switchController.prepare({ operationId, requestedPhone: body.phone });
+          return candidate ? { status: 202, body: { state: candidate.state, expires_at: candidate.expiresAt } } : { status: 409 };
+        }
+        if (action === 'status') {
+          const candidate = switchController.status(operationId);
+          return candidate ? { status: 200, body: { state: candidate.state, expires_at: candidate.expiresAt } } : { status: 404 };
+        }
+        if (action === 'code') {
+          const code = await switchController.requestPairingCode(operationId);
+          // The HUB validates state as well as the code, so the pairing-code
+          // response must remain self-describing rather than trusting a stale
+          // response from an otherwise valid transport.
+          const candidate = switchController.status(operationId);
+          return code && candidate ? { status: 202, body: { code, state: candidate.state, expires_at: candidate.expiresAt } } : { status: 409 };
+        }
+        if (action === 'cancel') return switchController.cancel(operationId) ? { status: 202, body: { state: 'cancelled' } } : { status: 409 };
+        if (!body || Object.keys(body).length !== 1 || body.confirm !== true) return { status: 400 };
+        const result = switchController.promote(operationId);
+        return result.status === 'promoted' ? { status: 200, body: { state: 'promoted' } }
+          : result.status === 'recovery_required' ? { status: 503, body: { state: 'recovery_required' } }
+            : { status: result.status === 'busy' ? 409 : 400, body: { state: result.status } };
+      }
       if (pairing && !pairingEnabled) return { status: 404 };
       const expected = administrative ? adminSecret : (pairing ? pairingSecret : secret);
       if (!authorization?.startsWith('Bearer ') || !sameSecret(authorization.slice(7), expected)) return { status: 401 };
@@ -55,6 +98,7 @@ export function createGateway({ secret, adminSecret, pairingSecret, pairingEnabl
         return { status: 200, body: {
           connection_state: connection.state,
           pairing_self_service_enabled: pairingEnabled,
+          account_switch_available: Boolean(switchSecret && switchController?.available?.()),
           connected_account_phone: connection.state === 'open'
             ? connectedBrazilianAccountPhone(connection.accountId?.()) : null,
         } };

@@ -348,3 +348,52 @@ def test_integration_status_timeout_is_unavailable_without_logging_credentials(c
     assert result.gateway_reachable is False
     assert result.connection_state == "unavailable"
     assert "s" * 32 not in caplog.text
+
+
+def test_account_switch_provider_uses_its_own_hmac_contract_and_returns_only_safe_fields(monkeypatch):
+    import hashlib
+    import hmac
+
+    class SwitchClient:
+        def __init__(self): self.calls = []
+        async def __aenter__(self): return self
+        async def __aexit__(self, *_): return False
+        async def request(self, method, url, *, content, headers):
+            self.calls.append((method, url, content, headers))
+            return httpx.Response(202, json={"state": "awaiting_pairing", "code": "ABCD-1234", "expires_at": 1_700_000_600})
+
+    client, options = SwitchClient(), {}
+    def factory(**kwargs):
+        options.update(kwargs)
+        return client
+    provider = module.WhatsAppAccountSwitchProvider(
+        service_url="http://dacot-whatsapp:3002", service_transport="speedtrail-private-http",
+        service_key="w" * 32, client_factory=factory,
+    )
+    monkeypatch.setattr(module.time, "time", lambda: 1_700_000_000)
+    operation_id, request_id = "a" * 48, "switch-request-unique-123"
+    result = asyncio.run(provider.code(operation_id=operation_id, request_id=request_id))
+    assert result.available is True
+    assert result.state == "awaiting_pairing"
+    assert result.code == "ABCD-1234"
+    method, url, body, headers = client.calls[0]
+    assert (method, url, body) == ("POST", f"http://dacot-whatsapp:3002/internal/account-switch/{operation_id}/code", b"{}")
+    path = f"/internal/account-switch/{operation_id}/code"
+    signed = f"POST\n{path}\n1700000000\n{request_id}\n{hashlib.sha256(body).hexdigest()}".encode()
+    assert headers["Authorization"] == "Bearer " + "w" * 32
+    assert headers["X-DACOT-Signature"] == hmac.new(b"w" * 32, signed, hashlib.sha256).hexdigest()
+    assert options == {"timeout": 5.0, "follow_redirects": False, "trust_env": False}
+
+
+@pytest.mark.parametrize("origin", ["http://gateway.example.test:3002", "http://dacot-whatsapp:3003"])
+def test_account_switch_provider_rejects_untrusted_private_destinations(origin):
+    called = False
+    def factory(**_):
+        nonlocal called
+        called = True
+        raise AssertionError("untrusted destination must not be contacted")
+    provider = module.WhatsAppAccountSwitchProvider(service_url=origin, service_transport="speedtrail-private-http",
+        service_key="w" * 32, client_factory=factory)
+    result = asyncio.run(provider.status(operation_id="a" * 48, request_id="switch-request-unique-123"))
+    assert result.available is False
+    assert called is False
