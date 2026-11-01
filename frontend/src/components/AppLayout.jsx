@@ -21,12 +21,12 @@ function Brand({ compact }) {
   return (
     <div className="flex items-center gap-3">
       <img
-        src="/dacot-logo.png"
+        src="/dacot-symbol-orange-v1.png"
         alt="DACOT"
         className={`dh-brand-logo ${compact ? "dh-brand-logo-sm" : ""}`}
       />
       <div className={`flex items-center ${compact ? "" : "hidden sm:flex"}`}>
-        <div className="dh-font-display font-bold text-[15px] tracking-tight text-[var(--dh-text)]">DACOT</div>
+        <div className="dh-font-display font-bold text-[17px] tracking-tight text-[var(--dh-text)]">DACOT</div>
       </div>
     </div>
   );
