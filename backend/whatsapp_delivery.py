@@ -175,7 +175,7 @@ class WhatsAppStatusProvider:
             return IntegrationStatusResult()
         try:
             timestamp = str(int(time.time()))
-            signed = f"GET\\n/internal/integration-status\\n{timestamp}\\n{request_id}".encode()
+            signed = f"GET\n/internal/integration-status\n{timestamp}\n{request_id}".encode()
             signature = hmac.new(self.service_key.encode(), signed, hashlib.sha256).hexdigest()
             options = {"timeout": 3.0, "follow_redirects": False, "trust_env": False}
             if self.ca_file:

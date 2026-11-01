@@ -239,7 +239,7 @@ def test_pairing_code_fails_closed_for_bad_origin_or_bad_gateway_response():
     assert asyncio.run(provider.request_code(number="11912345678", request_id="r")).code is None
 
 
-def test_integration_status_uses_signed_private_request_and_exposes_only_safe_fields():
+def test_integration_status_uses_gateway_hmac_contract_and_exposes_only_safe_fields(monkeypatch):
     import hashlib
     import hmac
 
@@ -259,14 +259,22 @@ def test_integration_status_uses_signed_private_request_and_exposes_only_safe_fi
         service_url="http://dacot-whatsapp:3002", service_transport="speedtrail-private-http",
         service_key="s" * 32, client_factory=factory,
     )
+    monkeypatch.setattr(module.time, "time", lambda: 1_700_000_000)
     result = asyncio.run(provider.get_status(request_id="status-request-unique-123"))
     assert result.gateway_reachable is True
     assert result.connection_state == "open"
     assert result.pairing_self_service_enabled is False
     url, headers = client.calls[0]
     assert url == "http://dacot-whatsapp:3002/internal/integration-status"
-    signed = f"GET\\n/internal/integration-status\\n{headers['X-DACOT-Timestamp']}\\n{headers['Idempotency-Key']}".encode()
-    assert headers["X-DACOT-Signature"] == hmac.new(b"s" * 32, signed, hashlib.sha256).hexdigest()
+    # Independent wire-contract vector. The gateway signs real LF bytes between
+    # method, path, timestamp and nonce; never the two-character sequence "\\n".
+    assert headers["X-DACOT-Timestamp"] == "1700000000"
+    assert headers["X-DACOT-Signature"] == "ce538a81d2cd226d9d0b5298fc84258920e5bb5f19e0bb7a2d66555d354a8754"
+    assert headers["X-DACOT-Signature"] == hmac.new(
+        b"s" * 32,
+        b"GET\n/internal/integration-status\n1700000000\nstatus-request-unique-123",
+        hashlib.sha256,
+    ).hexdigest()
     assert options == {"timeout": 3.0, "follow_redirects": False, "trust_env": False}
 
 
