@@ -128,7 +128,7 @@ def _rate_key(services, scope, value):
 def test_direct_login_is_default_off(services):
     identity = services.restaurant()
     user = _restaurant_user(services, identity)
-    response = _direct_login(services, user["email"], services.password, module_key=services.key)
+    response = _direct_login(services, user["email"], identity["password"], module_key=services.key)
     assert response.status_code == 404
 
 
@@ -136,7 +136,7 @@ def test_direct_login_returns_only_authoritative_orders_contract(services):
     identity = services.restaurant()
     user = _restaurant_user(services, identity)
     with _direct_login_enabled(services):
-        response = _direct_login(services, user["email"], services.password, module_key=services.key)
+        response = _direct_login(services, user["email"], identity["password"], module_key=services.key)
 
     assert response.status_code == 200, response.text
     assert response.headers["cache-control"] == "no-store"
@@ -165,7 +165,7 @@ def test_direct_login_rejects_invalid_credentials_and_strict_body(services):
             services, f"missing-{secrets.token_hex(8)}@example.com", "wrong-password", module_key=services.key,
         )
         extra_field = _direct_login(
-            services, user["email"], services.password, module_key=services.key,
+            services, user["email"], identity["password"], module_key=services.key,
             extra={"restaurant_id": identity["tid"]},
         )
 
@@ -178,8 +178,8 @@ def test_direct_login_requires_valid_module_key(services):
     identity = services.restaurant()
     user = _restaurant_user(services, identity)
     with _direct_login_enabled(services):
-        missing = _direct_login(services, user["email"], services.password)
-        invalid = _direct_login(services, user["email"], services.password, module_key="not-the-module-key")
+        missing = _direct_login(services, user["email"], identity["password"])
+        invalid = _direct_login(services, user["email"], identity["password"], module_key="not-the-module-key")
 
     assert missing.status_code == invalid.status_code == 401
     assert missing.json() == invalid.json() == {"detail": "Chave de módulo inválida"}
@@ -191,10 +191,10 @@ def test_direct_login_derives_tenant_only_from_the_authenticated_user(services):
     first_user = _restaurant_user(services, first)
     second_user = _restaurant_user(services, second)
     with _direct_login_enabled(services):
-        first_response = _direct_login(services, first_user["email"], services.password, module_key=services.key)
-        second_response = _direct_login(services, second_user["email"], services.password, module_key=services.key)
+        first_response = _direct_login(services, first_user["email"], first["password"], module_key=services.key)
+        second_response = _direct_login(services, second_user["email"], second["password"], module_key=services.key)
         attempted_override = _direct_login(
-            services, first_user["email"], services.password, module_key=services.key,
+            services, first_user["email"], first["password"], module_key=services.key,
             extra={"restaurant_id": second["tid"]},
         )
 
@@ -228,12 +228,12 @@ def test_orders_direct_login_uses_real_hub_and_orders_backends(services):
         # HUB endpoint.  The unique mirror key must keep one local identity.
         with ThreadPoolExecutor(max_workers=2) as executor:
             concurrent_logins = list(executor.map(
-                lambda _index: _orders_login(services, first_user["email"], services.password),
+                lambda _index: _orders_login(services, first_user["email"], first["password"]),
                 range(2),
             ))
         assert [response.status_code for response in concurrent_logins] == [200, 200]
         first_login = concurrent_logins[0]
-        second_login = _orders_login(services, second_user["email"], services.password)
+        second_login = _orders_login(services, second_user["email"], second["password"])
 
         assert first_login.status_code == second_login.status_code == 200
         first_session = first_login.json()
@@ -259,7 +259,7 @@ def test_orders_direct_login_uses_real_hub_and_orders_backends(services):
         }) == 1
 
         # A second direct sign-in preserves the operational mirror identifier.
-        repeated = _orders_login(services, first_user["email"], services.password)
+        repeated = _orders_login(services, first_user["email"], first["password"])
         assert repeated.status_code == 200
         assert repeated.json()["user"]["id"] == first_session["user"]["id"]
 
@@ -295,11 +295,11 @@ def test_orders_direct_login_denies_invalid_credentials_and_revoked_access(servi
 
     with _direct_login_enabled(services):
         assert _orders_login(services, user["email"], "wrong-password").status_code == 401
-        assert _orders_login(services, inactive_user_record["email"], services.password).status_code == 401
-        assert _orders_login(services, suspended_tenant_user["email"], services.password).status_code == 401
-        assert _orders_login(services, disabled_module_user["email"], services.password).status_code == 401
+        assert _orders_login(services, inactive_user_record["email"], inactive_user["password"]).status_code == 401
+        assert _orders_login(services, suspended_tenant_user["email"], suspended_tenant["password"]).status_code == 401
+        assert _orders_login(services, disabled_module_user["email"], disabled_module["password"]).status_code == 401
 
-        granted = _orders_login(services, user["email"], services.password)
+        granted = _orders_login(services, user["email"], identity["password"])
         assert granted.status_code == 200
 
         services.call(
@@ -309,7 +309,7 @@ def test_orders_direct_login_denies_invalid_credentials_and_revoked_access(servi
 
         # A revoked grant prevents a new Pedidos session and invalidates an
         # already issued session through the existing fresh HUB revalidation.
-        assert _orders_login(services, user["email"], services.password).status_code == 401
+        assert _orders_login(services, user["email"], identity["password"]).status_code == 401
         assert services.order_me(granted.json()["token"]).status_code == 403
 
 
@@ -318,9 +318,8 @@ def test_direct_login_denies_inactive_user_tenant_disabled_module_and_grant(serv
     inactive_tenant = services.restaurant()
     disabled_module = services.restaurant()
     revoked_grant = services.restaurant()
-    users = [_restaurant_user(services, identity) for identity in (
-        inactive_user, inactive_tenant, disabled_module, revoked_grant,
-    )]
+    identities = (inactive_user, inactive_tenant, disabled_module, revoked_grant)
+    users = [_restaurant_user(services, identity) for identity in identities]
 
     _transfer_portal_owner(services, inactive_user, _add_backup_admin(services, inactive_user))
     services.call(
@@ -336,8 +335,8 @@ def test_direct_login_denies_inactive_user_tenant_disabled_module_and_grant(serv
 
     with _direct_login_enabled(services):
         responses = [
-            _direct_login(services, user["email"], services.password, module_key=services.key)
-            for user in users
+            _direct_login(services, user["email"], identity["password"], module_key=services.key)
+            for user, identity in zip(users, identities)
         ]
 
     assert [response.status_code for response in responses] == [401, 401, 401, 401]

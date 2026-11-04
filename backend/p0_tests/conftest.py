@@ -149,15 +149,15 @@ class Services:
         r = self.call("POST", "/hub/tenants", json={"name": tag, "owner_name": "Test", "email": f"{tag}@example.com", "status": "active"})
         r.raise_for_status()
         tid = r.json()["id"]
-        r = self.call("POST", f"/hub/tenants/{tid}/users", json={"name": "Test", "email": f"u{tag}@example.com", "role": "admin", "password": self.password})
-        r.raise_for_status()
-        uid = r.json()["id"]
-        # Tests that exercise the restaurant portal must make the ownership
-        # link explicit, exactly as DACOT staff do for legacy tenants.
-        self.call("PUT", f"/hub/tenants/{tid}/portal-owner", json={"user_id": uid}).raise_for_status()
+        owner = self.db.tenant_users.find_one({"tenant_id": tid, "email": f"{tag}@example.com"})
+        assert owner, "tenant creation must create its linked portal owner"
+        uid = str(owner["_id"])
+        password_reset = self.call("POST", f"/hub/tenants/{tid}/users/{uid}/reset-password")
+        password_reset.raise_for_status()
         self.call("POST", f"/hub/tenants/{tid}/modules/orders/activate").raise_for_status()
         self.call("PATCH", f"/hub/tenants/{tid}/modules/orders", json={"launch_url": f"https://orders.example.test/{tag}"}).raise_for_status()
-        return {"tid": tid, "uid": uid, "headers": self.login(f"u{tag}@example.com", self.password)}
+        password = password_reset.json()["temp_password"]
+        return {"tid": tid, "uid": uid, "password": password, "headers": self.login(owner["email"], password)}
 
     def handoff(self, identity):
         r = self.call("POST", "/portal/modules/orders/launch-token", headers=identity["headers"])

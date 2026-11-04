@@ -15,7 +15,7 @@ import hashlib
 import hmac
 import ipaddress
 from datetime import datetime, timezone, timedelta
-from typing import List, Optional, Annotated, Any
+from typing import List, Optional, Annotated, Any, Literal
 from urllib.parse import urlparse
 
 from handoff_policy import validate_handoff_configuration, validate_launch_url, orders_module_key
@@ -1034,7 +1034,10 @@ class TenantIn(BaseModel):
 
 
 class TenantOnboardingIn(TenantIn):
-    create_hub_access: bool = False
+    # Every newly created tenant must have one explicitly linked portal owner.
+    # Retaining this field as Literal[True] gives legacy administrative callers
+    # a clear validation error instead of silently recreating ownerless tenants.
+    create_hub_access: Literal[True] = True
     access_name: Optional[str] = Field(default=None, min_length=1, max_length=120)
     access_email: Optional[EmailStr] = None
     access_channel: str = "email"
@@ -1143,24 +1146,9 @@ async def list_tenants(status: Optional[str] = None, q: Optional[str] = None,
     return out
 
 
-@api_router.post("/hub/tenants")
-async def create_tenant(payload: TenantIn, user: dict = Depends(get_super_admin)):
-    doc = _new_tenant_doc(payload)
-    if doc["whatsapp_phone"]:
-        doc["whatsapp_audit"] = [{"action": "set", "actor_id": user["_id"], "at": now_utc().isoformat()}]
-    res = await db.tenants.insert_one(doc)
-    tid = str(res.inserted_id)
-    await log_activity(actor_id=user["_id"], actor_name=user.get("name", user["email"]),
-                       action="tenant.created", target_type="tenant", target_id=tid,
-                       tenant_id=tid, metadata={"name": doc["name"]})
-    doc["_id"] = res.inserted_id
-    return {**_tenant_out(doc), "active_modules": 0, "users_count": 0}
-
-
-@api_router.post("/hub/tenants/onboard")
-async def onboard_tenant(payload: TenantOnboardingIn, background_tasks: BackgroundTasks,
-                         user: dict = Depends(get_super_admin)):
-    """Create a tenant and, when requested, its first manager access safely.
+async def _create_tenant_with_owner(payload: TenantOnboardingIn, background_tasks: BackgroundTasks,
+                                    user: dict) -> dict:
+    """Create a tenant and its one explicitly linked portal owner safely.
 
     Mongo deployments are not assumed to support transactions. All validation
     that does not require persistence happens first; if the new user cannot be
@@ -1169,17 +1157,16 @@ async def onboard_tenant(payload: TenantOnboardingIn, background_tasks: Backgrou
     doc = _new_tenant_doc(payload)
     if payload.access_channel not in {"email", "whatsapp"}:
         raise HTTPException(400, "Canal inválido")
-    if payload.create_hub_access and payload.access_channel == "whatsapp" and not doc["whatsapp_phone"]:
+    if payload.access_channel == "whatsapp" and not doc["whatsapp_phone"]:
         raise HTTPException(400, "WhatsApp do responsável é obrigatório")
     if doc["whatsapp_phone"]:
         doc["whatsapp_audit"] = [{"action": "set", "actor_id": user["_id"], "at": now_utc().isoformat()}]
     access_name = (payload.access_name or payload.owner_name).strip()
     access_email = (payload.access_email or payload.email).lower()
-    if payload.create_hub_access:
-        if not access_name:
-            raise HTTPException(400, "Nome do responsável é obrigatório")
-        if await _email_in_use(access_email):
-            raise HTTPException(409, "Já existe um usuário com este e-mail")
+    if not access_name:
+        raise HTTPException(400, "Nome do responsável é obrigatório")
+    if await _email_in_use(access_email):
+        raise HTTPException(409, "Já existe um usuário com este e-mail")
 
     inserted = await db.tenants.insert_one(doc)
     tid = str(inserted.inserted_id)
@@ -1187,38 +1174,35 @@ async def onboard_tenant(payload: TenantOnboardingIn, background_tasks: Backgrou
     created_user_id: Optional[str] = None
     raw_reset: Optional[str] = None
     try:
-        access_created = False
-        if payload.create_hub_access:
-            created_user_id = await _create_initial_tenant_manager(tid, access_name, access_email)
-            owner_update = await db.tenants.update_one(
-                {"_id": inserted.inserted_id, "portal_owner_user_id": {"$exists": False}},
-                {"$set": {"portal_owner_user_id": created_user_id,
-                          "portal_owner_assigned_at": now_utc().isoformat(),
-                          "portal_owner_assigned_by": user["_id"]}},
+        created_user_id = await _create_initial_tenant_manager(tid, access_name, access_email)
+        owner_update = await db.tenants.update_one(
+            {"_id": inserted.inserted_id, "portal_owner_user_id": {"$exists": False}},
+            {"$set": {"portal_owner_user_id": created_user_id,
+                      "portal_owner_assigned_at": now_utc().isoformat(),
+                      "portal_owner_assigned_by": user["_id"]}},
+        )
+        if owner_update.matched_count != 1:
+            raise HTTPException(409, "Proprietário do portal já está configurado")
+        doc["portal_owner_user_id"] = created_user_id
+        version = None
+        if doc["whatsapp_phone"]:
+            version = secrets.token_urlsafe(32)
+            binding = await db.tenant_users.update_one(
+                {"_id": ObjectId(created_user_id), "tenant_id": tid, "deleted_at": None},
+                {"$set": {"whatsapp_number": doc["whatsapp_phone"], "whatsapp_binding_version": version},
+                 "$push": {"whatsapp_audit": {"actor_id": user["_id"], "at": now_utc().isoformat()}}},
             )
-            if owner_update.matched_count != 1:
-                raise HTTPException(409, "Proprietário do portal já está configurado")
-            doc["portal_owner_user_id"] = created_user_id
-            version = None
-            if doc["whatsapp_phone"]:
-                version = secrets.token_urlsafe(32)
-                binding = await db.tenant_users.update_one(
-                    {"_id": ObjectId(created_user_id), "tenant_id": tid, "deleted_at": None},
-                    {"$set": {"whatsapp_number": doc["whatsapp_phone"], "whatsapp_binding_version": version},
-                     "$push": {"whatsapp_audit": {"actor_id": user["_id"], "at": now_utc().isoformat()}}},
-                )
-                if binding.matched_count != 1:
-                    raise HTTPException(409, "Responsável não está disponível")
-                await db.tenants.update_one({"_id": inserted.inserted_id}, {"$set": {"whatsapp_user_id": created_user_id}})
-                doc["whatsapp_user_id"] = created_user_id
-            raw_reset = await _issue_password_reset(created_user_id, access_email, "restaurant", first_access=True,
-                                                     whatsapp_version=version if payload.access_channel == "whatsapp" else None)
-            access_created = True
+            if binding.matched_count != 1:
+                raise HTTPException(409, "Responsável não está disponível")
+            await db.tenants.update_one({"_id": inserted.inserted_id}, {"$set": {"whatsapp_user_id": created_user_id}})
+            doc["whatsapp_user_id"] = created_user_id
+        raw_reset = await _issue_password_reset(created_user_id, access_email, "restaurant", first_access=True,
+                                                 whatsapp_version=version if payload.access_channel == "whatsapp" else None)
         await log_activity(
             actor_id=user["_id"], actor_name=user.get("name", user["email"]),
             action="tenant.onboarded", target_type="tenant", target_id=tid, tenant_id=tid,
-            metadata={"name": doc["name"], "initial_access_created": access_created,
-                      "initial_access_user_id": created_user_id, "initial_access_role": "manager" if access_created else None},
+            metadata={"name": doc["name"], "initial_access_created": True,
+                      "initial_access_user_id": created_user_id, "initial_access_role": "manager"},
         )
     except Exception:
         # This ID was created in this request and has no other dependencies yet.
@@ -1233,9 +1217,22 @@ async def onboard_tenant(payload: TenantOnboardingIn, background_tasks: Backgrou
     elif raw_reset:
         background_tasks.add_task(send_password_reset_email, access_email, raw_reset, 30 * 24)
         invitation = "queued"
-    return {**_tenant_out(doc), "active_modules": 0, "users_count": 1 if payload.create_hub_access else 0,
-            "initial_access_created": payload.create_hub_access,
+    return {**_tenant_out(doc), "active_modules": 0, "users_count": 1,
+            "initial_access_created": True,
             "invitation": invitation}
+
+
+@api_router.post("/hub/tenants")
+async def create_tenant(payload: TenantIn, background_tasks: BackgroundTasks,
+                        user: dict = Depends(get_super_admin)):
+    """Compatibility route: every creation now follows the secure owner flow."""
+    return await _create_tenant_with_owner(TenantOnboardingIn(**payload.model_dump()), background_tasks, user)
+
+
+@api_router.post("/hub/tenants/onboard")
+async def onboard_tenant(payload: TenantOnboardingIn, background_tasks: BackgroundTasks,
+                         user: dict = Depends(get_super_admin)):
+    return await _create_tenant_with_owner(payload, background_tasks, user)
 
 
 @api_router.get("/hub/tenants/{tid}")
