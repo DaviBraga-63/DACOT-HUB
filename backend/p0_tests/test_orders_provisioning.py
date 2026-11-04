@@ -10,12 +10,11 @@ def _new_tenant_and_user(services, tag):
     })
     tenant.raise_for_status()
     tid = tenant.json()["id"]
-    user = services.call("POST", f"/hub/tenants/{tid}/users", json={
-        "name": f"Admin {tag}", "email": f"admin-{tag}@example.com",
-        "role": "admin", "password": services.password,
-    })
-    user.raise_for_status()
-    return tid, user.json()["id"], f"admin-{tag}@example.com"
+    owner = services.db.tenant_users.find_one({"tenant_id": tid, "email": f"owner-{tag}@example.com"})
+    assert owner, "new tenants must receive their portal owner during creation"
+    password_reset = services.call("POST", f"/hub/tenants/{tid}/users/{owner['_id']}/reset-password")
+    password_reset.raise_for_status()
+    return tid, str(owner["_id"]), owner["email"], password_reset.json()["temp_password"]
 
 
 def _issue_invite(services, tid, uid, email, tag="Invite"):
@@ -30,7 +29,7 @@ def _issue_invite(services, tid, uid, email, tag="Invite"):
 
 
 def test_activation_provisions_idempotently_and_direct_login_is_hub_authorized(services):
-    tid, uid, email = _new_tenant_and_user(services, "provision")
+    tid, uid, email, password = _new_tenant_and_user(services, "provision")
     first = services.call("POST", f"/hub/tenants/{tid}/modules/orders/activate")
     assert first.status_code == 200, first.text
     second = services.call("POST", f"/hub/tenants/{tid}/modules/orders/activate")
@@ -42,30 +41,31 @@ def test_activation_provisions_idempotently_and_direct_login_is_hub_authorized(s
     provisioned = services.odb.users.find_one({"hub_user_id": uid})
     assert provisioned["restaurant_id"] == tid
     assert provisioned["email"] == email
-    assert provisioned["provisioned_by"] == "hub"
-    assert provisioned["password_hash"] == ""
+    assert provisioned["provisioned_by"] == "hub_direct_login"
+    assert not provisioned.get("password_hash")
     assert services.odb.users.count_documents({"hub_user_id": uid}) == 1
     state = services.db.tenant_modules.find_one({"tenant_id": tid, "module_key": "orders"})
     assert state["provisioning_status"] == "succeeded"
+    services.call(
+        "PATCH", f"/hub/tenants/{tid}/modules/orders",
+        json={"launch_url": f"https://orders.example.test/{tid}"},
+    ).raise_for_status()
 
-    invitation = _issue_invite(services, tid, uid, email)
-    first_access = requests.post(services.orders + "/api/auth/first-access", json={
-        "token": invitation, "password": services.password,
-    }, timeout=10)
-    assert first_access.status_code == 200, first_access.text
-    login = requests.post(services.orders + "/api/auth/login", json={"email": email, "password": services.password}, timeout=10)
-    assert login.status_code == 200, login.text
-    token = login.json()["token"]
-    assert services.order_me(token).status_code == 200
+    # The Hub-managed owner has no Pedidos-local password or invitation. Its
+    # established handoff remains the authorized operational entry point.
+    owner_headers = services.login(email, password)
+    handoff = services.exchange(services.handoff({"tid": tid, "uid": uid, "headers": owner_headers}))
+    assert handoff.status_code == 200, handoff.text
+    assert services.order_me(handoff.json()["token"]).status_code == 200
 
     services.db.module_user_grants.update_one(
         {"tenant_id": tid, "user_id": uid, "module_key": "orders"}, {"$set": {"active": False}}
     )
-    assert requests.post(services.orders + "/api/auth/login", json={"email": email, "password": services.password}, timeout=10).status_code == 403
+    assert services.order_me(handoff.json()["token"]).status_code == 403
 
 
 def test_first_access_expiration_replay_replacement_and_tenant_binding(services):
-    tid, uid, email = _new_tenant_and_user(services, "tokens")
+    tid, uid, email, _password = _new_tenant_and_user(services, "tokens")
     assert services.call("POST", f"/hub/tenants/{tid}/modules/orders/activate").status_code == 200
     old = _issue_invite(services, tid, uid, email, "Old")
     current = _issue_invite(services, tid, uid, email, "Current")
@@ -82,7 +82,7 @@ def test_first_access_expiration_replay_replacement_and_tenant_binding(services)
     assert requests.post(endpoint, json={"token": valid, "password": services.password}, timeout=10).status_code == 200
     assert requests.post(endpoint, json={"token": valid, "password": "another-password"}, timeout=10).status_code == 400
 
-    other_tid, _other_uid, _ = _new_tenant_and_user(services, "token-other")
+    other_tid, _other_uid, _, _ = _new_tenant_and_user(services, "token-other")
     forged = "cross-tenant-test-token-which-is-long-enough"
     provisioned_id = services.odb.users.find_one({"hub_user_id": uid})["id"]
     services.odb.first_access_tokens.insert_one({
@@ -102,9 +102,9 @@ def test_first_access_expiration_replay_replacement_and_tenant_binding(services)
 
 
 def test_provisioning_rejects_cross_tenant_user_binding(services):
-    tid, uid, _email = _new_tenant_and_user(services, "owner-a")
+    tid, uid, _email, _password = _new_tenant_and_user(services, "owner-a")
     assert services.call("POST", f"/hub/tenants/{tid}/modules/orders/activate").status_code == 200
-    other_tid, _other_uid, _ = _new_tenant_and_user(services, "owner-b")
+    other_tid, _other_uid, _, _ = _new_tenant_and_user(services, "owner-b")
     response = requests.post(
         services.orders + "/api/internal/hub/provision",
         headers={"X-Module-Key": services.key},
@@ -116,7 +116,7 @@ def test_provisioning_rejects_cross_tenant_user_binding(services):
 
 
 def test_failed_provisioning_is_recorded_and_retryable(services):
-    tid, uid, _email = _new_tenant_and_user(services, "retry")
+    tid, uid, _email, _password = _new_tenant_and_user(services, "retry")
     services.stop("orders")
     failed = services.call("POST", f"/hub/tenants/{tid}/modules/orders/activate")
     assert failed.status_code == 503
@@ -132,17 +132,17 @@ def test_failed_provisioning_is_recorded_and_retryable(services):
     assert state["provisioning_status"] == "succeeded" and state["provisioned_user_id"] == uid
 
 
-def test_email_failure_is_recorded_and_retryable(services):
-    tid, _uid, _email = _new_tenant_and_user(services, "email-failure")
+def test_hub_managed_provisioning_does_not_depend_on_legacy_invite_email(services):
+    tid, _uid, _email, _password = _new_tenant_and_user(services, "email-failure")
     original = services.env.get("DACOT_LOCAL_INTEGRATION")
     try:
         services.env.pop("DACOT_LOCAL_INTEGRATION", None)
         services.restart_hub()
         response = services.call("POST", f"/hub/tenants/{tid}/modules/orders/activate")
-        assert response.status_code == 503
+        assert response.status_code == 200
         state = services.db.tenant_modules.find_one({"tenant_id": tid, "module_key": "orders"})
-        assert state["provisioning_status"] == "failed"
-        assert state["provisioning_error"] == "email_delivery_failed"
+        assert state["provisioning_status"] == "succeeded"
+        assert not state.get("provisioning_error")
     finally:
         if original is not None:
             services.env["DACOT_LOCAL_INTEGRATION"] = original

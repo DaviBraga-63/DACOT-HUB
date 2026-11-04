@@ -54,8 +54,11 @@ def test_owner_assignment_is_tenant_scoped_and_audited(services):
     assert cross_tenant.status_code == 404
     assert services.db.tenants.find_one({"_id": ObjectId(first["tid"])}).get("portal_owner_user_id") == first["uid"]
 
-    audit = services.db.activity_log.find_one({"action": "tenant.portal_owner_assigned", "tenant_id": first["tid"]})
-    assert audit and audit["metadata"]["owner_user_id"] == first["uid"]
+    # New tenants receive their explicit owner as part of the audited onboarding
+    # flow.  The separate owner-assignment audit remains reserved for an
+    # explicit administrative regularization of a legacy tenant.
+    audit = services.db.activity_log.find_one({"action": "tenant.onboarded", "tenant_id": first["tid"]})
+    assert audit and audit["metadata"]["initial_access_user_id"] == first["uid"]
 
 
 def test_only_dacot_super_admin_can_assign_portal_owner(services):

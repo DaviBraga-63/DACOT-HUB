@@ -16,19 +16,12 @@ def _onboard_payload(tag, **extra):
     }
 
 
-def test_staff_can_onboard_tenant_without_or_with_initial_manager_access(services):
+def test_staff_onboarding_always_creates_and_links_the_initial_portal_owner(services):
     service = services
-    no_access = service.call("POST", "/hub/tenants/onboard", json=_onboard_payload(secrets.token_hex(5)))
-    assert no_access.status_code == 200, no_access.text
-    no_access_body = no_access.json()
-    assert no_access_body["initial_access_created"] is False
-    assert no_access_body["users_count"] == 0
-    assert service.db.tenant_users.count_documents({"tenant_id": no_access_body["id"]}) == 0
-
     tag = secrets.token_hex(5)
     email = f"manager-{tag}@example.com"
     with_access = service.call("POST", "/hub/tenants/onboard", json=_onboard_payload(
-        tag, create_hub_access=True, access_name="Gerente inicial", access_email=email,
+        tag, access_name="Gerente inicial", access_email=email,
     ))
     assert with_access.status_code == 200, with_access.text
     body = with_access.json()
@@ -44,9 +37,26 @@ def test_staff_can_onboard_tenant_without_or_with_initial_manager_access(service
     assert tenant["portal_owner_user_id"] == str(manager["_id"])
     assert body["portal_owner_configured"] is True
     assert service.db.password_reset_tokens.count_documents({"user_id": str(manager["_id"]), "used": False}) == 1
+    password_reset = service.call("POST", f"/hub/tenants/{body['id']}/users/{manager['_id']}/reset-password")
+    assert password_reset.status_code == 200, password_reset.text
+    owner_headers = service.login(email, password_reset.json()["temp_password"])
+    assert service.call("GET", "/portal/context", headers=owner_headers).status_code == 200
     # Onboarding never activates a product or assumes an individual grant.
     assert service.db.tenant_modules.count_documents({"tenant_id": body["id"]}) == 0
     assert service.db.module_user_grants.count_documents({"tenant_id": body["id"]}) == 0
+
+
+def test_legacy_tenant_creation_route_uses_the_same_owner_flow(services):
+    service = services
+    tag = secrets.token_hex(5)
+    response = service.call("POST", "/hub/tenants", json=_onboard_payload(tag))
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["initial_access_created"] is True
+    assert body["portal_owner_configured"] is True
+    owner = service.db.tenant_users.find_one({"tenant_id": body["id"], "email": body["email"]})
+    assert owner and owner["password_reset_required"] is True
+    assert service.db.tenants.find_one({"_id": ObjectId(body["id"])}).get("portal_owner_user_id") == str(owner["_id"])
 
 
 def test_onboarding_is_staff_write_only_and_duplicate_access_leaves_no_partial_tenant(services):
@@ -64,9 +74,15 @@ def test_onboarding_is_staff_write_only_and_duplicate_access_leaves_no_partial_t
     existing_email = service.db.tenant_users.find_one({"_id": ObjectId(existing["uid"])} )["email"]
     before = service.db.tenants.count_documents({})
     duplicate = service.call("POST", "/hub/tenants/onboard", json=_onboard_payload(
-        secrets.token_hex(5), create_hub_access=True, access_email=existing_email,
+        secrets.token_hex(5), access_email=existing_email,
     ))
     assert duplicate.status_code == 409
+    assert service.db.tenants.count_documents({}) == before
+
+    ownerless = service.call("POST", "/hub/tenants/onboard", json=_onboard_payload(
+        secrets.token_hex(5), create_hub_access=False,
+    ))
+    assert ownerless.status_code == 422
     assert service.db.tenants.count_documents({}) == before
 
 

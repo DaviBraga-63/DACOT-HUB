@@ -143,7 +143,7 @@ def test_last_admin_and_concurrent_duplicate_guards(services):
     # explicit owner retains portal authority, but must authenticate again
     # before managing users.
     owner_email = s.db.tenant_users.find_one({"_id": ObjectId(owner["uid"])})["email"]
-    owner["headers"] = s.login(owner_email, s.password)
+    owner["headers"] = s.login(owner_email, owner["password"])
 
     duplicate_email = "concurrent-duplicate@example.com"
     payload = {"name": "Concorrente", "email": duplicate_email, "role": "waiter"}
