@@ -1,5 +1,5 @@
 import { NavLink, Outlet, useNavigate } from "react-router-dom";
-import { LayoutDashboard, Blocks, Users, LogOut, Moon, Sun } from "lucide-react";
+import { LayoutDashboard, Blocks, Users, LogOut, Moon, Settings, Sun } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 import { useTheme } from "@/context/ThemeContext";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
@@ -13,9 +13,11 @@ export default function PortalLayout() {
   return (
     <div className="min-h-screen bg-[var(--dh-bg)]">
       <header className="dh-topnav sticky top-0 z-30 h-[68px] flex items-center px-3 sm:px-8 lg:px-10">
-        <div className="flex items-center gap-3 mr-2 sm:mr-12">
-          <img src="/dacot-logo.png" alt="DACOT" className="dh-brand-logo dh-brand-logo-sm" />
-          <span className="hidden sm:inline dh-font-display font-bold text-[15px] tracking-tight text-[var(--dh-text)]">DACOT</span>
+        <div className="mr-2 flex items-center sm:mr-12">
+          <div className="flex items-center gap-2 rounded-lg bg-[#0A0A09] px-2 py-1.5 shadow-sm">
+            <img src="/dacot-symbol-orange-v1.png" alt="" className="h-7 w-7 object-contain" />
+            <span className="hidden sm:inline dh-font-display text-[15px] font-bold tracking-tight text-white">DACOT</span>
+          </div>
         </div>
         <nav className="flex items-center gap-1 flex-1" aria-label="Navegação do portal">
           <PortalLink to="/portal" end icon={LayoutDashboard} label="Painel" testid="portal-nav-dashboard" />
@@ -27,6 +29,22 @@ export default function PortalLayout() {
             <div className="text-[12px] font-semibold text-[var(--dh-text)]">{user?.name}</div>
             <div className="text-[10px] text-[var(--dh-muted)]">{user?.email}</div>
           </div>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <span>
+                <button
+                  type="button"
+                  disabled
+                  className="dh-topnav-action cursor-not-allowed opacity-45"
+                  data-testid="portal-settings-placeholder"
+                  aria-label="Configurações"
+                >
+                  <Settings size={18} strokeWidth={1.75} />
+                </button>
+              </span>
+            </TooltipTrigger>
+            <TooltipContent>Configurações</TooltipContent>
+          </Tooltip>
           <Tooltip><TooltipTrigger asChild><button type="button" onClick={toggleTheme} className="dh-topnav-action" data-testid="portal-theme-toggle" aria-label="Alternar tema">
             {theme === "dark" ? <Sun size={18} /> : <Moon size={18} />}
           </button></TooltipTrigger><TooltipContent>Tema {theme === "dark" ? "claro" : "escuro"}</TooltipContent></Tooltip>
