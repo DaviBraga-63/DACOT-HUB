@@ -1,74 +1,43 @@
 import { useCallback, useEffect, useState } from "react";
-import { Landmark } from "lucide-react";
+import { Link } from "react-router-dom";
+import { AlertCircle, ArrowDownRight, ArrowUpRight, Landmark, RefreshCw, ShoppingBag, TrendingUp } from "lucide-react";
+import { Area, AreaChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { api, formatApiErrorDetail } from "@/lib/api";
+
+const currency = new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" });
+const number = new Intl.NumberFormat("pt-BR");
+const formatCurrency = (cents) => typeof cents === "number" ? currency.format(cents / 100) : "—";
+const shortDate = (value) => { const [, month, day] = value.split("-"); return `${day}/${month}`; };
 
 export default function Portal() {
   const [context, setContext] = useState(null);
   const [error, setError] = useState(null);
-  const [revenue, setRevenue] = useState(null);
-  const [revenueError, setRevenueError] = useState(false);
-
-  const loadRevenue = useCallback(() => {
-    setRevenue(null);
-    setRevenueError(false);
-    api.get("/portal/analytics/revenue")
-      .then(({ data }) => setRevenue(data))
-      .catch(() => setRevenueError(true));
+  const [summary, setSummary] = useState(null);
+  const [summaryState, setSummaryState] = useState("loading");
+  const [updatedAt, setUpdatedAt] = useState(null);
+  const loadSummary = useCallback(async () => {
+    setSummary(null); // Never present an old aggregate as current information.
+    setSummaryState("loading"); setUpdatedAt(null);
+    try { const { data } = await api.get("/portal/analytics/summary"); setSummary(data); setSummaryState("ready"); setUpdatedAt(new Date()); }
+    catch { setSummaryState("unavailable"); }
   }, []);
-
   useEffect(() => {
     let active = true;
-    api.get("/portal/context")
-      .then(({ data }) => active && setContext(data))
+    api.get("/portal/context").then(({ data }) => active && setContext(data))
       .catch((requestError) => active && setError(formatApiErrorDetail(requestError.response?.data?.detail)));
-    loadRevenue();
-    return () => { active = false; };
-  }, [loadRevenue]);
-
+    loadSummary(); return () => { active = false; };
+  }, [loadSummary]);
   if (error) return <div className="dh-chip dh-chip-error" data-testid="portal-error">{error}</div>;
-
-  if (!context) {
-    return <div className="space-y-4" data-testid="portal-loading">
-      <div className="dh-skeleton h-4 w-20" />
-      <div className="dh-skeleton h-10 w-64" />
-      <div className="dh-card p-6"><div className="dh-skeleton h-24 w-full" /></div>
-    </div>;
-  }
-
-  return (
-    <div className="max-w-5xl space-y-7 dh-fade-in" data-testid="portal-page">
-      <div>
-        <p className="text-[12px] font-semibold uppercase tracking-[0.16em] text-[var(--dh-muted)]">Painel</p>
-        <h1 className="dh-font-display mt-2 text-3xl font-bold tracking-tight text-[var(--dh-text)]" data-testid="portal-tenant-name">
-          {context.tenant.name}
-        </h1>
-        <p className="mt-2 text-sm text-[var(--dh-muted)]">Acompanhe as novidades do seu restaurante na DACOT.</p>
-      </div>
-
-      <section className="grid max-w-3xl grid-cols-1 gap-5 sm:grid-cols-2" aria-label="Faturamento">
-        <RevenueCard label="Faturamento hoje" cents={revenue?.today_cents} error={revenueError} onRetry={loadRevenue} testid="portal-revenue-today" />
-        <RevenueCard label="Faturamento no mês" cents={revenue?.current_month_cents} error={revenueError} onRetry={loadRevenue} testid="portal-revenue-month" />
-      </section>
-    </div>
-  );
+  if (!context) return <div className="space-y-4" data-testid="portal-loading"><div className="dh-skeleton h-4 w-20" /><div className="dh-skeleton h-10 w-64" /><div className="dh-card p-6"><div className="dh-skeleton h-32 w-full" /></div></div>;
+  return <div className="mx-auto max-w-6xl space-y-7 dh-fade-in" data-testid="portal-page">
+    <header className="flex flex-col justify-between gap-4 sm:flex-row sm:items-end"><div><p className="text-[12px] font-semibold uppercase tracking-[0.16em] text-[var(--dh-muted)]">Resumo de 30 segundos</p><h1 className="dh-font-display mt-2 text-3xl font-bold tracking-tight text-[var(--dh-text)]" data-testid="portal-tenant-name">{context.tenant.name}</h1><p className="mt-2 text-sm text-[var(--dh-muted)]">Acompanhe os indicadores reais do Pedidos &amp; Operação.</p></div><button type="button" className="dh-btn dh-btn-ghost shrink-0" onClick={loadSummary} disabled={summaryState === "loading"} data-testid="portal-summary-refresh"><RefreshCw size={16} className={summaryState === "loading" ? "animate-spin" : ""} />{summaryState === "loading" ? "Atualizando" : "Atualizar"}</button></header>
+    <section aria-label="Resumo de Pedidos & Operação" data-testid="portal-orders-summary"><div className="mb-3 flex flex-wrap items-center justify-between gap-2"><div className="flex items-center gap-2"><span className="dh-icon-tile h-8 w-8 rounded-lg"><ShoppingBag size={16} strokeWidth={1.8} /></span><h2 className="dh-font-display text-lg font-bold text-[var(--dh-text)]">Pedidos &amp; Operação</h2></div>{updatedAt && <span className="text-xs text-[var(--dh-muted)]" data-testid="portal-summary-updated">Atualizado agora</span>}</div>{summaryState === "loading" && <SummarySkeleton />}{summaryState === "unavailable" && <Unavailable onRetry={loadSummary} />}{summaryState === "ready" && summary && <SummaryDetails summary={summary} />}</section>
+  </div>;
 }
 
-function RevenueCard({ label, cents, error, onRetry, testid }) {
-  const formatted = typeof cents === "number"
-    ? new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(cents / 100)
-    : null;
-  return <article className="dh-card p-6" data-testid={testid}>
-    <div className="flex items-start justify-between gap-4">
-      <div>
-        <p className="text-sm font-medium text-[var(--dh-muted)]">{label}</p>
-        {!error && !formatted && <div className="dh-skeleton mt-4 h-9 w-36" data-testid={`${testid}-loading`} />}
-        {!error && formatted && <p className="dh-font-display mt-3 text-3xl font-bold tracking-tight text-[var(--dh-text)]">{formatted}</p>}
-        {error && <>
-          <p className="mt-3 text-sm font-medium text-[var(--dh-muted)]">Faturamento indisponível no momento</p>
-          <button type="button" className="dh-btn dh-btn-ghost mt-3 text-sm" onClick={onRetry} data-testid={`${testid}-retry`}>Tentar novamente</button>
-        </>}
-      </div>
-      <span className="dh-icon-tile h-10 w-10 shrink-0 rounded-lg"><Landmark size={19} strokeWidth={1.65} /></span>
-    </div>
-  </article>;
-}
+function SummarySkeleton() { return <div className="grid grid-cols-1 gap-5 lg:grid-cols-3" data-testid="portal-summary-loading">{[0, 1, 2].map((index) => <div className="dh-card min-h-40 p-6" key={index}><div className="dh-skeleton h-4 w-28" /><div className="dh-skeleton mt-5 h-9 w-36" /><div className="dh-skeleton mt-5 h-3 w-24" /></div>)}</div>; }
+function Unavailable({ onRetry }) { return <div className="dh-card border-amber-500/20 p-6" data-testid="portal-summary-unavailable"><div className="flex items-start gap-3"><AlertCircle className="mt-0.5 shrink-0 text-amber-500" size={20} /><div><p className="font-semibold text-[var(--dh-text)]">Resumo de Pedidos indisponível no momento</p><p className="mt-1 text-sm text-[var(--dh-muted)]">Nenhum dado anterior é exibido como informação atual. Tente atualizar novamente.</p><button type="button" className="dh-btn dh-btn-ghost mt-4 text-sm" onClick={onRetry}>Tentar novamente</button></div></div></div>; }
+function SummaryDetails({ summary }) { const comparison = summary.comparison.revenue_change_percent; const noOrders = summary.today.orders_count === 0; return <><div className="grid grid-cols-1 gap-5 md:grid-cols-2 lg:grid-cols-3"><MetricCard icon={Landmark} label="Faturamento hoje" value={formatCurrency(summary.today.revenue_cents)} testid="portal-summary-revenue"><Comparison value={comparison} /></MetricCard><MetricCard icon={ShoppingBag} label="Pedidos entregues" value={number.format(summary.today.orders_count)} testid="portal-summary-orders"><p className="text-xs text-[var(--dh-muted)]">{noOrders ? "Ainda não há pedidos entregues hoje" : "Pedidos concluídos hoje"}</p></MetricCard><article className={`dh-card p-6 ${summary.operations.open_orders > 0 ? "border-amber-500/25" : ""}`} data-testid="portal-summary-alert"><div className="flex items-start justify-between gap-4"><div><p className="text-sm font-medium text-[var(--dh-muted)]">Atenção operacional</p><p className="dh-font-display mt-3 text-3xl font-bold tracking-tight text-[var(--dh-text)]">{number.format(summary.operations.open_orders)}</p><p className="mt-2 text-xs text-[var(--dh-muted)]">{summary.operations.open_orders === 1 ? "pedido em andamento" : "pedidos em andamento"}</p></div><span className="dh-icon-tile h-10 w-10 shrink-0 rounded-lg"><AlertCircle size={19} strokeWidth={1.65} /></span></div></article></div><div className="mt-5 grid grid-cols-1 gap-5 lg:grid-cols-[minmax(0,1fr)_18rem]"><article className="dh-card p-6" data-testid="portal-summary-chart"><div className="flex flex-wrap items-start justify-between gap-3"><div><p className="font-semibold text-[var(--dh-text)]">Evolução dos últimos 7 dias</p><p className="mt-1 text-sm text-[var(--dh-muted)]">Faturamento de pedidos entregues por dia.</p></div><span className="flex items-center gap-1 text-xs font-medium text-[var(--dh-muted)]"><TrendingUp size={14} /> Dados reais</span></div><div className="mt-5 h-56" aria-label="Gráfico de faturamento de sete dias"><ResponsiveContainer width="100%" height="100%"><AreaChart data={summary.series} margin={{ top: 8, right: 4, left: 0, bottom: 0 }}><defs><linearGradient id="portalRevenue" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="var(--dh-accent)" stopOpacity={0.28} /><stop offset="100%" stopColor="var(--dh-accent)" stopOpacity={0.02} /></linearGradient></defs><XAxis dataKey="date" tickFormatter={shortDate} axisLine={false} tickLine={false} tick={{ fontSize: 11, fill: "var(--dh-muted)" }} /><YAxis hide /><Tooltip formatter={(value) => formatCurrency(value)} labelFormatter={(value) => `Dia ${shortDate(value)}`} contentStyle={{ borderRadius: 10, border: "1px solid var(--dh-border)", background: "var(--dh-card)", color: "var(--dh-text)" }} /><Area type="monotone" dataKey="revenue_cents" stroke="var(--dh-accent)" strokeWidth={2.25} fill="url(#portalRevenue)" /></AreaChart></ResponsiveContainer></div></article><article className="dh-card p-6" data-testid="portal-summary-details"><p className="font-semibold text-[var(--dh-text)]">Detalhes financeiros</p><dl className="mt-5 space-y-4 text-sm"><Detail label="Ticket médio hoje" value={summary.today.average_ticket_cents === null ? "Sem pedidos entregues" : formatCurrency(summary.today.average_ticket_cents)} /><Detail label="Faturamento no mês" value={formatCurrency(summary.month.revenue_cents)} /><Detail label="Pedidos no mês" value={number.format(summary.month.orders_count)} /></dl><Link to="/portal/modulos" className="dh-btn dh-btn-ghost mt-6 w-full text-sm">Abrir Pedidos &amp; Operação</Link></article></div></>; }
+function MetricCard({ icon: Icon, label, value, children, testid }) { return <article className="dh-card p-6" data-testid={testid}><div className="flex items-start justify-between gap-4"><div><p className="text-sm font-medium text-[var(--dh-muted)]">{label}</p><p className="dh-font-display mt-3 text-3xl font-bold tracking-tight text-[var(--dh-text)]">{value}</p><div className="mt-2 min-h-4">{children}</div></div><span className="dh-icon-tile h-10 w-10 shrink-0 rounded-lg"><Icon size={19} strokeWidth={1.65} /></span></div></article>; }
+function Comparison({ value }) { if (value === null) return <p className="text-xs text-[var(--dh-muted)]">Sem base comparável ontem</p>; const positive = value >= 0; const Icon = positive ? ArrowUpRight : ArrowDownRight; return <p className={`flex items-center gap-1 text-xs font-medium ${positive ? "text-emerald-600 dark:text-emerald-400" : "text-rose-600 dark:text-rose-400"}`}><Icon size={14} /> {Math.abs(value).toLocaleString("pt-BR", { maximumFractionDigits: 1 })}% vs. ontem</p>; }
+function Detail({ label, value }) { return <div className="flex items-start justify-between gap-4"><dt className="text-[var(--dh-muted)]">{label}</dt><dd className="text-right font-semibold text-[var(--dh-text)]">{value}</dd></div>; }

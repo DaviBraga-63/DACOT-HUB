@@ -138,6 +138,7 @@ HANDOFF_MAX_TTL_SECONDS = 60
 HANDOFF_AUDIENCE = {"orders": "dacot-orders", "kitchen": "dacot-kitchen"}
 ORDERS_ANALYTICS_AUDIENCE = "dacot-orders-analytics"
 ORDERS_ANALYTICS_SCOPE = "analytics.revenue"
+ORDERS_ANALYTICS_SUMMARY_SCOPE = "analytics.summary"
 MODULE_ACCESS_KEYS = {
     "orders": orders_module_key(),
     "kitchen": os.environ.get("KITCHEN_MODULE_KEY", ""),
@@ -2486,7 +2487,7 @@ async def portal_revenue(response: Response, user: dict = Depends(get_restaurant
         "exp": int((now + timedelta(seconds=HANDOFF_MAX_TTL_SECONDS)).timestamp()),
     }, HANDOFF_JWT_SECRET, algorithm="HS256")
     try:
-        async with httpx.AsyncClient(timeout=5.0, follow_redirects=False) as client:
+        async with httpx.AsyncClient(timeout=5.0, follow_redirects=False, trust_env=False) as client:
             result = await client.get(
                 f"{_orders_backend_url()}/api/internal/analytics/revenue",
                 headers={"Authorization": f"Bearer {assertion}"},
@@ -2502,6 +2503,77 @@ async def portal_revenue(response: Response, user: dict = Depends(get_restaurant
             raise ValueError("Invalid Pedidos analytics response")
     except (httpx.HTTPError, ValueError, TypeError, KeyError):
         raise HTTPException(503, "Faturamento indisponível no momento")
+    response.headers["Cache-Control"] = "no-store"
+    return payload
+
+
+@api_router.get("/portal/analytics/summary")
+async def portal_analytics_summary(response: Response, user: dict = Depends(get_restaurant_user)):
+    """Return Pedidos aggregates for the authenticated owner portal only.
+
+    The restaurant selector is derived from the live HUB session.  Pedidos
+    receives a separate, short-lived and scope-limited assertion; operational
+    order documents never cross this boundary.
+    """
+    if not HANDOFF_JWT_SECRET or len(HANDOFF_JWT_SECRET) < 32:
+        raise HTTPException(503, "Resumo de Pedidos indisponível no momento")
+    tid = user["tenant_id"]
+    module = await db.modules.find_one({"key": ORDERS_MODULE_KEY})
+    activation = await db.tenant_modules.find_one(
+        {"tenant_id": tid, "module_key": ORDERS_MODULE_KEY, "active": True}
+    )
+    grant = await db.module_user_grants.find_one(
+        {"tenant_id": tid, "user_id": user["_id"], "module_key": ORDERS_MODULE_KEY, "active": True}
+    )
+    if not module or module.get("status") != "available" or not activation or not grant:
+        raise HTTPException(403, "Módulo Pedidos não está disponível para este usuário")
+
+    now = now_utc()
+    assertion = jwt.encode({
+        "iss": HANDOFF_ISSUER, "aud": ORDERS_ANALYTICS_AUDIENCE,
+        "restaurant_id": tid, "module": ORDERS_MODULE_KEY, "scope": ORDERS_ANALYTICS_SUMMARY_SCOPE,
+        "jti": secrets.token_urlsafe(16),
+        "iat": int(now.timestamp()), "nbf": int(now.timestamp()) - 5,
+        "exp": int((now + timedelta(seconds=HANDOFF_MAX_TTL_SECONDS)).timestamp()),
+    }, HANDOFF_JWT_SECRET, algorithm="HS256")
+    try:
+        async with httpx.AsyncClient(timeout=5.0, follow_redirects=False, trust_env=False) as client:
+            result = await client.get(
+                f"{_orders_backend_url()}/api/internal/analytics/summary",
+                headers={"Authorization": f"Bearer {assertion}"},
+            )
+        if result.status_code != 200:
+            raise ValueError("Pedidos rejected analytics assertion")
+        payload = result.json()
+        required = {"today", "month", "comparison", "series", "operations", "currency", "timezone"}
+        metric_fields = {"revenue_cents", "orders_count"}
+        if (not isinstance(payload, dict) or set(payload) != required or payload["currency"] != "BRL"
+                or payload["timezone"] != "America/Sao_Paulo"
+                or not isinstance(payload["today"], dict)
+                or set(payload["today"]) != {"revenue_cents", "orders_count", "average_ticket_cents"}
+                or not isinstance(payload["month"], dict) or set(payload["month"]) != metric_fields
+                or not isinstance(payload["comparison"], dict)
+                or set(payload["comparison"]) != {"period", "revenue_change_percent"}
+                or payload["comparison"]["period"] != "previous_day"
+                or payload["comparison"]["revenue_change_percent"] is not None
+                and type(payload["comparison"]["revenue_change_percent"]) not in {int, float}
+                or not isinstance(payload["operations"], dict) or set(payload["operations"]) != {"open_orders"}
+                or type(payload["operations"]["open_orders"]) is not int or payload["operations"]["open_orders"] < 0
+                or not isinstance(payload["series"], list) or len(payload["series"]) != 7):
+            raise ValueError("Invalid Pedidos analytics response")
+        for metrics in (payload["today"], payload["month"]):
+            if any(type(metrics[field]) is not int or metrics[field] < 0 for field in metric_fields):
+                raise ValueError("Invalid Pedidos analytics metrics")
+        average = payload["today"]["average_ticket_cents"]
+        if average is not None and (type(average) is not int or average < 0):
+            raise ValueError("Invalid Pedidos ticket")
+        for point in payload["series"]:
+            if (not isinstance(point, dict) or set(point) != {"date", "revenue_cents", "orders_count"}
+                    or not isinstance(point["date"], str) or len(point["date"]) != 10
+                    or any(type(point[field]) is not int or point[field] < 0 for field in metric_fields)):
+                raise ValueError("Invalid Pedidos analytics series")
+    except (httpx.HTTPError, ValueError, TypeError, KeyError):
+        raise HTTPException(503, "Resumo de Pedidos indisponível no momento")
     response.headers["Cache-Control"] = "no-store"
     return payload
 
