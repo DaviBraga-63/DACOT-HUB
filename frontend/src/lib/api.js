@@ -2,11 +2,23 @@ import axios from "axios";
 import { clearTabSessionId, getTabSessionId } from "@/lib/tabSession";
 
 const configuredBackendUrl = process.env.REACT_APP_BACKEND_URL?.trim().replace(/\/+$/, "");
+const CANONICAL_HUB_ORIGIN = "https://hub.dacot.com.br";
+const CANONICAL_HUB_API_ORIGIN = "https://api-hub.dacot.com.br";
+
+// The public HUB frontend and API are deliberately separate origins. Keep the
+// explicit build-time setting authoritative, but avoid sending authenticated
+// administrative writes to the SPA fallback when the canonical HUB build was
+// created without that setting.
+const canonicalHubApiFallback = typeof window !== "undefined"
+  && window.location.origin === CANONICAL_HUB_ORIGIN
+  ? CANONICAL_HUB_API_ORIGIN
+  : "";
+const backendUrl = configuredBackendUrl || canonicalHubApiFallback;
 
 // In the combined production deployment, requests stay on the current origin.
 // A configured URL remains available for the existing separate local frontend
 // and backend workflow.
-export const API_BASE = configuredBackendUrl ? `${configuredBackendUrl}/api` : "/api";
+export const API_BASE = backendUrl ? `${backendUrl}/api` : "/api";
 
 export const api = axios.create({
   baseURL: API_BASE,

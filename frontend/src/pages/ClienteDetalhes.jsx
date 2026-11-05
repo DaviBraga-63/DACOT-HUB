@@ -113,6 +113,12 @@ export default function ClienteDetalhes() {
                        value={tenant.created_at ? new Date(tenant.created_at).toLocaleString("pt-BR") : "—"} />
             </div>
             <WhatsAppContact tenant={tenant} users={users} canWrite={user?.role === "super_admin"} reload={load} />
+            <PortalOwnerAssignment
+              tenant={tenant}
+              users={users}
+              isSuperAdmin={user?.role === "super_admin"}
+              reload={load}
+            />
             {tenant.notes && (
               <div className="pt-5 mt-5 border-t border-slate-100">
                 <div className="text-[11px] uppercase tracking-wider font-semibold text-slate-400 mb-1.5">Observações</div>
@@ -146,6 +152,111 @@ export default function ClienteDetalhes() {
 
       {tab === "users" && <UsersTab tenantId={id} tenantName={tenant.name} users={users} reload={load} canWrite={canWrite} />}
     </div>
+  );
+}
+
+function isPortalOwnerAssignmentResponse(data) {
+  return data !== null
+    && typeof data === "object"
+    && !Array.isArray(data)
+    && Object.keys(data).length === 1
+    && data.portal_owner_configured === true;
+}
+
+function PortalOwnerAssignment({ tenant, users, isSuperAdmin, reload }) {
+  const [selectedUserId, setSelectedUserId] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [confirming, setConfirming] = useState(false);
+  const [error, setError] = useState("");
+  const activeUsers = users.filter((item) => item.status === "active");
+  const selectedUser = activeUsers.find((item) => item.id === selectedUserId);
+
+  useEffect(() => {
+    setSelectedUserId("");
+    setError("");
+  }, [tenant.id]);
+
+  if (!isSuperAdmin) return null;
+
+  const assign = async () => {
+    if (!selectedUser) return;
+    setBusy(true);
+    setError("");
+    try {
+      const { data } = await api.put(`/hub/tenants/${tenant.id}/portal-owner`, {
+        user_id: selectedUser.id,
+      });
+      if (!isPortalOwnerAssignmentResponse(data)) {
+        throw new Error("invalid_portal_owner_assignment_response");
+      }
+      await reload();
+      setConfirming(false);
+      toast.success(tenant.portal_owner_configured
+        ? "Proprietário do portal atualizado"
+        : "Proprietário do portal atribuído");
+    } catch {
+      setError("Não foi possível confirmar a atribuição do proprietário.");
+      setConfirming(false);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className="pt-5 mt-5 border-t border-slate-100 space-y-3" data-testid="portal-owner-assignment">
+      <div>
+        <h3 className="text-[13px] font-medium text-slate-700">Proprietário do portal</h3>
+        <p className="text-[12px] text-[var(--dh-muted)] mt-1">
+          {tenant.portal_owner_configured
+            ? "Um proprietário do portal está configurado. A substituição revoga apenas esta autorização administrativa."
+            : "Nenhum proprietário do portal está configurado. Funcionários não recebem acesso ao HUB."}
+        </p>
+      </div>
+      <div className="flex flex-wrap gap-2 items-end">
+        <label className="block flex-1 min-w-[220px] text-[13px] text-slate-700">
+          Usuário ativo do restaurante
+          <select
+            className="dh-input mt-1"
+            value={selectedUserId}
+            onChange={(event) => setSelectedUserId(event.target.value)}
+            disabled={busy}
+            data-testid="portal-owner-user-select"
+          >
+            <option value="">Selecione o proprietário confirmado</option>
+            {activeUsers.map((item) => (
+              <option key={item.id} value={item.id}>{item.name} — {item.email}</option>
+            ))}
+          </select>
+        </label>
+        <AlertDialog open={confirming} onOpenChange={(open) => !busy && setConfirming(open)}>
+          <button
+            type="button"
+            className="dh-btn dh-btn-outline"
+            disabled={!selectedUser || busy}
+            onClick={() => setConfirming(true)}
+            data-testid="portal-owner-assign"
+          >
+            {tenant.portal_owner_configured ? "Substituir proprietário" : "Atribuir proprietário"}
+          </button>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Confirmar proprietário do portal?</AlertDialogTitle>
+              <AlertDialogDescription>
+                {`${selectedUser?.name || "Este usuário"} poderá acessar o portal deste restaurante. Esta ação não altera funções operacionais, módulos ou dados do Pedidos.`}
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel disabled={busy}>Cancelar</AlertDialogCancel>
+              <button type="button" className="dh-btn dh-btn-primary" onClick={assign} disabled={busy}
+                      data-testid="portal-owner-confirm">
+                {busy ? "Confirmando…" : "Confirmar atribuição"}
+              </button>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+      </div>
+      {error && <p role="alert" className="dh-chip dh-chip-error">{error}</p>}
+    </section>
   );
 }
 

@@ -23,6 +23,8 @@ def test_legacy_tenant_needs_explicit_owner_and_operational_admin_is_not_portal_
     })
     tenant.raise_for_status()
     tid = tenant.json()["id"]
+    # Simulate a pre-owner-link tenant without guessing a historical owner.
+    services.db.tenants.update_one({"_id": ObjectId(tid)}, {"$unset": {"portal_owner_user_id": ""}})
     first_email = f"owner-{tag}@example.com"
     first = services.call("POST", f"/hub/tenants/{tid}/users", json={
         "name": "Admin operacional", "email": first_email, "role": "admin", "password": services.password,
@@ -35,6 +37,16 @@ def test_legacy_tenant_needs_explicit_owner_and_operational_admin_is_not_portal_
 
     assigned = services.call("PUT", f"/hub/tenants/{tid}/portal-owner", json={"user_id": first.json()["id"]})
     assert assigned.status_code == 200, assigned.text
+    assert assigned.json() == {"portal_owner_configured": True}
+    persisted = services.db.tenants.find_one({"_id": ObjectId(tid)})
+    assert persisted["portal_owner_user_id"] == first.json()["id"]
+    audit = services.db.activity_log.find_one({
+        "action": "tenant.portal_owner_assigned", "tenant_id": tid,
+    })
+    assert audit and audit["metadata"] == {
+        "previous_owner_configured": False,
+        "owner_user_id": first.json()["id"],
+    }
     owner_headers = services.login(first_email, services.password)
     assert services.call("GET", "/portal/context", headers=owner_headers).status_code == 200
 
