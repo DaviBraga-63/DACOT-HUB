@@ -88,3 +88,40 @@ def test_portal_revenue_failure_does_not_become_zero(services):
     finally:
         service.env["ORDERS_BACKEND_URL"] = original
         service.restart_hub()
+
+
+def test_portal_summary_is_scoped_to_the_authenticated_restaurant(services):
+    service, first, second = services, services.restaurant(), services.restaurant()
+    today, month_extra, _, _ = _periods()
+    service.odb.orders.insert_many([
+        _order(first["tid"], 2001, 12_000, today),
+        _order(first["tid"], 2002, 3_000, today, "in_preparation"),
+        _order(second["tid"], 2001, 99_000, month_extra),
+    ])
+    response = service.call(
+        "GET", "/portal/analytics/summary", headers=first["headers"],
+        params={"restaurant_id": second["tid"], "tenant_id": second["tid"]},
+    )
+    assert response.status_code == 200, response.text
+    assert response.headers["Cache-Control"] == "no-store"
+    payload = response.json()
+    assert payload["today"]["revenue_cents"] == 12_000
+    assert payload["today"]["orders_count"] == 1
+    assert payload["operations"] == {"open_orders": 1}
+    assert payload["month"]["revenue_cents"] == 12_000
+    assert len(payload["series"]) == 7
+    assert service.call("GET", "/portal/analytics/summary", headers=service.staff).status_code == 403
+    assert service.call("GET", "/portal/analytics/summary", headers={}).status_code == 401
+
+
+def test_portal_summary_failure_is_unavailable_not_zero(services):
+    service, restaurant = services, services.restaurant()
+    original = service.env["ORDERS_BACKEND_URL"]
+    try:
+        service.env["ORDERS_BACKEND_URL"] = "http://127.0.0.1:1"
+        service.restart_hub()
+        result = service.call("GET", "/portal/analytics/summary", headers=restaurant["headers"])
+        assert result.status_code == 503
+    finally:
+        service.env["ORDERS_BACKEND_URL"] = original
+        service.restart_hub()
