@@ -45,7 +45,7 @@ export default function Dashboard() {
               </div>
             </div>
             <div
-              className="absolute top-0 left-0 h-1 rounded-t-lg bg-[var(--dh-accent)]"
+              className="absolute top-0 left-0 h-1 rounded-none bg-[var(--dh-accent)]"
               style={{ width: `${Math.min(100, (value || 0) * 10)}%` }}
             />
           </div>

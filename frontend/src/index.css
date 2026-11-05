@@ -157,7 +157,7 @@
 .dh-card {
     background: var(--dh-surface);
     border: 1px solid var(--dh-border);
-    border-radius: 12px;
+    border-radius: 0;
     box-shadow: var(--shadow-xs);
 }
 
@@ -188,7 +188,7 @@
 .dh-grid {
     border: 1px solid var(--dh-border);
     background: var(--dh-surface);
-    border-radius: 12px;
+    border-radius: 0;
     overflow: hidden;
     box-shadow: var(--shadow-xs);
 }
@@ -546,7 +546,7 @@
 .dh-module-card {
     background: var(--dh-surface);
     border: 1px solid var(--dh-border);
-    border-radius: var(--dh-radius-md);
+    border-radius: 0;
     box-shadow: var(--dh-shadow-xs);
     position: relative;
     overflow: hidden;
@@ -560,7 +560,7 @@
 .dh-kpi-card:hover,
 .dh-module-card:hover { transform: translateY(-2px); box-shadow: var(--dh-shadow-md); }
 .dh-kpi-card:hover::before { opacity: 1; }
-.dh-module-card { border-radius: var(--dh-radius-lg); }
+.dh-module-card { border-radius: 0; }
 .dh-module-card::after {
     content: ''; position: absolute; inset: 0;
     background: radial-gradient(circle at top right, var(--dh-accent-soft) 0%, transparent 62%);
