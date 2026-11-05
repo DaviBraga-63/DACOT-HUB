@@ -1734,192 +1734,31 @@ class TenantUserPatch(BaseModel):
     custom_role_id: Optional[str] = Field(default=None, min_length=1, max_length=64)
 
 
-class PortalPasswordIn(BaseModel):
-    password: str = Field(min_length=6, max_length=256)
-
-
-class PortalCustomRoleIn(BaseModel):
-    custom_role_id: Optional[str] = Field(default=None, min_length=1, max_length=64)
-
-
-class PortalOrdersAccessIn(BaseModel):
-    active: bool
-
-
-_UNSET = object()
-_CLEAR = object()
-_PORTAL_ORDERS_CONFIGURATION_LEASE_SECONDS = 30
-
-
-async def _orders_portal_request(method: str, path: str, *, params=None, payload=None) -> dict:
+async def _orders_team_snapshot(tenant_id: str) -> list[dict]:
+    """Read a strictly validated, tenant-scoped team snapshot from Pedidos."""
     try:
         async with httpx.AsyncClient(timeout=5.0, follow_redirects=False, trust_env=False) as client:
-            response = await client.request(method, f"{_orders_backend_url()}{path}", params=params, json=payload, headers={"X-Module-Key": MODULE_ACCESS_KEYS[ORDERS_MODULE_KEY]})
+            response = await client.get(
+                f"{_orders_backend_url()}/api/internal/hub/team/v1",
+                params={"tenant_id": tenant_id},
+                headers={"X-Module-Key": MODULE_ACCESS_KEYS[ORDERS_MODULE_KEY]},
+            )
         data = response.json() if response.status_code == 200 else None
-        if not isinstance(data, dict): raise ValueError("orders")
-        return data
+        expected = {"module", "team"}
+        member_fields = {"hub_user_id", "name", "role", "custom_role_name", "status"}
+        if (not isinstance(data, dict) or set(data) != expected or data.get("module") != "orders"
+                or not isinstance(data.get("team"), list)
+                or any(not isinstance(member, dict) or set(member) != member_fields
+                       or not isinstance(member["name"], str)
+                       or member["role"] not in VALID_HANDOFF_ROLES
+                       or member["status"] not in VALID_TENANT_USER_STATUS
+                       or member["hub_user_id"] is not None and not isinstance(member["hub_user_id"], str)
+                       or member["custom_role_name"] is not None and not isinstance(member["custom_role_name"], str)
+                       for member in data["team"])):
+            raise ValueError("orders")
+        return data["team"]
     except (httpx.HTTPError, ValueError, TypeError):
         raise HTTPException(503, "Integração com Pedidos indisponível")
-
-
-async def _provision_portal_orders_user(target: dict, tenant: dict) -> None:
-    await _orders_portal_request("POST", "/api/internal/hub/provision/direct/v1", payload={"tenant_id": str(tenant["_id"]), "tenant_name": tenant["name"], "hub_user_id": str(target["_id"]), "name": target["name"], "email": target["email"], "role": target["role"]})
-
-
-async def _block_portal_orders_access(tid: str, uid: str, *, state: str = "blocked",
-                                      pending_custom_role_id=_UNSET) -> dict:
-    """Atomically invalidate an in-flight authorization before changing access."""
-    now = now_utc().isoformat()
-    updates = {"active": False, "configuration_state": state, "source": "portal", "updated_at": now}
-    if pending_custom_role_id is not _UNSET and pending_custom_role_id is not _CLEAR:
-        updates["pending_custom_role_id"] = pending_custom_role_id
-    mutation = {"$set": updates, "$setOnInsert": {"created_at": now},
-                "$inc": {"configuration_version": 1}}
-    # A security mutation always supersedes an in-flight remote configuration.
-    # Clearing the lease makes its final compare-and-set fail closed.
-    unset = {"configuration_lock_id": "", "configuration_lock_expires_at": ""}
-    if pending_custom_role_id is _CLEAR:
-        unset["pending_custom_role_id"] = ""
-    mutation["$unset"] = unset
-    return await db.module_user_grants.find_one_and_update(
-        {"tenant_id": tid, "user_id": uid, "module_key": ORDERS_MODULE_KEY},
-        mutation,
-        upsert=True, return_document=ReturnDocument.AFTER,
-    )
-
-
-async def _begin_portal_orders_configuration(tid: str, uid: str, *, pending_custom_role_id) -> tuple[dict, str]:
-    """Acquire one short-lived configuration lease for a user.
-
-    Pedidos owns operational roles, so two overlapping remote writes could
-    otherwise arrive there in reverse order.  The per-grant lease serializes
-    those writes while revocation can still invalidate the lease immediately.
-    """
-    now_dt = now_utc()
-    now = now_dt.isoformat()
-    operation_id = secrets.token_urlsafe(16)
-    updates = {
-        "active": False, "configuration_state": "pending", "source": "portal",
-        "updated_at": now, "configuration_lock_id": operation_id,
-        "configuration_lock_expires_at": (now_dt + timedelta(seconds=_PORTAL_ORDERS_CONFIGURATION_LEASE_SECONDS)).isoformat(),
-    }
-    if pending_custom_role_id is not _UNSET:
-        updates["pending_custom_role_id"] = pending_custom_role_id
-    try:
-        grant = await db.module_user_grants.find_one_and_update(
-            {"tenant_id": tid, "user_id": uid, "module_key": ORDERS_MODULE_KEY,
-             "$or": [{"configuration_lock_id": {"$exists": False}},
-                     {"configuration_lock_expires_at": {"$lte": now}}]},
-            {"$set": updates, "$setOnInsert": {"created_at": now},
-             "$inc": {"configuration_version": 1}},
-            upsert=True, return_document=ReturnDocument.AFTER,
-        )
-    except DuplicateKeyError as exc:
-        # The unique grant index is also the arbiter for simultaneous first use.
-        raise HTTPException(409, "A configuração de acesso já está em andamento") from exc
-    if not grant:
-        raise HTTPException(409, "A configuração de acesso já está em andamento")
-    return grant, operation_id
-
-
-async def _finish_portal_orders_configuration(tid: str, uid: str, version: int,
-                                              operation_id: str) -> bool:
-    """Enable only the exact configuration request that is still current."""
-    result = await db.module_user_grants.update_one(
-        {"tenant_id": tid, "user_id": uid, "module_key": ORDERS_MODULE_KEY,
-         "configuration_version": version, "configuration_state": "pending",
-         "configuration_lock_id": operation_id},
-        {"$set": {"active": True, "configuration_state": "granted", "source": "portal",
-                  "updated_at": now_utc().isoformat()},
-         "$unset": {"pending_custom_role_id": "", "configuration_lock_id": "",
-                    "configuration_lock_expires_at": ""}},
-    )
-    return result.matched_count == 1
-
-
-async def _keep_portal_orders_pending(tid: str, uid: str, version: int, operation_id: str) -> None:
-    """Record a recoverable failure without overwriting a newer revocation."""
-    await db.module_user_grants.update_one(
-        {"tenant_id": tid, "user_id": uid, "module_key": ORDERS_MODULE_KEY,
-         "configuration_version": version, "configuration_state": "pending",
-         "configuration_lock_id": operation_id},
-        {"$set": {"active": False, "updated_at": now_utc().isoformat()},
-         "$unset": {"configuration_lock_id": "", "configuration_lock_expires_at": ""}},
-    )
-
-
-async def _revoke_portal_orders_access(tid: str, uid: str) -> None:
-    """Block a grant and advance the authority checked by existing sessions."""
-    await _block_portal_orders_access(tid, uid, pending_custom_role_id=_CLEAR)
-    await db.tenant_users.update_one(
-        {"_id": ObjectId(uid), "tenant_id": tid, "deleted_at": None},
-        {"$inc": {"token_version": 1}},
-    )
-    await revoke_user_sessions(db, user_id=uid, user_type="restaurant", reason="orders_access_revoked")
-
-
-async def _orders_module_is_active(tid: str) -> bool:
-    return bool(await db.tenant_modules.find_one(
-        {"tenant_id": tid, "module_key": ORDERS_MODULE_KEY, "active": True}
-    ))
-
-
-async def _configure_portal_orders_access(tid: str, uid: str, tenant: dict, *, custom_role_id=_UNSET) -> None:
-    """Provision and authorize one employee, failing closed across service calls.
-
-    The versioned grant makes a concurrent revoke or account deactivation win
-    over this operation: a stale provision request can never turn access back on.
-    """
-    target = await db.tenant_users.find_one(
-        {"_id": ObjectId(uid), "tenant_id": tid, "deleted_at": None, "status": "active"}
-    )
-    if not target:
-        raise HTTPException(409, "Funcionário não está ativo para receber acesso")
-
-    desired_custom_role_id = custom_role_id
-    if desired_custom_role_id is _UNSET:
-        previous = await db.module_user_grants.find_one(
-            {"tenant_id": tid, "user_id": uid, "module_key": ORDERS_MODULE_KEY},
-            {"pending_custom_role_id": 1},
-        )
-        if previous and "pending_custom_role_id" in previous:
-            desired_custom_role_id = previous["pending_custom_role_id"]
-    if target.get("role") != "waiter":
-        desired_custom_role_id = None
-
-    grant, operation_id = await _begin_portal_orders_configuration(
-        tid, uid, pending_custom_role_id=desired_custom_role_id,
-    )
-    version = grant["configuration_version"]
-    try:
-        await _provision_portal_orders_user(target, tenant)
-        if desired_custom_role_id is not _UNSET:
-            await _orders_portal_request(
-                "PUT", f"/api/internal/hub/users/{uid}/custom-role/v1",
-                payload={"tenant_id": tid, "custom_role_id": desired_custom_role_id},
-            )
-        else:
-            # Pedidos remains the authority for custom roles. This read also
-            # verifies that any preserved association is still valid.
-            current = await _orders_portal_request(
-                "GET", f"/api/internal/hub/users/{uid}/custom-role/v1", params={"tenant_id": tid}
-            )
-            role = current.get("custom_role")
-            if role is not None and (not isinstance(role, dict) or set(role) != {"id", "name"}):
-                raise HTTPException(503, "Integração com Pedidos indisponível")
-
-        # Re-read after the remote call. A concurrent local security mutation
-        # increments the grant version and prevents the final compare-and-set.
-        if not await db.tenant_users.find_one(
-            {"_id": ObjectId(uid), "tenant_id": tid, "deleted_at": None, "status": "active"}
-        ):
-            await _block_portal_orders_access(tid, uid)
-            raise HTTPException(409, "Funcionário não está ativo para receber acesso")
-        if not await _finish_portal_orders_configuration(tid, uid, version, operation_id):
-            raise HTTPException(409, "A configuração de acesso foi substituída; consulte o estado atual")
-    except HTTPException:
-        await _keep_portal_orders_pending(tid, uid, version, operation_id)
-        raise
 
 
 @api_router.get("/hub/tenants/{tid}/users")
@@ -2667,149 +2506,36 @@ async def portal_revenue(response: Response, user: dict = Depends(get_restaurant
     return payload
 
 
-@api_router.get("/portal/users")
-async def portal_users(user: dict = Depends(get_restaurant_admin)):
-    docs = await db.tenant_users.find(
-        {"tenant_id": user["tenant_id"], "deleted_at": None}
-    ).sort("created_at", -1).to_list(500)
-    return [_tenant_user_out(d) for d in docs]
-
-
-@api_router.post("/portal/users")
-async def create_portal_user(payload: TenantUserIn, user: dict = Depends(get_restaurant_admin)):
-    # tenant_id is deliberately derived from the authenticated database identity.
-    if payload.custom_role_id is not None and payload.role != "waiter":
-        raise HTTPException(409, "Cargo personalizado requer papel básico waiter")
-    created = await _create_tenant_user(user["tenant_id"], payload, user)
-    if await _orders_module_is_active(user["tenant_id"]):
-        await _configure_portal_orders_access(
-            user["tenant_id"], created["id"], user["tenant"], custom_role_id=payload.custom_role_id,
+@api_router.get("/portal/team")
+async def portal_team(response: Response, user: dict = Depends(get_restaurant_admin)):
+    """Expose an owner-scoped, read-only view of Pedidos operational staff."""
+    tenant_id = user["tenant_id"]
+    snapshot = await _orders_team_snapshot(tenant_id)
+    grants = {
+        grant["user_id"]: bool(grant.get("active"))
+        for grant in await db.module_user_grants.find(
+            {"tenant_id": tenant_id, "module_key": ORDERS_MODULE_KEY},
+            {"_id": 0, "user_id": 1, "active": 1},
+        ).to_list(500)
+    }
+    module_active = bool(await db.tenant_modules.find_one(
+        {"tenant_id": tenant_id, "module_key": ORDERS_MODULE_KEY, "active": True}
+    ))
+    team = []
+    for member in snapshot:
+        is_hub_managed = member["hub_user_id"] is not None
+        has_access = module_active and member["status"] == "active" and (
+            not is_hub_managed or grants.get(member["hub_user_id"], False)
         )
-    elif payload.custom_role_id is not None:
-        # Keep only the requested Pedidos role identifier. No operational
-        # permission is granted until the owner explicitly authorizes access.
-        await _block_portal_orders_access(
-            user["tenant_id"], created["id"], pending_custom_role_id=payload.custom_role_id,
-        )
-    return created
-
-
-@api_router.patch("/portal/users/{uid}")
-async def patch_portal_user(uid: str, payload: TenantUserPatch,
-                            user: dict = Depends(get_restaurant_admin)):
-    if not ObjectId.is_valid(uid): raise HTTPException(404, "Usuário não encontrado")
-    target = await db.tenant_users.find_one({"_id": ObjectId(uid), "tenant_id": user["tenant_id"], "deleted_at": None})
-    if not target: raise HTTPException(404, "Usuário não encontrado")
-    requested = payload.model_dump(exclude_unset=True)
-    custom_role_requested = "custom_role_id" in requested
-    custom_role_id = requested.pop("custom_role_id", None)
-    target_role = requested.get("role", target.get("role"))
-    if custom_role_requested and custom_role_id is not None and target_role != "waiter":
-        raise HTTPException(409, "Cargo personalizado requer papel básico waiter")
-    security_change = "role" in requested or "status" in requested or custom_role_requested
-    if security_change:
-        await _block_portal_orders_access(user["tenant_id"], uid)
-    updated = await _apply_tenant_user_patch(user["tenant_id"], uid, TenantUserPatch(**requested), user)
-    if security_change and updated["status"] == "active" and await _orders_module_is_active(user["tenant_id"]):
-        await _configure_portal_orders_access(
-            user["tenant_id"], uid, user["tenant"],
-            custom_role_id=custom_role_id if custom_role_requested else _UNSET,
-        )
-    return updated
-
-
-@api_router.post("/portal/users/{uid}/reset-password")
-async def reset_portal_user_password(uid: str, user: dict = Depends(get_restaurant_admin)):
-    return await _reset_tenant_user_password(user["tenant_id"], uid, user)
-
-
-@api_router.post("/portal/users/{uid}/password")
-async def set_portal_user_password(uid: str, payload: PortalPasswordIn, user: dict = Depends(get_restaurant_admin)):
-    if not ObjectId.is_valid(uid) or str(user["_id"]) == uid: raise HTTPException(400, "Operação não permitida")
-    result = await db.tenant_users.update_one({"_id": ObjectId(uid), "tenant_id": user["tenant_id"], "deleted_at": None}, _version_increment_update("token_version", {"password_hash": hash_password(payload.password), "password_reset_required": False}))
-    if result.matched_count != 1: raise HTTPException(404, "Usuário não encontrado")
-    await revoke_user_sessions(db, user_id=uid, user_type="restaurant", reason="password_reset")
-    return {"ok": True}
-
-
-@api_router.get("/portal/orders/custom-roles")
-async def portal_orders_custom_roles(user: dict = Depends(get_restaurant_admin)):
-    data = await _orders_portal_request("GET", "/api/internal/hub/custom-roles/v1", params={"tenant_id": user["tenant_id"]})
-    roles = data.get("custom_roles")
-    if not isinstance(roles, list) or any(not isinstance(r, dict) or set(r) != {"id", "name"} for r in roles): raise HTTPException(503, "Integração com Pedidos indisponível")
-    return {"custom_roles": roles}
-
-
-@api_router.get("/portal/orders/access-grants")
-async def portal_orders_access_grants(user: dict = Depends(get_restaurant_admin)):
-    """Return only the current tenant's safe-to-display Pedidos access state."""
-    docs = await db.module_user_grants.find(
-        {"tenant_id": user["tenant_id"], "module_key": ORDERS_MODULE_KEY},
-        {"_id": 0, "user_id": 1, "active": 1, "configuration_state": 1},
-    ).to_list(500)
-    grants = []
-    for grant in docs:
-        state = "granted" if grant.get("active") else (
-            "pending" if grant.get("configuration_state") == "pending" else "blocked"
-        )
-        grants.append({"user_id": grant["user_id"], "state": state})
-    return {"grants": grants}
-
-
-@api_router.get("/portal/users/{uid}/custom-role")
-async def portal_user_custom_role(uid: str, user: dict = Depends(get_restaurant_admin)):
-    if not ObjectId.is_valid(uid) or not await db.tenant_users.find_one({"_id": ObjectId(uid), "tenant_id": user["tenant_id"], "deleted_at": None}):
-        raise HTTPException(404, "Usuário não encontrado")
-    data = await _orders_portal_request("GET", f"/api/internal/hub/users/{uid}/custom-role/v1", params={"tenant_id": user["tenant_id"]})
-    role = data.get("custom_role")
-    if role is not None and (not isinstance(role, dict) or set(role) != {"id", "name"}): raise HTTPException(503, "Integração com Pedidos indisponível")
-    return {"custom_role": role}
-
-
-@api_router.put("/portal/users/{uid}/custom-role")
-async def set_portal_custom_role(uid: str, payload: PortalCustomRoleIn, user: dict = Depends(get_restaurant_admin)):
-    if not ObjectId.is_valid(uid) or str(user["_id"]) == uid: raise HTTPException(400, "Operação não permitida")
-    target = await db.tenant_users.find_one({"_id": ObjectId(uid), "tenant_id": user["tenant_id"], "deleted_at": None})
-    if not target: raise HTTPException(404, "Usuário não encontrado")
-    if payload.custom_role_id is not None and target.get("role") != "waiter": raise HTTPException(409, "Cargo personalizado requer papel básico waiter")
-    if not await _orders_module_is_active(user["tenant_id"]):
-        raise HTTPException(400, "Módulo Pedidos não está ativo para este restaurante")
-    await _configure_portal_orders_access(
-        user["tenant_id"], uid, user["tenant"], custom_role_id=payload.custom_role_id,
-    )
-    return {"ok": True}
-
-
-@api_router.put("/portal/users/{uid}/orders/access")
-async def set_portal_orders_access(uid: str, payload: PortalOrdersAccessIn,
-                                   user: dict = Depends(get_restaurant_admin)):
-    if not ObjectId.is_valid(uid) or str(user["_id"]) == uid:
-        raise HTTPException(400, "Operação não permitida")
-    target = await db.tenant_users.find_one(
-        {"_id": ObjectId(uid), "tenant_id": user["tenant_id"], "deleted_at": None}
-    )
-    if not target:
-        raise HTTPException(404, "Usuário não encontrado")
-
-    if payload.active:
-        if target.get("status") != "active":
-            raise HTTPException(409, "Funcionário não está ativo para receber acesso")
-        if not await _orders_module_is_active(user["tenant_id"]):
-            raise HTTPException(400, "Módulo Pedidos não está ativo para este restaurante")
-        await _configure_portal_orders_access(user["tenant_id"], uid, user["tenant"])
-        action = "portal.orders_access_authorized"
-        state = "granted"
-    else:
-        await _revoke_portal_orders_access(user["tenant_id"], uid)
-        action = "portal.orders_access_revoked"
-        state = "blocked"
-
-    await log_activity(
-        actor_id=user["_id"], actor_name=user.get("name", user["email"]), action=action,
-        target_type="module_user_grant", target_id=uid, tenant_id=user["tenant_id"],
-        metadata={"module": ORDERS_MODULE_KEY},
-    )
-    return {"user_id": uid, "state": state}
+        team.append({
+            "name": member["name"],
+            "role": member["custom_role_name"] or member["role"],
+            "module": "Pedidos & Operação",
+            "status": member["status"],
+            "access": "granted" if has_access else "blocked",
+        })
+    response.headers["Cache-Control"] = "no-store"
+    return {"team": team}
 
 
 @api_router.post("/portal/modules/{mkey}/launch-token")

@@ -218,9 +218,9 @@ def test_tenant_user_removal_preserves_history_and_revokes_orders_access(service
     listed = services.call("GET", f"/hub/tenants/{restaurant['tid']}/users")
     assert listed.status_code == 200
     assert uid not in {item["id"] for item in listed.json()}
-    portal_list = services.call("GET", "/portal/users", headers=restaurant["headers"])
-    assert portal_list.status_code == 200
-    assert uid not in {item["id"] for item in portal_list.json()}
+    # The owner portal is a read-only Pedidos view and no longer exposes the
+    # HUB tenant-user collection or any employee-management route.
+    assert services.call("GET", "/portal/users", headers=restaurant["headers"]).status_code == 404
     assert services.call(
         "PATCH", f"/hub/tenants/{restaurant['tid']}/users/{uid}", json={"status": "active"}
     ).status_code == 404
