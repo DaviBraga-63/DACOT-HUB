@@ -27,6 +27,7 @@ def test_staff_onboarding_always_creates_and_links_the_initial_portal_owner(serv
     body = with_access.json()
     assert body["initial_access_created"] is True
     assert body["users_count"] == 1
+    assert body["invitation"] == "email_sent"
     assert "temp_password" not in with_access.text
 
     manager = service.db.tenant_users.find_one({"tenant_id": body["id"], "email": email})
@@ -44,6 +45,35 @@ def test_staff_onboarding_always_creates_and_links_the_initial_portal_owner(serv
     # Onboarding never activates a product or assumes an individual grant.
     assert service.db.tenant_modules.count_documents({"tenant_id": body["id"]}) == 0
     assert service.db.module_user_grants.count_documents({"tenant_id": body["id"]}) == 0
+
+
+def test_email_delivery_failure_keeps_one_recoverable_owner_without_reporting_success(services):
+    service = services
+    tag = secrets.token_hex(5)
+    email = f"email-failure-{tag}@example.com"
+    previous = service.env.get("DACOT_LOCAL_INTEGRATION")
+    service.env["DACOT_LOCAL_INTEGRATION"] = "0"
+    try:
+        service.restart_hub()
+        response = service.call("POST", "/hub/tenants/onboard", json=_onboard_payload(tag, access_email=email))
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["invitation"] == "email_delivery_failed"
+        owner = service.db.tenant_users.find_one({"tenant_id": body["id"], "email": email})
+        tenant = service.db.tenants.find_one({"_id": ObjectId(body["id"])})
+        assert owner and tenant["portal_owner_user_id"] == str(owner["_id"])
+        assert owner["password_reset_required"] is True
+        assert service.db.password_reset_tokens.count_documents({"user_id": str(owner["_id"]), "used": False}) == 1
+        duplicate = service.call("POST", "/hub/tenants/onboard", json=_onboard_payload(
+            secrets.token_hex(5), access_email=email,
+        ))
+        assert duplicate.status_code == 409
+    finally:
+        if previous is None:
+            service.env.pop("DACOT_LOCAL_INTEGRATION", None)
+        else:
+            service.env["DACOT_LOCAL_INTEGRATION"] = previous
+        service.restart_hub()
 
 
 def test_legacy_tenant_creation_route_uses_the_same_owner_flow(services):
