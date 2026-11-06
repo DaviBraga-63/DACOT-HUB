@@ -1,8 +1,4 @@
-"""Brazilian telephone formatting; validity is not proof of ownership.
-
-This module does not authorize a destination. Authorization is the audited
-binding performed by a super administrator after external verification.
-"""
+"""Brazilian phone formatting for transactional SMS delivery."""
 
 import re
 
@@ -15,14 +11,10 @@ _BRAZILIAN_DDDS = frozenset(
 )
 
 
-def normalize_brazilian_number(value: str) -> str:
-    """Return an E.164-format Brazilian number, or raise ValueError.
-
-    This checks number structure, not assignment, WhatsApp availability, or
-    the identity of its owner. Both mobile and landline numbers are accepted.
-    """
+def normalize_brazilian_phone(value: str) -> str:
+    """Return a structurally valid Brazilian E.164 number."""
     if not isinstance(value, str) or not re.fullmatch(r"\+?[0-9 ()\-.]+", value.strip()):
-        raise ValueError("Número de WhatsApp inválido")
+        raise ValueError("Número de telefone inválido")
     number = value.strip()
     digits = re.sub(r"\D", "", number)
     if number.startswith("+"):
@@ -32,16 +24,24 @@ def normalize_brazilian_number(value: str) -> str:
     elif len(digits) in (12, 13) and digits.startswith("55"):
         digits = digits[2:]
     if len(digits) not in (10, 11) or digits[:2] not in _BRAZILIAN_DDDS:
-        raise ValueError("Número de WhatsApp inválido")
+        raise ValueError("Número de telefone inválido")
     subscriber = digits[2:]
     if (len(subscriber) == 9 and subscriber[0] != "9") or (
         len(subscriber) == 8 and subscriber[0] not in "2345"
     ):
-        raise ValueError("Número de WhatsApp inválido")
+        raise ValueError("Número de telefone inválido")
     return "+55" + digits
 
 
-def mask_brazilian_number(value: str) -> str:
-    """Mask an already normalized number without revealing the full number."""
-    number = normalize_brazilian_number(value)
+def normalize_brazilian_mobile(value: str) -> str:
+    """Return a Brazilian E.164 mobile number suitable for SMS delivery."""
+    number = normalize_brazilian_phone(value)
+    national = number[3:]
+    if len(national) != 11 or national[2] != "9":
+        raise ValueError("Informe um telefone móvel brasileiro")
+    return number
+
+
+def mask_brazilian_phone(value: str) -> str:
+    number = normalize_brazilian_phone(value)
     return f"+55 ({number[3:5]}) {'*' * (len(number) - 9)}{number[-4:]}"

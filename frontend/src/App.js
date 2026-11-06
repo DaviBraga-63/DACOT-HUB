@@ -22,7 +22,6 @@ import Equipe from "@/pages/Equipe";
 import Portal from "@/pages/Portal";
 import PortalModulos from "@/pages/PortalModulos";
 import PortalEquipe from "@/pages/PortalEquipe";
-import WhatsAppPairing from "@/pages/WhatsAppPairing";
 
 export default function App() {
   return (
@@ -44,7 +43,6 @@ export default function App() {
               <Route path="/modulos" element={<Modulos />} />
               <Route path="/modulos/orders" element={<ModuloPedidos />} />
               <Route path="/equipe" element={<Equipe />} />
-              <Route path="/administracao/whatsapp" element={<WhatsAppPairing />} />
             </Route>
             <Route element={<ProtectedRoute><RestaurantRoute><PortalLayout /></RestaurantRoute></ProtectedRoute>}>
               <Route path="/portal" element={<Portal />} />

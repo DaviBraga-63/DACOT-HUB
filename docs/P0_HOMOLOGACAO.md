@@ -16,7 +16,7 @@ antigos. Nenhuma implantação ou migração de produção foi executada por est
 - Pedidos aceita `/api/orders/session/exchange` e `/api/session/exchange`.
 - A sessão local mantém a cópia assinada das versões. Ela não usa a versão mais
   recente da cópia do usuário para "atualizar" silenciosamente uma sessão antiga.
-- O Hub não recebe nem armazena pedidos. Não há alteração em WhatsApp ou outros domínios.
+- O Hub não recebe nem armazena pedidos; os módulos operacionais permanecem independentes.
 
 ## Status efetivo e autorização
 

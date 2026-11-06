@@ -17,7 +17,7 @@ export default function ClienteNovo() {
   const nav = useNavigate();
   const { user } = useAuth();
   const [form, setForm] = useState({
-    name: "", owner_name: "", email: "", phone: "", whatsapp_phone: "",
+    name: "", owner_name: "", email: "", phone: "", mobile_phone: "",
     status: "trial", address: "", notes: "",
     access_name: "", access_email: "", access_channel: "email",
   });
@@ -40,13 +40,13 @@ export default function ClienteNovo() {
       };
       const { data } = await api.post("/hub/tenants/onboard", payload);
       const invitationMessages = {
-        accepted: { type: "info", message: "Cadastro concluído. O gateway aceitou o envio do primeiro acesso; a entrega não foi confirmada." },
-        indeterminate: { type: "error", message: "Cadastro concluído, mas o resultado do envio é incerto. Verifique a conexão do WhatsApp antes de solicitar outro link." },
-        rejected: { type: "error", message: "Cadastro concluído, mas o gateway rejeitou o envio. Verifique a configuração e solicite novo link após corrigir." },
-        rate_limited: { type: "error", message: "Cadastro concluído, mas o gateway limitou o envio. Tente novamente mais tarde." },
-        network_error: { type: "error", message: "Cadastro concluído, mas o Hub não conseguiu alcançar o gateway. Verifique a conexão antes de solicitar outro link." },
-        configuration_error: { type: "error", message: "Cadastro concluído, mas a configuração do envio por WhatsApp está inválida." },
-        unavailable: { type: "error", message: "Cadastro concluído, mas o gateway está indisponível. Solicite um novo link mais tarde." },
+        accepted: { type: "info", message: "Cadastro concluído. Solicitação de envio por SMS aceita pelo provedor." },
+        sent: { type: "info", message: "Cadastro concluído. O provedor confirmou o envio do SMS à operadora." },
+        delivered: { type: "success", message: "Cadastro concluído. O provedor confirmou a entrega do SMS." },
+        undelivered: { type: "error", message: "Cadastro concluído, mas o provedor confirmou que o SMS não foi entregue." },
+        failed: { type: "error", message: "Cadastro concluído, mas o provedor recusou o SMS. Verifique a configuração antes de solicitar outro link." },
+        unknown: { type: "error", message: "Cadastro concluído, mas não foi possível confirmar o resultado do SMS. Verifique o provedor antes de solicitar outro link." },
+        configuration_error: { type: "error", message: "Cadastro concluído, mas a configuração de SMS está incompleta ou inválida." },
       };
       const invitation = invitationMessages[data.invitation];
       if (invitation) toast[invitation.type](invitation.message);
@@ -82,10 +82,10 @@ export default function ClienteNovo() {
           <Field label="Telefone">
             <input className="dh-input" value={form.phone} onChange={set("phone")} data-testid="input-phone" />
           </Field>
-          <Field label="WhatsApp do responsável">
-            <input type="tel" className="dh-input" value={form.whatsapp_phone}
-                   onChange={(e) => setForm((f) => ({ ...f, whatsapp_phone: formatBrazilianPhone(e.target.value) }))}
-                   data-testid="input-whatsapp-phone" />
+          <Field label="Telefone móvel do responsável" required={form.access_channel === "sms"}>
+            <input type="tel" className="dh-input" value={form.mobile_phone} required={form.access_channel === "sms"}
+                   onChange={(e) => setForm((f) => ({ ...f, mobile_phone: formatBrazilianPhone(e.target.value) }))}
+                   data-testid="input-mobile-phone" />
           </Field>
           <Field label="Status">
             <select className="dh-input" value={form.status} onChange={set("status")} data-testid="input-status">
@@ -117,7 +117,7 @@ export default function ClienteNovo() {
           </div>
           <Field label="Enviar primeiro acesso por">
             <select className="dh-input" value={form.access_channel} onChange={set("access_channel")}>
-              <option value="email">E-mail</option><option value="whatsapp">WhatsApp</option>
+              <option value="email">E-mail</option><option value="sms">SMS</option>
             </select>
           </Field>
           <p className="text-[12px] text-[var(--dh-muted)]">O proprietário receberá um link seguro para definir a própria senha.</p>

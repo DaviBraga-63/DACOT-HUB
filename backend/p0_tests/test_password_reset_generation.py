@@ -28,7 +28,7 @@ def hub(monkeypatch):
     spec.loader.exec_module(module)
     async def run_mock_transaction(callback):
         return await callback(None)
-    monkeypatch.setattr(module, "_whatsapp_transaction", run_mock_transaction)
+    monkeypatch.setattr(module, "_phone_transaction", run_mock_transaction)
     return module
 
 
@@ -124,7 +124,7 @@ def test_replacement_invalidates_previous_link_and_new_link_is_single_use(hub, m
         asyncio.run(hub.reset(hub.ResetIn(token=second, password="long-enough")))
 
 
-def test_only_super_admin_can_modify_contact_and_audit_is_atomic(hub, monkeypatch):
+def test_only_super_admin_can_modify_mobile_phone_and_audit_is_atomic(hub, monkeypatch):
     tenant_id = ObjectId()
     admin = {"_id": "staff-id", "role": "admin", "email": "admin@example.test"}
     tenants = SimpleNamespace(
@@ -133,15 +133,15 @@ def test_only_super_admin_can_modify_contact_and_audit_is_atomic(hub, monkeypatc
     )
     monkeypatch.setattr(hub, "db", SimpleNamespace(tenants=tenants))
     with pytest.raises(HTTPException) as exc:
-        asyncio.run(hub.patch_tenant(str(tenant_id), hub.TenantPatch(whatsapp_phone="11912345678"), admin))
+        asyncio.run(hub.patch_tenant(str(tenant_id), hub.TenantPatch(mobile_phone="11912345678"), admin))
     assert exc.value.status_code == 403
     tenants.update_one.assert_not_awaited()
     super_admin = {**admin, "role": "super_admin"}
-    asyncio.run(hub.patch_tenant(str(tenant_id), hub.TenantPatch(whatsapp_phone="11912345678"), super_admin))
+    asyncio.run(hub.patch_tenant(str(tenant_id), hub.TenantPatch(mobile_phone="11912345678"), super_admin))
     mutation = tenants.update_one.call_args.args[1]
-    assert mutation["$set"]["whatsapp_phone"] == "+5511912345678"
-    assert mutation["$push"]["whatsapp_audit"]["actor_id"] == "staff-id"
-    assert mutation["$push"]["whatsapp_audit"]["at"]
+    assert mutation["$set"]["mobile_phone"] == "+5511912345678"
+    assert mutation["$push"]["phone_audit"]["actor_id"] == "staff-id"
+    assert mutation["$push"]["phone_audit"]["at"]
     assert asyncio.run(hub.get_super_admin(super_admin)) == super_admin
     with pytest.raises(HTTPException):
         asyncio.run(hub.get_super_admin(admin))
@@ -156,14 +156,15 @@ def test_tenant_creation_routes_require_super_admin(hub):
         assert any(dep.call is hub.get_super_admin for dep in route.dependant.dependencies)
 
 
-def test_whatsapp_link_is_bound_to_version_and_rotation_rejects_it(hub, monkeypatch):
+def test_phone_link_is_bound_to_version_and_rotation_rejects_it(hub, monkeypatch):
     uid, tid = ObjectId(), ObjectId()
-    user = {"_id": uid, "tenant_id": str(tid), "whatsapp_binding_version": "new-version"}
+    user = {"_id": uid, "tenant_id": str(tid), "phone_binding_version": "new-version"}
     token = {"user_id": str(uid), "user_type": "restaurant", "email": "owner@example.test",
-             "generation": "generation", "whatsapp_binding_version": "old-version"}
+             "generation": "generation", "phone_binding_version": "old-version"}
     async def update(query, _mutation):
-        assert query["whatsapp_binding_version"] == "old-version"
-        return SimpleNamespace(matched_count=int(query["whatsapp_binding_version"] == user["whatsapp_binding_version"]))
+        assert query["$or"] == [{"phone_binding_version": "old-version"},
+                               {"whatsapp_binding_version": "old-version"}]
+        return SimpleNamespace(matched_count=int(user["phone_binding_version"] == "old-version"))
     db = SimpleNamespace(
         tenant_users=SimpleNamespace(find_one=AsyncMock(return_value=user), update_one=update),
         tenants=SimpleNamespace(find_one=AsyncMock(return_value={"_id": tid})),
@@ -176,37 +177,38 @@ def test_whatsapp_link_is_bound_to_version_and_rotation_rejects_it(hub, monkeypa
     assert exc.value.status_code == 400
 
 
-def test_whatsapp_issue_requires_current_binding(hub, monkeypatch):
+def test_phone_issue_requires_current_binding(hub, monkeypatch):
     users = SimpleNamespace(update_one=AsyncMock(return_value=SimpleNamespace(matched_count=0)))
     tokens = SimpleNamespace(insert_one=AsyncMock())
     monkeypatch.setattr(hub, "db", SimpleNamespace(tenant_users=users, password_reset_tokens=tokens))
     with pytest.raises(HTTPException):
-        asyncio.run(hub._issue_password_reset(str(ObjectId()), "owner@example.test", "restaurant", whatsapp_version="outdated"))
-    assert users.update_one.call_args.args[0]["whatsapp_binding_version"] == "outdated"
+        asyncio.run(hub._issue_password_reset(str(ObjectId()), "owner@example.test", "restaurant",
+                                              phone_binding_version="outdated"))
+    assert users.update_one.call_args.args[0]["$or"][0]["phone_binding_version"] == "outdated"
     tokens.insert_one.assert_not_awaited()
 
 
-def test_binding_requires_super_admin_and_scopes_user_to_tenant(hub, monkeypatch):
-    route = next(route for route in hub.api_router.routes if route.path == "/api/hub/tenants/{tid}/whatsapp")
+def test_phone_binding_requires_super_admin_and_scopes_user_to_tenant(hub, monkeypatch):
+    route = next(route for route in hub.app.routes if route.path == "/api/hub/tenants/{tid}/phone")
     assert any(dep.call is hub.get_super_admin for dep in route.dependant.dependencies)
     tid, uid = str(ObjectId()), str(ObjectId())
     users = SimpleNamespace(find_one=AsyncMock(return_value=None), update_one=AsyncMock())
-    monkeypatch.setattr(hub, "db", SimpleNamespace(tenant_users=users))
+    tenants = SimpleNamespace(find_one=AsyncMock())
+    monkeypatch.setattr(hub, "db", SimpleNamespace(tenant_users=users, tenants=tenants))
     with pytest.raises(HTTPException) as exc:
-        asyncio.run(hub.bind_whatsapp(tid, hub.WhatsAppBindingIn(user_id=uid, phone="11912345678"), {"_id": "actor"}))
+        asyncio.run(hub.bind_phone(tid, hub.PhoneBindingIn(user_id=uid, phone="11912345678"), {"_id": "actor"}))
     assert exc.value.status_code == 404
     assert users.find_one.call_args.args[0]["tenant_id"] == tid
     users.update_one.assert_not_awaited()
 
 
-def test_forgot_whatsapp_only_sends_to_bound_user_and_response_is_generic(hub, monkeypatch):
+def test_forgot_sms_only_sends_to_bound_user_and_response_is_generic(hub, monkeypatch):
     uid, tid = ObjectId(), ObjectId()
     account = {"_id": uid, "email": "owner@example.com", "tenant_id": str(tid), "status": "active",
-               "whatsapp_number": "+5511912345678", "whatsapp_binding_version": "version"}
+               "phone_number": "+5511912345678", "phone_binding_version": "version"}
     counters = SimpleNamespace(find_one_and_update=AsyncMock(return_value={"count": 1}))
     users = SimpleNamespace(find_one=AsyncMock(return_value=account))
-    tenant = {"_id": tid, "whatsapp_user_id": str(uid)}
-    tenants = SimpleNamespace(find_one=AsyncMock(return_value=tenant))
+    tenants = SimpleNamespace(find_one=AsyncMock(return_value={"_id": tid, "phone_user_id": str(uid)}))
     monkeypatch.setattr(hub, "db", SimpleNamespace(password_reset_requests=counters,
                         hub_users=SimpleNamespace(find_one=AsyncMock(return_value=None)),
                         tenant_users=users, tenants=tenants))
@@ -216,18 +218,18 @@ def test_forgot_whatsapp_only_sends_to_bound_user_and_response_is_generic(hub, m
     monkeypatch.setattr(hub, "_allow_recovery_request", allow)
     request = SimpleNamespace(client=SimpleNamespace(host="127.0.0.1"), headers={})
     tasks = hub.BackgroundTasks()
-    response = asyncio.run(hub.forgot(hub.ForgotIn(email=account["email"], channel="whatsapp"), tasks, request))
+    response = asyncio.run(hub.forgot(hub.ForgotIn(email=account["email"], channel="sms"), tasks, request))
     assert response == hub.GENERIC_RESET_RESPONSE
-    assert issue.call_args.kwargs["whatsapp_version"] == "version"
+    assert issue.call_args.kwargs["phone_binding_version"] == "version"
     assert len(tasks.tasks) == 1
-    tenant["whatsapp_user_id"] = str(ObjectId())
+    tenants.find_one.return_value = {"_id": tid, "phone_user_id": str(ObjectId())}
     issue.reset_mock()
     tasks = hub.BackgroundTasks()
-    assert asyncio.run(hub.forgot(hub.ForgotIn(email=account["email"], channel="whatsapp"), tasks, request)) == response
+    assert asyncio.run(hub.forgot(hub.ForgotIn(email=account["email"], channel="sms"), tasks, request)) == response
     issue.assert_not_awaited()
     assert not tasks.tasks
     allow.return_value = False
-    assert asyncio.run(hub.forgot(hub.ForgotIn(email=account["email"], channel="whatsapp"), tasks, request)) == response
+    assert asyncio.run(hub.forgot(hub.ForgotIn(email=account["email"], channel="sms"), tasks, request)) == response
     issue.assert_not_awaited()
 
 
@@ -240,172 +242,36 @@ def test_recovery_ip_ignores_untrusted_forwarding_and_resolves_trusted_chain(hub
     assert hub._recovery_client_ip(request) == "198.51.100.5"
 
 
-def test_invalid_status_never_changes_whatsapp(hub, monkeypatch):
+def test_invalid_status_never_changes_mobile_phone(hub, monkeypatch):
     users = SimpleNamespace(update_one=AsyncMock())
     tenants = SimpleNamespace(update_one=AsyncMock())
     monkeypatch.setattr(hub, "db", SimpleNamespace(tenant_users=users, tenants=tenants))
     with pytest.raises(HTTPException) as exc:
-        asyncio.run(hub.patch_tenant(str(ObjectId()), hub.TenantPatch(whatsapp_phone="11912345678", status="bad"),
+        asyncio.run(hub.patch_tenant(str(ObjectId()), hub.TenantPatch(mobile_phone="11912345678", status="bad"),
                                      {"_id": "actor", "role": "super_admin"}))
     assert exc.value.status_code == 400
     users.update_one.assert_not_awaited()
     tenants.update_one.assert_not_awaited()
 
 
-def test_pairing_code_requires_super_admin_route_and_never_persists_phone_or_code(hub, monkeypatch):
-    route = next(route for route in hub.app.routes if route.path == "/api/hub/whatsapp/pairing-code")
-    assert any(dep.call is hub.get_super_admin for dep in route.dependant.dependencies)
-    actor_id = str(ObjectId())
-    users = SimpleNamespace(find_one=AsyncMock(return_value={"password_hash": "stored", "name": "Founder"}))
-    monkeypatch.setattr(hub, "db", SimpleNamespace(hub_users=users))
-    monkeypatch.setenv("WHATSAPP_PAIRING_SELF_SERVICE_ENABLED", "true")
-    monkeypatch.setattr(hub, "verify_password", lambda supplied, stored: supplied == "correct" and stored == "stored")
-    monkeypatch.setattr(hub, "_allow_pairing_code_request", AsyncMock(return_value=True))
-    request_code = AsyncMock(return_value="ABCD1234")
-    monkeypatch.setattr(hub, "_request_gateway_pairing_code", request_code)
-    audit = AsyncMock()
-    monkeypatch.setattr(hub, "log_activity", audit)
-    response = Response()
-    result = asyncio.run(hub.request_whatsapp_pairing_code(
-        hub.WhatsAppPairingCodeIn(phone="11912345678", password="correct"), response,
-        {"_id": actor_id, "role": "super_admin"},
-    ))
-    assert result == {"code": "ABCD1234"}
-    assert response.headers["cache-control"] == "no-store"
-    assert request_code.call_args.args[0] == "+5511912345678"
-    assert "11912345678" not in str(audit.call_args.kwargs)
-    assert "ABCD1234" not in str(audit.call_args.kwargs)
-    monkeypatch.setenv("WHATSAPP_PAIRING_SELF_SERVICE_ENABLED", "false")
-    with pytest.raises(HTTPException) as disabled:
-        asyncio.run(hub.request_whatsapp_pairing_code(
-            hub.WhatsAppPairingCodeIn(phone="11912345678", password="correct"), Response(),
-            {"_id": actor_id, "role": "super_admin"},
-        ))
-    assert disabled.value.status_code == 404
-
-
-def test_whatsapp_status_requires_super_admin_and_fails_closed_for_gateway_unavailability(hub, monkeypatch):
-    route = next(route for route in hub.app.routes if route.path == "/api/hub/whatsapp/status")
-    assert any(dep.call is hub.get_super_admin for dep in route.dependant.dependencies)
-    with pytest.raises(HTTPException) as denied:
-        asyncio.run(hub.get_super_admin({"_id": "staff", "role": "admin"}))
-    assert denied.value.status_code == 403
-
-    monkeypatch.setenv("WHATSAPP_PAIRING_SELF_SERVICE_ENABLED", "true")
-    monkeypatch.setattr(hub, "_get_whatsapp_integration_status", AsyncMock(return_value=SimpleNamespace(
-        connection_state="open", gateway_reachable=True, pairing_self_service_enabled=True,
-        connected_account_phone="+5511912345678",
-    )))
-    response = Response()
-    result = asyncio.run(hub.whatsapp_integration_status(response, {"_id": "founder", "role": "super_admin"}))
-    assert result == {
-        "connection_state": "open",
-        "gateway_reachable": True,
-        "pairing_self_service_enabled": True,
-        "connected_account_phone": "+5511912345678",
-        "account_switch_available": False,
-    }
-    assert response.headers["cache-control"] == "no-store"
-    assert response.headers["referrer-policy"] == "no-referrer"
-
-    monkeypatch.setattr(hub, "_get_whatsapp_integration_status", AsyncMock(return_value=SimpleNamespace(
-        connection_state="disconnected", gateway_reachable=False, pairing_self_service_enabled=True,
-        connected_account_phone=None,
-    )))
-    unavailable = asyncio.run(hub.whatsapp_integration_status(Response(), {"_id": "founder", "role": "super_admin"}))
-    assert unavailable == {
-        "connection_state": "unavailable",
-        "gateway_reachable": False,
-        "pairing_self_service_enabled": False,
-        "connected_account_phone": None,
-        "account_switch_available": False,
-    }
-
-    monkeypatch.setenv("WHATSAPP_PAIRING_SELF_SERVICE_ENABLED", "false")
-    monkeypatch.setattr(hub, "_get_whatsapp_integration_status", AsyncMock(return_value=SimpleNamespace(
-        connection_state="open", gateway_reachable=True, pairing_self_service_enabled=True,
-        connected_account_phone=None,
-    )))
-    blocked = asyncio.run(hub.whatsapp_integration_status(Response(), {"_id": "founder", "role": "super_admin"}))
-    assert blocked["pairing_self_service_enabled"] is False
-    assert blocked["connected_account_phone"] is None
-
-
-def test_account_switch_is_super_admin_only_password_confirmed_and_origin_bound(hub, monkeypatch):
-    from starlette.requests import Request
-
-    start_route = next(route for route in hub.app.routes if route.path == "/api/hub/whatsapp/account-switch")
-    promote_route = next(route for route in hub.app.routes if route.path == "/api/hub/whatsapp/account-switch/{operation_id}/promote")
-    assert any(dep.call is hub.get_super_admin for dep in start_route.dependant.dependencies)
-    assert any(dep.call is hub.get_super_admin for dep in promote_route.dependant.dependencies)
-    with pytest.raises(HTTPException) as denied:
-        asyncio.run(hub.get_super_admin({"_id": "staff", "role": "admin"}))
-    assert denied.value.status_code == 403
-
-    actor_id = str(ObjectId())
-    reserved_operation = {}
-
-    async def reserve_operation(_query, update, **_kwargs):
-        reserved_operation.update(update["$set"])
-        return update["$set"]
-    operations = SimpleNamespace(find_one_and_update=reserve_operation, update_one=AsyncMock())
-    users = SimpleNamespace(find_one=AsyncMock(return_value={"password_hash": "stored", "name": "Founder"}))
-    monkeypatch.setattr(hub, "db", SimpleNamespace(hub_users=users, whatsapp_account_switches=operations))
-    monkeypatch.setenv("WHATSAPP_ACCOUNT_SWITCH_SERVICE_SECRET", "w" * 32)
-    monkeypatch.setattr(hub, "_allow_account_switch_request", AsyncMock(return_value=True))
-    monkeypatch.setattr(hub, "verify_password", lambda supplied, stored: supplied == "correct" and stored == "stored")
-    gateway = SimpleNamespace(prepare=AsyncMock(return_value=SimpleNamespace(available=True, state="awaiting_pairing", expires_at=1_700_000_600)))
-    monkeypatch.setattr(hub, "_account_switch_provider", lambda: gateway)
-    audit_log = AsyncMock()
-    monkeypatch.setattr(hub, "log_activity", audit_log)
-
-    def request(origin):
-        return Request({"type": "http", "method": "POST", "path": "/api/hub/whatsapp/account-switch",
-                        "headers": [(b"origin", origin.encode())]})
-
-    payload = hub.WhatsAppAccountSwitchStartIn(phone="11912345678", password="wrong", confirm=True)
-    with pytest.raises(HTTPException) as wrong_password:
-        asyncio.run(hub.start_whatsapp_account_switch(payload, request(hub.FRONTEND_URL), Response(),
-                                                       {"_id": actor_id, "role": "super_admin"}))
-    assert wrong_password.value.status_code == 401
-    gateway.prepare.assert_not_awaited()
-
-    payload.password = "correct"
-    with pytest.raises(HTTPException) as bad_origin:
-        asyncio.run(hub.start_whatsapp_account_switch(payload, request("https://attacker.example.test"), Response(),
-                                                       {"_id": actor_id, "role": "super_admin"}))
-    assert bad_origin.value.status_code == 403
-    gateway.prepare.assert_not_awaited()
-
-    result = asyncio.run(hub.start_whatsapp_account_switch(payload, request(hub.FRONTEND_URL), Response(),
-                                                            {"_id": actor_id, "role": "super_admin"}))
-    assert result["state"] == "awaiting_pairing"
-    assert len(result["operation_id"]) == 48
-    normalized_phone = "+5511912345678"
-
-    # The authenticated internal provider must receive the normalized destination.
-    # Privacy is instead enforced on the API response, persistence and audit trail.
-    assert gateway.prepare.await_args.kwargs["number"] == normalized_phone
-    assert "11912345678" not in str(result)
-    assert normalized_phone not in str(result)
-    assert "11912345678" not in str(reserved_operation)
-    assert normalized_phone not in str(reserved_operation)
-    audit_log.assert_awaited_once()
-    assert "11912345678" not in str(audit_log.await_args)
-    assert normalized_phone not in str(audit_log.await_args)
-
-
-def test_account_switch_status_fails_closed_without_sensitive_gateway_details(hub, monkeypatch):
-    actor_id, operation_id = str(ObjectId()), "b" * 48
-    operation = {"_id": "global", "operation_id": operation_id, "actor_id": actor_id,
-                 "expires_at": hub.now_utc() + timedelta(minutes=10)}
-    operations = SimpleNamespace(find_one=AsyncMock(return_value=operation), update_one=AsyncMock())
-    monkeypatch.setattr(hub, "db", SimpleNamespace(whatsapp_account_switches=operations))
-    monkeypatch.setattr(hub, "_account_switch_provider", lambda: SimpleNamespace(
-        status=AsyncMock(return_value=SimpleNamespace(available=False, state="unavailable", code="MUST-NOT-LEAK", expires_at=None))))
-    response = Response()
-    result = asyncio.run(hub.whatsapp_account_switch_status(operation_id, response, {"_id": actor_id, "role": "super_admin"}))
-    assert result["state"] == "unavailable"
-    assert "MUST-NOT-LEAK" not in str(result)
-    assert response.headers["cache-control"] == "no-store"
-    assert response.headers["referrer-policy"] == "no-referrer"
+def test_sms_reset_logs_only_safe_delivery_metadata(hub, monkeypatch, caplog):
+    monkeypatch.setenv("SMS_PROVIDER", "twilio")
+    monkeypatch.setenv("TWILIO_ACCOUNT_SID", "AC" + "a" * 32)
+    monkeypatch.setenv("TWILIO_AUTH_TOKEN", "synthetic-secret")
+    monkeypatch.setenv("SMS_FROM", "+15551234567")
+    monkeypatch.delenv("TWILIO_MESSAGING_SERVICE_SID", raising=False)
+    send = AsyncMock(return_value=SimpleNamespace(state="accepted", http_status=201,
+        provider_message_id="SM" + "b" * 32, error_code=None))
+    monkeypatch.setattr(hub, "SmsDeliveryProvider", lambda **_: SimpleNamespace(send=send))
+    raw_token = "synthetic-reset-token"
+    result = asyncio.run(hub._send_sms_reset(
+        "+5511912345678", raw_token, "first_access", tenant_id="tenant-safe-id"))
+    assert result.state == "accepted"
+    assert send.await_args.kwargs["number"] == "+5511912345678"
+    assert "reset-password?token=synthetic-reset-token" in send.await_args.kwargs["message"]
+    assert "sms_delivery_result" in caplog.text
+    assert "tenant-safe-id" in caplog.text
+    assert "SM" + "b" * 32 in caplog.text
+    assert raw_token not in caplog.text
+    assert "11912345678" not in caplog.text
+    assert "synthetic-secret" not in caplog.text

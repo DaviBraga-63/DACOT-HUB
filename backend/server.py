@@ -21,8 +21,8 @@ from urllib.parse import urlparse
 from handoff_policy import validate_handoff_configuration, validate_launch_url, orders_module_key
 from orders_launch_urls import ORDERS_LAUNCH_URL_TEMPLATE, migrate_legacy_orders_launch_urls
 from orders_user_grants import ORDERS_MODULE_KEY, bootstrap_orders_user_grants
-from whatsapp_numbers import normalize_brazilian_number
-from whatsapp_delivery import WhatsAppDeliveryProvider, WhatsAppPairingProvider, WhatsAppStatusProvider, WhatsAppAccountSwitchProvider
+from phone_numbers import normalize_brazilian_mobile, normalize_brazilian_phone
+from sms_delivery import SmsDeliveryProvider
 from email_delivery import (
     send_orders_first_access_email as _send_orders_first_access_email,
     send_password_reset_email as _send_password_reset_email,
@@ -156,7 +156,7 @@ api_router = APIRouter(prefix="/api")
 @app.middleware("http")
 async def protect_reset_response(request: Request, call_next):
     response = await call_next(request)
-    if request.url.path in {"/reset-password", "/api/auth/reset-password", "/api/hub/whatsapp/pairing-code"} or request.url.path.startswith("/api/hub/whatsapp/account-switch"):
+    if request.url.path in {"/reset-password", "/api/auth/reset-password"}:
         response.headers["Referrer-Policy"] = "no-referrer"
         response.headers["Cache-Control"] = "no-store"
     return response
@@ -428,32 +428,18 @@ class ResetIn(BaseModel):
     password: str = Field(min_length=6)
 
 
-class WhatsAppPairingCodeIn(BaseModel):
-    """Confirmation is deliberately required for this high-impact operation."""
-    phone: str = Field(min_length=10, max_length=32)
-    password: str = Field(min_length=1, max_length=256)
-
-
-class WhatsAppAccountSwitchStartIn(BaseModel):
-    phone: str = Field(min_length=10, max_length=32)
-    password: str = Field(min_length=1, max_length=256)
-    confirm: bool = False
-
-
-class WhatsAppAccountSwitchPromoteIn(BaseModel):
-    password: str = Field(min_length=1, max_length=256)
-    confirm: bool = False
-
-
 async def _issue_password_reset(user_id: str, email: str, user_type: str, *, first_access: bool = False,
-                                whatsapp_version: Optional[str] = None) -> str:
+                                phone_binding_version: Optional[str] = None) -> str:
     """Create the existing one-time reset credential without exposing it."""
     raw = secrets.token_urlsafe(32)
     generation = secrets.token_urlsafe(32)
     coll = db.tenant_users if user_type == "restaurant" else db.hub_users
     query = {"_id": ObjectId(user_id), "deleted_at": None}
-    if whatsapp_version is not None:
-        query["whatsapp_binding_version"] = whatsapp_version
+    if phone_binding_version is not None:
+        query["$or"] = [
+            {"phone_binding_version": phone_binding_version},
+            {"whatsapp_binding_version": phone_binding_version},  # legacy data only
+        ]
         query["status"] = "active"
     changed = await coll.update_one(
         query,
@@ -465,129 +451,34 @@ async def _issue_password_reset(user_id: str, email: str, user_type: str, *, fir
         "token_hash": hashlib.sha256(raw.encode()).hexdigest(),
         "user_id": user_id, "email": email, "user_type": user_type,
         "generation": generation,
-        "whatsapp_binding_version": whatsapp_version,
+        "phone_binding_version": phone_binding_version,
         "used": False, "expires_at": now_utc() + timedelta(days=30 if first_access else 1),
         "created_at": now_utc(),
     })
     return raw
 
 
-async def _send_whatsapp_reset(number: str, token: str, purpose: str):
-    provider = WhatsAppDeliveryProvider(
-        service_url=os.environ.get("WHATSAPP_SERVICE_URL", ""),
-        service_key=os.environ.get("WHATSAPP_SERVICE_SECRET", ""),
-        frontend_url=FRONTEND_URL,
-        ca_file=os.environ.get("WHATSAPP_SERVICE_CA_FILE") or None,
-        service_transport=os.environ.get("WHATSAPP_SERVICE_TRANSPORT", "https"),
+async def _send_sms_reset(number: str, token: str, purpose: str, *, tenant_id: Optional[str] = None):
+    provider_name = os.environ.get("SMS_PROVIDER", "twilio")
+    provider_label = "twilio" if provider_name.strip().lower() == "twilio" else "unsupported"
+    provider = SmsDeliveryProvider(
+        provider=provider_name,
+        account_sid=os.environ.get("TWILIO_ACCOUNT_SID", ""),
+        auth_token=os.environ.get("TWILIO_AUTH_TOKEN", ""),
+        sender=os.environ.get("SMS_FROM", ""),
+        messaging_service_sid=os.environ.get("TWILIO_MESSAGING_SERVICE_SID", ""),
     )
-    result = await provider.send(number=number, token=token, purpose=purpose,
-                                 request_id=hashlib.sha256(token.encode()).hexdigest())
-    if result.value != "accepted":
-        logger.warning("whatsapp_delivery_result purpose=%s outcome=%s", purpose, result.value)
+    link = f"{FRONTEND_URL}/reset-password?token={token}"
+    prefix = "DACOT: defina sua senha: " if purpose == "first_access" else "DACOT: redefina sua senha: "
+    result = await provider.send(number=number, message=prefix + link)
+    logger.info(
+        "sms_delivery_result tenant_id=%s purpose=%s request_id=%s provider=%s state=%s http_status=%s provider_message_id=%s error_code=%s",
+        tenant_id or "none", purpose, hashlib.sha256(token.encode()).hexdigest(), provider_label,
+        result.state, result.http_status, result.provider_message_id, result.error_code,
+    )
     return result
 
 
-def _pairing_self_service_enabled() -> bool:
-    # Default-off: leave this emergency control unavailable after pairing unless
-    # founders explicitly enable it again through the deployment environment.
-    return os.environ.get("WHATSAPP_PAIRING_SELF_SERVICE_ENABLED", "false") == "true"
-
-
-async def _allow_pairing_code_request(actor_id: str) -> bool:
-    """Shared bounded admission for a super-admin pairing-code request.
-
-    Counters contain only HMAC-like hashes of scope/actor identifiers; neither
-    the phone nor the returned pairing code is retained.
-    """
-    now = now_utc()
-    bucket = int(now.timestamp()) // 900
-    try:
-        for scope, identity, limit in (("global", "all", 6), ("actor", actor_id, 2)):
-            key = hashlib.sha256(f"whatsapp-pairing:{scope}:{identity}:{bucket}".encode()).hexdigest()
-            doc = await db.whatsapp_pairing_requests.find_one_and_update(
-                {"_id": key}, {"$inc": {"count": 1}, "$setOnInsert": {"created_at": now}},
-                upsert=True, return_document=ReturnDocument.AFTER,
-            )
-            if doc["count"] > limit:
-                return False
-        return True
-    except PyMongoError:
-        logger.warning("whatsapp_pairing_rate_limiter_unavailable")
-        return False
-
-
-async def _request_gateway_pairing_code(number: str, request_id: str) -> Optional[str]:
-    provider = WhatsAppPairingProvider(
-        service_url=os.environ.get("WHATSAPP_SERVICE_URL", ""),
-        service_key=os.environ.get("WHATSAPP_PAIRING_SERVICE_SECRET", ""),
-        ca_file=os.environ.get("WHATSAPP_SERVICE_CA_FILE") or None,
-        service_transport=os.environ.get("WHATSAPP_SERVICE_TRANSPORT", "https"),
-    )
-    return (await provider.request_code(number=number, request_id=request_id)).code
-
-
-async def _get_whatsapp_integration_status():
-    provider = WhatsAppStatusProvider(
-        service_url=os.environ.get("WHATSAPP_SERVICE_URL", ""),
-        service_key=os.environ.get("WHATSAPP_SERVICE_SECRET", ""),
-        ca_file=os.environ.get("WHATSAPP_SERVICE_CA_FILE") or None,
-        service_transport=os.environ.get("WHATSAPP_SERVICE_TRANSPORT", "https"),
-    )
-    return await provider.get_status(request_id=secrets.token_urlsafe(24))
-
-
-def _account_switch_provider() -> WhatsAppAccountSwitchProvider:
-    return WhatsAppAccountSwitchProvider(
-        service_url=os.environ.get("WHATSAPP_SERVICE_URL", ""),
-        service_key=os.environ.get("WHATSAPP_ACCOUNT_SWITCH_SERVICE_SECRET", ""),
-        ca_file=os.environ.get("WHATSAPP_SERVICE_CA_FILE") or None,
-        service_transport=os.environ.get("WHATSAPP_SERVICE_TRANSPORT", "https"),
-    )
-
-
-def _account_switch_enabled() -> bool:
-    # No fallback is permitted: delivery, legacy pairing and administrative
-    # credentials can never authorize an account replacement.
-    return len(os.environ.get("WHATSAPP_ACCOUNT_SWITCH_SERVICE_SECRET", "")) >= 32
-
-
-def _require_frontend_origin(request: Request) -> None:
-    """CSRF check for the high-impact browser-only account switch controls."""
-    origin = request.headers.get("origin", "").rstrip("/")
-    if not origin or origin != FRONTEND_URL.rstrip("/"):
-        raise HTTPException(403, "Origem não autorizada")
-
-
-async def _allow_account_switch_request(actor_id: str, action: str = "start") -> bool:
-    # Keep the limited pairing-code retrieval budget separate from creation of
-    # a candidate. Both are shared, atomic Mongo counters across HUB workers.
-    if action not in {"start", "code"}:
-        return False
-    now = now_utc()
-    bucket = int(now.timestamp()) // 900
-    try:
-        for scope, identity, limit in (("global", "all", 8), ("actor", actor_id, 3)):
-            key = hashlib.sha256(f"whatsapp-account-switch:{action}:{scope}:{identity}:{bucket}".encode()).hexdigest()
-            doc = await db.whatsapp_account_switch_rate.find_one_and_update(
-                {"_id": key}, {"$inc": {"count": 1}, "$setOnInsert": {"created_at": now}},
-                upsert=True, return_document=ReturnDocument.AFTER,
-            )
-            if doc["count"] > limit:
-                return False
-        return True
-    except PyMongoError:
-        logger.warning("whatsapp_account_switch_rate_limiter_unavailable")
-        return False
-
-
-async def _owned_account_switch(actor_id: str) -> Optional[dict]:
-    operation = await db.whatsapp_account_switches.find_one({"_id": "global"})
-    if not operation or operation.get("actor_id") != actor_id or operation.get("expires_at", now_utc()) <= now_utc():
-        return None
-    return operation
-
-
-# ─── Auth endpoints ────────────────────────────────────────────────────────────
 def _recovery_client_ip(request: Request) -> str:
     """Trust forwarded client addresses only from explicitly trusted proxies."""
     try:
@@ -772,13 +663,14 @@ async def _allow_recovery_request(email: str, ip: str) -> bool:
 
 @api_router.post("/auth/forgot-password")
 async def forgot(payload: ForgotIn, background_tasks: BackgroundTasks, request: Request):
-    if payload.channel not in {"email", "whatsapp"}:
+    if payload.channel not in {"email", "sms"}:
         raise HTTPException(400, "Canal inválido")
     email = payload.email.lower()
     if not await _allow_recovery_request(email, _recovery_client_ip(request)):
         return GENERIC_RESET_RESPONSE
     user = await db.hub_users.find_one({"email": email})
     ut = "staff"
+    tenant = None
     if not user:
         user = await db.tenant_users.find_one({"email": email})
         ut = "restaurant"
@@ -788,17 +680,22 @@ async def forgot(payload: ForgotIn, background_tasks: BackgroundTasks, request: 
         tenant = await db.tenants.find_one({"_id": ObjectId(user["tenant_id"])})
         if not tenant or tenant.get("deleted_at"):
             return GENERIC_RESET_RESPONSE
-    if payload.channel == "whatsapp":
+    if payload.channel == "sms":
+        if ut != "restaurant":
+            return GENERIC_RESET_RESPONSE
+        phone_user_id = tenant.get("phone_user_id") or tenant.get("whatsapp_user_id")
+        phone_number = user.get("phone_number") or user.get("whatsapp_number")
+        phone_binding_version = user.get("phone_binding_version") or user.get("whatsapp_binding_version")
         if (ut != "restaurant" or user.get("status", "active") != "active"
-                or tenant.get("whatsapp_user_id") != str(user["_id"])
-                or not user.get("whatsapp_number") or not user.get("whatsapp_binding_version")):
+                or phone_user_id != str(user["_id"])
+                or not phone_number or not phone_binding_version):
             return GENERIC_RESET_RESPONSE
         try:
             raw = await _issue_password_reset(str(user["_id"]), email, ut,
-                                              whatsapp_version=user["whatsapp_binding_version"])
+                                              phone_binding_version=phone_binding_version)
         except HTTPException:
             return GENERIC_RESET_RESPONSE
-        background_tasks.add_task(_send_whatsapp_reset, user["whatsapp_number"], raw, "recovery")
+        background_tasks.add_task(_send_sms_reset, phone_number, raw, "recovery", tenant_id=user["tenant_id"])
     else:
         raw = await _issue_password_reset(str(user["_id"]), email, ut)
         background_tasks.add_task(send_password_reset_email, user["email"], raw)
@@ -826,8 +723,12 @@ async def reset(payload: ResetIn):
     # Legacy credentials predate generations. They remain valid only until a
     # newer credential has been issued for that account.
     user_query["password_reset_generation"] = doc.get("generation")
-    if doc.get("whatsapp_binding_version") is not None:
-        user_query["whatsapp_binding_version"] = doc["whatsapp_binding_version"]
+    phone_binding_version = doc.get("phone_binding_version", doc.get("whatsapp_binding_version"))
+    if phone_binding_version is not None:
+        user_query["$or"] = [
+            {"phone_binding_version": phone_binding_version},
+            {"whatsapp_binding_version": phone_binding_version},  # legacy data only
+        ]
         user_query["status"] = "active"
     changed = await coll.update_one(
         user_query,
@@ -845,193 +746,14 @@ async def reset(payload: ResetIn):
     return {"ok": True}
 
 
-@api_router.post("/hub/whatsapp/pairing-code")
-async def request_whatsapp_pairing_code(payload: WhatsAppPairingCodeIn, response: Response,
-                                         user: dict = Depends(get_super_admin)):
-    """Return one ephemeral pairing code to a re-authenticated super-admin.
-
-    The browser never receives gateway credentials and the HUB never receives
-    WHATSAPP_ADMIN_SECRET.  This endpoint is deliberately default-off and is
-    meant only for a controlled pairing window.
-    """
-    if not _pairing_self_service_enabled():
-        raise HTTPException(404, "Indisponível")
-    if not await _allow_pairing_code_request(user["_id"]):
-        raise HTTPException(429, "Tente novamente mais tarde")
-    current = await db.hub_users.find_one({"_id": ObjectId(user["_id"]), "active": True, "deleted_at": None},
-                                          {"password_hash": 1, "name": 1})
-    if not current or not verify_password(payload.password, current.get("password_hash", "")):
-        raise HTTPException(401, "Não foi possível confirmar a identidade")
-    try:
-        number = normalize_brazilian_number(payload.phone)
-    except ValueError:
-        raise HTTPException(400, "Número de WhatsApp inválido") from None
-    code = await _request_gateway_pairing_code(number, secrets.token_urlsafe(32))
-    if not code:
-        raise HTTPException(503, "Pareamento temporariamente indisponível")
-    await log_activity(actor_id=user["_id"], actor_name=current.get("name", ""),
-                       action="whatsapp_gateway.pairing_code_requested",
-                       target_type="whatsapp_gateway", metadata={"channel": "pairing_code"})
-    response.headers["Cache-Control"] = "no-store"
-    response.headers["Referrer-Policy"] = "no-referrer"
-    return {"code": code}
-
-
-@api_router.get("/hub/whatsapp/status")
-async def whatsapp_integration_status(response: Response, _user: dict = Depends(get_super_admin)):
-    """Expose only the sanitized gateway state to authenticated super-admins."""
-    status = await _get_whatsapp_integration_status()
-    pairing_enabled = bool(status.gateway_reachable and status.pairing_self_service_enabled
-                           and _pairing_self_service_enabled())
-    response.headers["Cache-Control"] = "no-store"
-    response.headers["Referrer-Policy"] = "no-referrer"
-    return {
-        "connection_state": status.connection_state if status.gateway_reachable else "unavailable",
-        "gateway_reachable": status.gateway_reachable,
-        "pairing_self_service_enabled": pairing_enabled,
-        "connected_account_phone": status.connected_account_phone if status.gateway_reachable else None,
-        "account_switch_available": bool(status.gateway_reachable and _account_switch_enabled()
-                                          and getattr(status, "account_switch_available", False)),
-    }
-
-
-@api_router.post("/hub/whatsapp/account-switch")
-async def start_whatsapp_account_switch(payload: WhatsAppAccountSwitchStartIn, request: Request, response: Response,
-                                         user: dict = Depends(get_super_admin)):
-    _require_frontend_origin(request)
-    if not _account_switch_enabled() or not payload.confirm:
-        raise HTTPException(404, "Indisponível")
-    if not await _allow_account_switch_request(user["_id"]):
-        raise HTTPException(429, "Tente novamente mais tarde")
-    current = await db.hub_users.find_one({"_id": ObjectId(user["_id"]), "active": True, "deleted_at": None},
-                                          {"password_hash": 1, "name": 1})
-    if not current or not verify_password(payload.password, current.get("password_hash", "")):
-        raise HTTPException(401, "Não foi possível confirmar a identidade")
-    try:
-        number = normalize_brazilian_number(payload.phone)
-    except ValueError:
-        raise HTTPException(400, "Número de WhatsApp inválido") from None
-    operation_id = secrets.token_hex(24)
-    now = now_utc()
-    record = {"_id": "global", "operation_id": operation_id, "actor_id": user["_id"], "state": "preparing",
-              "created_at": now, "updated_at": now, "expires_at": now + timedelta(minutes=10)}
-    try:
-        existing = await db.whatsapp_account_switches.find_one_and_update(
-            {"_id": "global", "$or": [{"expires_at": {"$lte": now}},
-                                           {"state": {"$in": ["failed", "cancelled", "expired", "promoted"]}}]},
-            {"$set": record}, upsert=True, return_document=ReturnDocument.AFTER,
-        )
-    except DuplicateKeyError:
-        raise HTTPException(409, "Já existe uma troca de conta em andamento") from None
-    if existing.get("operation_id") != operation_id:
-        raise HTTPException(409, "Já existe uma troca de conta em andamento")
-    result = await _account_switch_provider().prepare(operation_id=operation_id, number=number,
-                                                       request_id=secrets.token_urlsafe(24))
-    if not result.available:
-        await db.whatsapp_account_switches.update_one({"_id": "global", "operation_id": operation_id},
-                                                      {"$set": {"state": "failed", "updated_at": now_utc()}})
-        raise HTTPException(503, "Troca de conta temporariamente indisponível")
-    await db.whatsapp_account_switches.update_one({"_id": "global", "operation_id": operation_id},
-                                                  {"$set": {"state": result.state, "updated_at": now_utc()}})
-    await log_activity(actor_id=user["_id"], actor_name=current.get("name", ""),
-                       action="whatsapp_account_switch_started", target_type="whatsapp_gateway",
-                       metadata={"operation": "account_switch"})
-    response.headers["Cache-Control"] = "no-store"
-    response.headers["Referrer-Policy"] = "no-referrer"
-    return {"operation_id": operation_id, "state": result.state, "expires_at": result.expires_at}
-
-
-@api_router.get("/hub/whatsapp/account-switch/{operation_id}")
-async def whatsapp_account_switch_status(operation_id: str, response: Response, user: dict = Depends(get_super_admin)):
-    operation = await _owned_account_switch(user["_id"])
-    if not operation or operation.get("operation_id") != operation_id:
-        raise HTTPException(404, "Operação não encontrada")
-    result = await _account_switch_provider().status(operation_id=operation_id, request_id=secrets.token_urlsafe(24))
-    if result.available:
-        await db.whatsapp_account_switches.update_one({"_id": "global", "operation_id": operation_id},
-                                                      {"$set": {"state": result.state, "updated_at": now_utc()}})
-    response.headers["Cache-Control"] = "no-store"
-    response.headers["Referrer-Policy"] = "no-referrer"
-    return {"state": result.state if result.available else "unavailable", "expires_at": operation["expires_at"].isoformat()}
-
-
-@api_router.post("/hub/whatsapp/account-switch/{operation_id}/code")
-async def whatsapp_account_switch_code(operation_id: str, request: Request, response: Response,
-                                       user: dict = Depends(get_super_admin)):
-    _require_frontend_origin(request)
-    operation = await _owned_account_switch(user["_id"])
-    if not operation or operation.get("operation_id") != operation_id:
-        raise HTTPException(404, "Operação não encontrada")
-    if not await _allow_account_switch_request(user["_id"], "code"):
-        raise HTTPException(429, "Tente novamente mais tarde")
-    result = await _account_switch_provider().code(operation_id=operation_id, request_id=secrets.token_urlsafe(24))
-    if not result.available or not result.code:
-        raise HTTPException(409, "Código indisponível")
-    response.headers["Cache-Control"] = "no-store"
-    response.headers["Referrer-Policy"] = "no-referrer"
-    return {"code": result.code, "state": result.state}
-
-
-@api_router.post("/hub/whatsapp/account-switch/{operation_id}/cancel")
-async def cancel_whatsapp_account_switch(operation_id: str, request: Request, response: Response,
-                                         user: dict = Depends(get_super_admin)):
-    _require_frontend_origin(request)
-    operation = await _owned_account_switch(user["_id"])
-    if not operation or operation.get("operation_id") != operation_id:
-        raise HTTPException(404, "Operação não encontrada")
-    result = await _account_switch_provider().cancel(operation_id=operation_id, request_id=secrets.token_urlsafe(24))
-    if not result.available:
-        raise HTTPException(409, "Cancelamento indisponível")
-    await db.whatsapp_account_switches.update_one({"_id": "global", "operation_id": operation_id},
-                                                  {"$set": {"state": "cancelled", "updated_at": now_utc()}})
-    response.headers["Cache-Control"] = "no-store"
-    response.headers["Referrer-Policy"] = "no-referrer"
-    return {"state": "cancelled"}
-
-
-@api_router.post("/hub/whatsapp/account-switch/{operation_id}/promote")
-async def promote_whatsapp_account_switch(operation_id: str, payload: WhatsAppAccountSwitchPromoteIn, request: Request,
-                                          response: Response, user: dict = Depends(get_super_admin)):
-    _require_frontend_origin(request)
-    operation = await _owned_account_switch(user["_id"])
-    if not operation or operation.get("operation_id") != operation_id or not payload.confirm:
-        raise HTTPException(404, "Operação não encontrada")
-    current = await db.hub_users.find_one({"_id": ObjectId(user["_id"]), "active": True, "deleted_at": None},
-                                          {"password_hash": 1, "name": 1})
-    if not current or not verify_password(payload.password, current.get("password_hash", "")):
-        raise HTTPException(401, "Não foi possível confirmar a identidade")
-    result = await _account_switch_provider().promote(operation_id=operation_id, request_id=secrets.token_urlsafe(24))
-    if result.state not in {"promoted"}:
-        raise HTTPException(409, "A conta ainda não está pronta para substituição")
-    await db.whatsapp_account_switches.update_one({"_id": "global", "operation_id": operation_id},
-                                                  {"$set": {"state": "promoted", "updated_at": now_utc()}})
-    await log_activity(actor_id=user["_id"], actor_name=current.get("name", ""),
-                       action="whatsapp_account_switch_promoted", target_type="whatsapp_gateway",
-                       metadata={"operation": "account_switch"})
-    response.headers["Cache-Control"] = "no-store"
-    response.headers["Referrer-Policy"] = "no-referrer"
-    return {"state": "promoted"}
-
-
-# ─── Activity log helper ───────────────────────────────────────────────────────
-async def log_activity(*, actor_id: str, actor_name: str, action: str,
-                       target_type: str, target_id: Optional[str] = None,
-                       tenant_id: Optional[str] = None, metadata: Optional[dict] = None):
-    await db.activity_log.insert_one({
-        "actor_id": actor_id, "actor_name": actor_name, "action": action,
-        "target_type": target_type, "target_id": target_id,
-        "tenant_id": tenant_id, "metadata": metadata or {},
-        "created_at": now_utc().isoformat(),
-    })
-
-
 # ─── Tenant / Module models ────────────────────────────────────────────────────
 class TenantIn(BaseModel):
     name: str
     owner_name: str
     email: EmailStr
     phone: Optional[str] = ""
-    whatsapp_phone: Optional[str] = ""
+    mobile_phone: Optional[str] = ""
+    whatsapp_phone: Optional[str] = None  # legacy request compatibility; never written
     status: str = "trial"
     address: Optional[str] = ""
     notes: Optional[str] = ""
@@ -1051,7 +773,8 @@ class TenantPatch(BaseModel):
     owner_name: Optional[str] = None
     email: Optional[EmailStr] = None
     phone: Optional[str] = None
-    whatsapp_phone: Optional[str] = None
+    mobile_phone: Optional[str] = None
+    whatsapp_phone: Optional[str] = None  # legacy request compatibility; never written
     status: Optional[str] = None
     address: Optional[str] = None
     notes: Optional[str] = None
@@ -1061,7 +784,7 @@ class PortalOwnerIn(BaseModel):
     user_id: str
 
 
-class WhatsAppBindingIn(BaseModel):
+class PhoneBindingIn(BaseModel):
     user_id: str
     phone: str
 
@@ -1094,9 +817,8 @@ def _tenant_out(doc: dict) -> dict:
         "email": doc.get("email", ""),
         "phone": doc.get("phone", ""),
         "portal_owner_configured": bool(doc.get("portal_owner_user_id")),
-        "whatsapp_phone": doc.get("whatsapp_phone", ""),
-        "whatsapp_user_id": doc.get("whatsapp_user_id"),
-        "portal_owner_configured": bool(doc.get("portal_owner_user_id")),
+        "mobile_phone": doc.get("mobile_phone", doc.get("whatsapp_phone", "")),
+        "phone_user_id": doc.get("phone_user_id", doc.get("whatsapp_user_id")),
         "status": doc.get("status", "trial"),
         "address": doc.get("address", ""),
         "notes": doc.get("notes", ""),
@@ -1108,7 +830,8 @@ def _new_tenant_doc(payload: TenantIn) -> dict:
     if payload.status not in VALID_STATUS:
         raise HTTPException(400, "Status inválido")
     try:
-        whatsapp_phone = normalize_brazilian_number(payload.whatsapp_phone) if payload.whatsapp_phone else ""
+        raw_mobile = payload.mobile_phone or payload.whatsapp_phone or ""
+        mobile_phone = normalize_brazilian_mobile(raw_mobile) if raw_mobile else ""
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from None
     return {
@@ -1117,7 +840,7 @@ def _new_tenant_doc(payload: TenantIn) -> dict:
         "owner_name": payload.owner_name.strip(),
         "email": payload.email.lower(),
         "phone": payload.phone or "",
-        "whatsapp_phone": whatsapp_phone,
+        "mobile_phone": mobile_phone,
         "status": payload.status,
         "address": payload.address or "",
         "notes": payload.notes or "",
@@ -1159,12 +882,12 @@ async def _create_tenant_with_owner(payload: TenantOnboardingIn, background_task
     created, only the tenant inserted by this request is compensated.
     """
     doc = _new_tenant_doc(payload)
-    if payload.access_channel not in {"email", "whatsapp"}:
+    if payload.access_channel not in {"email", "sms"}:
         raise HTTPException(400, "Canal inválido")
-    if payload.access_channel == "whatsapp" and not doc["whatsapp_phone"]:
-        raise HTTPException(400, "WhatsApp do responsável é obrigatório")
-    if doc["whatsapp_phone"]:
-        doc["whatsapp_audit"] = [{"action": "set", "actor_id": user["_id"], "at": now_utc().isoformat()}]
+    if payload.access_channel == "sms" and not doc["mobile_phone"]:
+        raise HTTPException(400, "Telefone do responsável é obrigatório para envio por SMS")
+    if doc["mobile_phone"]:
+        doc["phone_audit"] = [{"action": "set", "actor_id": user["_id"], "at": now_utc().isoformat()}]
     access_name = (payload.access_name or payload.owner_name).strip()
     access_email = (payload.access_email or payload.email).lower()
     if not access_name:
@@ -1189,19 +912,19 @@ async def _create_tenant_with_owner(payload: TenantOnboardingIn, background_task
             raise HTTPException(409, "Proprietário do portal já está configurado")
         doc["portal_owner_user_id"] = created_user_id
         version = None
-        if doc["whatsapp_phone"]:
+        if doc["mobile_phone"]:
             version = secrets.token_urlsafe(32)
             binding = await db.tenant_users.update_one(
                 {"_id": ObjectId(created_user_id), "tenant_id": tid, "deleted_at": None},
-                {"$set": {"whatsapp_number": doc["whatsapp_phone"], "whatsapp_binding_version": version},
-                 "$push": {"whatsapp_audit": {"actor_id": user["_id"], "at": now_utc().isoformat()}}},
+                {"$set": {"phone_number": doc["mobile_phone"], "phone_binding_version": version},
+                 "$push": {"phone_audit": {"actor_id": user["_id"], "at": now_utc().isoformat()}}},
             )
             if binding.matched_count != 1:
                 raise HTTPException(409, "Responsável não está disponível")
-            await db.tenants.update_one({"_id": inserted.inserted_id}, {"$set": {"whatsapp_user_id": created_user_id}})
-            doc["whatsapp_user_id"] = created_user_id
+            await db.tenants.update_one({"_id": inserted.inserted_id}, {"$set": {"phone_user_id": created_user_id}})
+            doc["phone_user_id"] = created_user_id
         raw_reset = await _issue_password_reset(created_user_id, access_email, "restaurant", first_access=True,
-                                                 whatsapp_version=version if payload.access_channel == "whatsapp" else None)
+                                                 phone_binding_version=version if payload.access_channel == "sms" else None)
         await log_activity(
             actor_id=user["_id"], actor_name=user.get("name", user["email"]),
             action="tenant.onboarded", target_type="tenant", target_id=tid, tenant_id=tid,
@@ -1216,8 +939,8 @@ async def _create_tenant_with_owner(payload: TenantOnboardingIn, background_task
         await db.tenants.delete_one({"_id": inserted.inserted_id})
         raise
     invitation = None
-    if raw_reset and payload.access_channel == "whatsapp":
-        invitation = (await _send_whatsapp_reset(doc["whatsapp_phone"], raw_reset, "first_access")).value
+    if raw_reset and payload.access_channel == "sms":
+        invitation = (await _send_sms_reset(doc["mobile_phone"], raw_reset, "first_access", tenant_id=tid)).state
     elif raw_reset:
         background_tasks.add_task(send_password_reset_email, access_email, raw_reset, 30 * 24)
         invitation = "queued"
@@ -1246,9 +969,10 @@ async def get_tenant(tid: str, _u: dict = Depends(get_staff_user)):
     d = await db.tenants.find_one({"_id": ObjectId(tid), "deleted_at": None})
     if not d:
         raise HTTPException(404, "Cliente não encontrado")
-    if d.get("whatsapp_user_id") and ObjectId.is_valid(d["whatsapp_user_id"]):
-        owner = await db.tenant_users.find_one({"_id": ObjectId(d["whatsapp_user_id"]), "tenant_id": tid, "deleted_at": None})
-        d["whatsapp_phone"] = owner.get("whatsapp_number", "") if owner else ""
+    phone_user_id = d.get("phone_user_id", d.get("whatsapp_user_id"))
+    if phone_user_id and ObjectId.is_valid(phone_user_id):
+        owner = await db.tenant_users.find_one({"_id": ObjectId(phone_user_id), "tenant_id": tid, "deleted_at": None})
+        d["mobile_phone"] = (owner.get("phone_number") or owner.get("whatsapp_number", "")) if owner else ""
     base = _tenant_out(d)
     base["active_modules"] = await db.tenant_modules.count_documents({"tenant_id": tid, "active": True})
     base["users_count"] = await db.tenant_users.count_documents({"tenant_id": tid, "deleted_at": None})
@@ -1287,12 +1011,12 @@ async def assign_portal_owner(tid: str, payload: PortalOwnerIn, user: dict = Dep
     return {"portal_owner_configured": True}
 
 
-@api_router.put("/hub/tenants/{tid}/whatsapp")
-async def bind_whatsapp(tid: str, payload: WhatsAppBindingIn, user: dict = Depends(get_super_admin)):
+@api_router.put("/hub/tenants/{tid}/phone")
+async def bind_phone(tid: str, payload: PhoneBindingIn, user: dict = Depends(get_super_admin)):
     if not ObjectId.is_valid(tid) or not ObjectId.is_valid(payload.user_id):
         raise HTTPException(404, "Cliente ou usuário não encontrado")
     try:
-        phone = normalize_brazilian_number(payload.phone)
+        phone = normalize_brazilian_mobile(payload.phone)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from None
     async def bind(session):
@@ -1300,34 +1024,34 @@ async def bind_whatsapp(tid: str, payload: WhatsAppBindingIn, user: dict = Depen
                                                 "deleted_at": None, "status": "active"}, session=session)
         if not owner:
             raise HTTPException(404, "Usuário ativo não encontrado neste restaurante")
-        tenant = await db.tenants.find_one_and_update(
-            {"_id": ObjectId(tid), "deleted_at": None,
-             "$or": [{"whatsapp_user_id": None}, {"whatsapp_user_id": payload.user_id}]},
-            {"$set": {"whatsapp_user_id": payload.user_id, "whatsapp_phone": phone}},
-            return_document=ReturnDocument.AFTER, session=session,
-        )
+        tenant = await db.tenants.find_one({"_id": ObjectId(tid), "deleted_at": None}, session=session)
         if not tenant:
-            raise HTTPException(409, "Outro responsável já está vinculado ao WhatsApp")
-        result = await db.tenant_users.update_one(
+            raise HTTPException(404, "Cliente não encontrado")
+        current_user = tenant.get("phone_user_id", tenant.get("whatsapp_user_id"))
+        if current_user and current_user != payload.user_id:
+            raise HTTPException(409, "Outro responsável já está vinculado ao telefone")
+        await db.tenant_users.update_one(
             {"_id": ObjectId(payload.user_id), "tenant_id": tid, "deleted_at": None, "status": "active"},
-            {"$set": {"whatsapp_number": phone, "whatsapp_binding_version": secrets.token_urlsafe(32)},
-             "$push": {"whatsapp_audit": {"actor_id": user["_id"], "at": now_utc().isoformat(), "action": "set"}}},
+            {"$set": {"phone_number": phone, "phone_binding_version": secrets.token_urlsafe(32)},
+             "$push": {"phone_audit": {"actor_id": user["_id"], "at": now_utc().isoformat(), "action": "set"}}},
             session=session,
         )
-        if result.matched_count != 1:
-            raise HTTPException(409, "Responsável não está mais disponível")
-    await _whatsapp_transaction(bind)
+        await db.tenants.update_one(
+            {"_id": ObjectId(tid), "deleted_at": None},
+            {"$set": {"phone_user_id": payload.user_id, "mobile_phone": phone}}, session=session,
+        )
+    await _phone_transaction(bind)
     return {"ok": True}
 
 
-async def _whatsapp_transaction(callback):
+async def _phone_transaction(callback):
     """Fail closed if the MongoDB deployment cannot provide transactions."""
     try:
         async with await client.start_session() as session:
             return await session.with_transaction(callback)
     except PyMongoError:
-        logger.warning("whatsapp_binding_transaction_unavailable")
-        raise HTTPException(503, "Alteração de WhatsApp temporariamente indisponível") from None
+        logger.warning("phone_binding_transaction_unavailable")
+        raise HTTPException(503, "Alteração do telefone temporariamente indisponível") from None
 
 
 @api_router.patch("/hub/tenants/{tid}")
@@ -1335,62 +1059,65 @@ async def patch_tenant(tid: str, payload: TenantPatch, user: dict = Depends(get_
     if not ObjectId.is_valid(tid):
         raise HTTPException(404, "Cliente não encontrado")
     update = {k: v for k, v in payload.model_dump(exclude_unset=True).items() if v is not None}
+    if "whatsapp_phone" in update:
+        if "mobile_phone" in update and update["mobile_phone"] != update["whatsapp_phone"]:
+            raise HTTPException(400, "Informe apenas um telefone móvel")
+        update["mobile_phone"] = update.pop("whatsapp_phone")
     if "email" in update:
         update["email"] = update["email"].lower()
     if "status" in update and update["status"] not in VALID_STATUS:
         raise HTTPException(400, "Status inválido")
     if "name" in update:
         update["slug"] = _slug(update["name"])
-    phone_was_unbound = False
-    if "whatsapp_phone" in update:
+    if "mobile_phone" in update:
         if user.get("role") != "super_admin":
-            raise HTTPException(403, "Somente super administradores podem alterar o WhatsApp")
+            raise HTTPException(403, "Somente super administradores podem alterar o telefone móvel")
         try:
-            update["whatsapp_phone"] = normalize_brazilian_number(update["whatsapp_phone"]) if update["whatsapp_phone"] else ""
+            update["mobile_phone"] = normalize_brazilian_mobile(update["mobile_phone"]) if update["mobile_phone"] else ""
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from None
-    async def update_documents(session=None):
-        nonlocal phone_was_unbound
-        options = {"session": session} if session is not None else {}
-        tenant = await db.tenants.find_one({"_id": ObjectId(tid), "deleted_at": None}, **options) if "whatsapp_phone" in update else None
-        if "whatsapp_phone" in update and not tenant:
-            raise HTTPException(404, "Cliente não encontrado")
-        if tenant:
-            owner_id = tenant.get("whatsapp_user_id")
-            phone_was_unbound = not owner_id
-            if owner_id:
-                if not ObjectId.is_valid(owner_id):
-                    raise HTTPException(409, "Vínculo de WhatsApp inválido")
-                event = {"actor_id": user["_id"], "at": now_utc().isoformat(), "action": "change"}
-                changed = await db.tenant_users.update_one(
-                    {"_id": ObjectId(owner_id), "tenant_id": tid, "deleted_at": None},
-                    {"$set": {"whatsapp_number": update["whatsapp_phone"],
-                              "whatsapp_binding_version": secrets.token_urlsafe(32)},
-                     "$push": {"whatsapp_audit": event}}, **options,
-                )
-                if changed.matched_count != 1:
-                    raise HTTPException(409, "Responsável vinculado não está disponível")
-        tenant_query = {"_id": ObjectId(tid), "deleted_at": None}
-        if phone_was_unbound:
-            tenant_query["whatsapp_user_id"] = None
-        r = await db.tenants.update_one(tenant_query, mutation, **options)
-        if r.matched_count == 0:
-            raise HTTPException(409 if phone_was_unbound else 404, "Cliente não encontrado ou vínculo alterado")
 
     update["updated_at"] = now_utc().isoformat()
     mutation = {"$set": update}
     if "status" in update:
         mutation = _version_increment_update("access_version", update)
-    if "whatsapp_phone" in update:
-        event = {"action": "set" if update["whatsapp_phone"] else "clear",
+    if "mobile_phone" in update:
+        event = {"action": "set" if update["mobile_phone"] else "clear",
                  "actor_id": user["_id"], "at": now_utc().isoformat()}
         if isinstance(mutation, list):
-            mutation.append({"$set": {"whatsapp_audit": {"$concatArrays": [
-                {"$ifNull": ["$whatsapp_audit", []]}, {"$literal": [event]}]}}})
+            mutation.append({"$set": {"phone_audit": {"$concatArrays": [
+                {"$ifNull": ["$phone_audit", []]}, {"$literal": [event]}]}}})
         else:
-            mutation["$push"] = {"whatsapp_audit": event}
-    if "whatsapp_phone" in update:
-        await _whatsapp_transaction(update_documents)
+            mutation["$push"] = {"phone_audit": event}
+
+    async def update_documents(session=None):
+        options = {"session": session} if session is not None else {}
+        if "mobile_phone" in update:
+            tenant = await db.tenants.find_one({"_id": ObjectId(tid), "deleted_at": None}, **options)
+            if not tenant:
+                raise HTTPException(404, "Cliente não encontrado")
+            owner_id = tenant.get("phone_user_id", tenant.get("whatsapp_user_id"))
+            if owner_id:
+                if not ObjectId.is_valid(owner_id):
+                    raise HTTPException(409, "Vínculo de telefone inválido")
+                changed = await db.tenant_users.update_one(
+                    {"_id": ObjectId(owner_id), "tenant_id": tid, "deleted_at": None},
+                    {"$set": {"phone_number": update["mobile_phone"],
+                              "phone_binding_version": secrets.token_urlsafe(32)},
+                     "$push": {"phone_audit": {"actor_id": user["_id"],
+                                                "at": now_utc().isoformat(), "action": "change"}}},
+                    **options,
+                )
+                if changed.matched_count != 1:
+                    raise HTTPException(409, "Responsável vinculado não está disponível")
+        result = await db.tenants.update_one(
+            {"_id": ObjectId(tid), "deleted_at": None}, mutation, **options,
+        )
+        if result.matched_count != 1:
+            raise HTTPException(404, "Cliente não encontrado")
+
+    if "mobile_phone" in update:
+        await _phone_transaction(update_documents)
     else:
         await update_documents()
     if "status" in update:
@@ -2750,8 +2477,6 @@ async def startup():
     await db.password_reset_requests.create_index("email")
     await db.password_reset_requests.create_index("created_at", expireAfterSeconds=900)
     await db.password_reset_cooldowns.create_index("last_allowed", expireAfterSeconds=3600)
-    await db.whatsapp_pairing_requests.create_index("created_at", expireAfterSeconds=900)
-    await db.whatsapp_account_switch_rate.create_index("created_at", expireAfterSeconds=900)
     await ensure_indexes(db)
 
     # Seed admin

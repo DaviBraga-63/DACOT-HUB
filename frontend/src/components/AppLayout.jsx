@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { NavLink, useLocation, useNavigate, Outlet, Navigate } from "react-router-dom";
-import { LayoutDashboard, Building2, Blocks, Users, LogOut, Settings, Menu, Moon, Sun, X, ChevronDown, MessageCircle } from "lucide-react";
+import { LayoutDashboard, Building2, Blocks, Users, LogOut, Menu, Moon, Sun, X, ChevronDown } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 import { useTheme } from "@/context/ThemeContext";
 import { api } from "@/lib/api";
@@ -41,11 +41,7 @@ export default function AppLayout() {
   const [modulesOpen, setModulesOpen] = useState(false);
   const [modules, setModules] = useState(null);
   const [modulesError, setModulesError] = useState(false);
-  const [settingsOpen, setSettingsOpen] = useState(false);
   const modulesMenuRef = useRef(null);
-  const settingsMenuRef = useRef(null);
-  const mobileSettingsMenuRef = useRef(null);
-  const canManageWhatsApp = user?.role === "super_admin";
 
   const initials = (user?.name || user?.email || "?")
     .split(/\s+/).slice(0, 2).map((s) => s[0]).join("").toUpperCase();
@@ -63,23 +59,16 @@ export default function AppLayout() {
 
   useEffect(() => {
     setModulesOpen(false);
-    setSettingsOpen(false);
   }, [location.pathname]);
 
   useEffect(() => {
-    if (!modulesOpen && !settingsOpen) return undefined;
+    if (!modulesOpen) return undefined;
     const closeWhenOutside = (event) => {
       if (modulesOpen && !modulesMenuRef.current?.contains(event.target)) setModulesOpen(false);
-      if (
-        settingsOpen
-        && !settingsMenuRef.current?.contains(event.target)
-        && !mobileSettingsMenuRef.current?.contains(event.target)
-      ) setSettingsOpen(false);
     };
     const closeWithEscape = (event) => {
       if (event.key === "Escape") {
         setModulesOpen(false);
-        setSettingsOpen(false);
       }
     };
     document.addEventListener("mousedown", closeWhenOutside);
@@ -88,7 +77,7 @@ export default function AppLayout() {
       document.removeEventListener("mousedown", closeWhenOutside);
       document.removeEventListener("keydown", closeWithEscape);
     };
-  }, [modulesOpen, settingsOpen]);
+  }, [modulesOpen]);
 
   if (user?.user_type === "restaurant") {
     return <Navigate to="/portal" replace />;
@@ -119,14 +108,6 @@ export default function AppLayout() {
       return;
     }
     setModulesOpen(true);
-  };
-
-  const toggleSettingsMenu = () => {
-    setSettingsOpen((isOpen) => !isOpen);
-  };
-
-  const closeSettingsMenu = () => {
-    setSettingsOpen(false);
   };
 
   const visibleModules = modules?.filter(isReleasedModule);
@@ -207,43 +188,6 @@ export default function AppLayout() {
     );
   });
 
-  const desktopSettingsMenu = canManageWhatsApp ? (
-    <div className="dh-modules-menu-wrap" ref={settingsMenuRef}>
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <button
-            type="button"
-            onClick={toggleSettingsMenu}
-            data-testid="menu-configuracoes"
-            className="dh-topnav-action"
-            aria-label="Configurações"
-            aria-haspopup="menu"
-            aria-expanded={settingsOpen}
-            aria-controls="desktop-settings-menu"
-          >
-            <Settings size={18} strokeWidth={1.75} />
-          </button>
-        </TooltipTrigger>
-        <TooltipContent side="bottom">Configurações</TooltipContent>
-      </Tooltip>
-      {settingsOpen && (
-        <div id="desktop-settings-menu" className="dh-modules-menu dh-settings-menu" role="menu" aria-label="Configurações">
-          <div className="dh-settings-menu-label">Integrações</div>
-          <NavLink
-            to="/administracao/whatsapp"
-            role="menuitem"
-            className="dh-modules-menu-item"
-            onClick={closeSettingsMenu}
-            data-testid="menu-integracao-whatsapp"
-          >
-            <span className="dh-icon-tile-neutral dh-modules-menu-icon"><MessageCircle size={16} strokeWidth={1.75} /></span>
-            <span className="min-w-0 flex-1 text-left">WhatsApp</span>
-          </NavLink>
-        </div>
-      )}
-    </div>
-  ) : null;
-
   const mobileBottomSection = (
     <div className="dh-sidebar-footer pt-4 pb-5 px-3 space-y-1">
       <div className="flex items-center gap-3 px-3 py-3 mb-1">
@@ -255,38 +199,6 @@ export default function AppLayout() {
           <div className="text-[11px] text-[var(--dh-muted)] truncate">{user?.email}</div>
         </div>
       </div>
-      {canManageWhatsApp && (
-        <div ref={mobileSettingsMenuRef}>
-          <button
-            type="button"
-            onClick={toggleSettingsMenu}
-            data-testid="menu-configuracoes"
-            className="dh-sidebar-link w-full text-left"
-            aria-haspopup="menu"
-            aria-expanded={settingsOpen}
-            aria-controls="mobile-settings-menu"
-          >
-            <Settings size={18} strokeWidth={1.75} />
-            <span>Configurações</span>
-            <ChevronDown className={`ml-auto dh-modules-menu-chevron ${settingsOpen ? "dh-modules-menu-chevron-open" : ""}`} size={16} strokeWidth={2} />
-          </button>
-          {settingsOpen && (
-            <div id="mobile-settings-menu" className="ml-6 mt-1" role="menu" aria-label="Configurações">
-              <div className="dh-settings-menu-label px-3">Integrações</div>
-              <NavLink
-                to="/administracao/whatsapp"
-                role="menuitem"
-                onClick={() => { setDrawer(false); closeSettingsMenu(); }}
-                data-testid="menu-integracao-whatsapp"
-                className="dh-sidebar-link"
-              >
-                <MessageCircle size={18} strokeWidth={1.75} />
-                <span>WhatsApp</span>
-              </NavLink>
-            </div>
-          )}
-        </div>
-      )}
       <Tooltip>
         <TooltipTrigger asChild>
           <button
@@ -327,7 +239,6 @@ export default function AppLayout() {
           <div className="text-[10px] text-[var(--dh-muted)] truncate max-w-[130px]">{user?.email}</div>
         </div>
       </div>
-      {desktopSettingsMenu}
       <Tooltip>
         <TooltipTrigger asChild>
           <button
