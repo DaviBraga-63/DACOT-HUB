@@ -638,7 +638,7 @@
 .dh-login-background {
     position: absolute;
     overflow: hidden;
-    background: #090909;
+    background: #000;
     isolation: isolate;
 }
 .dh-login-background::after {
@@ -646,12 +646,13 @@
     position: absolute;
     inset: 0;
     pointer-events: none;
-    background: radial-gradient(ellipse 48% 62% at 50% 50%, rgba(9, 9, 9, .82), rgba(9, 9, 9, .42) 54%, transparent 82%);
+    background: radial-gradient(ellipse 48% 62% at 50% 50%, rgba(0, 0, 0, .26), rgba(0, 0, 0, .08) 54%, transparent 82%);
 }
-.dh-floating-path {
-    stroke-dasharray: .72 .28;
-    stroke-dashoffset: 0;
-    animation: dhFloatingPath var(--dh-floating-duration) linear var(--dh-floating-delay) infinite;
+.dh-topo-field {
+    display: block;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
 }
 .dh-login-input {
     background: var(--dh-input-bg);
@@ -659,15 +660,6 @@
     border-color: var(--dh-input-border);
 }
 .dh-login-input::placeholder { color: var(--dh-input-placeholder); }
-@keyframes dhFloatingPath {
-    to { stroke-dashoffset: -1; }
-}
-@media (prefers-reduced-motion: reduce) {
-    .dh-floating-path {
-        animation: none;
-        stroke-dashoffset: 0;
-    }
-}
 
 .dh-drawer-overlay { background: rgba(10,10,9,.58); backdrop-filter: blur(2px); animation: dhOverlayIn .2s ease-out; }
 @keyframes dhOverlayIn { from { opacity: 0; } to { opacity: 1; } }
