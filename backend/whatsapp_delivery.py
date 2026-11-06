@@ -20,6 +20,11 @@ from whatsapp_numbers import normalize_brazilian_number
 
 class DeliveryResult(str, Enum):
     ACCEPTED = "accepted"
+    INDETERMINATE = "indeterminate"
+    REJECTED = "rejected"
+    RATE_LIMITED = "rate_limited"
+    NETWORK_ERROR = "network_error"
+    CONFIGURATION_ERROR = "configuration_error"
     UNAVAILABLE = "unavailable"
 
 
@@ -94,7 +99,7 @@ class WhatsAppDeliveryProvider:
         if (not _service_origin(self.configured_service_url, self.service_transport) or not _https_origin(self.frontend_url)
                 or len(self.service_key) < 32 or purpose not in {"first_access", "recovery"}
                 or not request_id or len(request_id) > 128 or not token):
-            return DeliveryResult.UNAVAILABLE
+            return DeliveryResult.CONFIGURATION_ERROR
         try:
             destination = normalize_brazilian_number(number)
             link = f"{self.frontend_url}/reset-password?token={quote(token, safe='')}"
@@ -115,9 +120,24 @@ class WhatsAppDeliveryProvider:
                              "X-DACOT-Timestamp": timestamp, "X-DACOT-Signature": signature,
                              "Content-Type": "application/json"}, content=body,
                 )
-            return DeliveryResult.ACCEPTED if response.status_code in (200, 202) else DeliveryResult.UNAVAILABLE
-        except (httpx.HTTPError, ValueError, OSError):
+            try:
+                payload = response.json()
+                state = payload.get("state") if isinstance(payload, dict) else None
+            except (ValueError, json.JSONDecodeError):
+                state = None
+            if response.status_code in (200, 202) and state == "accepted":
+                return DeliveryResult.ACCEPTED
+            if state == "indeterminate" or response.status_code == 409:
+                return DeliveryResult.INDETERMINATE
+            if response.status_code == 429:
+                return DeliveryResult.RATE_LIMITED
+            if response.status_code in (400, 401, 403, 404):
+                return DeliveryResult.REJECTED
             return DeliveryResult.UNAVAILABLE
+        except (httpx.HTTPError, OSError):
+            return DeliveryResult.NETWORK_ERROR
+        except ValueError:
+            return DeliveryResult.CONFIGURATION_ERROR
 
 
 class WhatsAppPairingProvider:

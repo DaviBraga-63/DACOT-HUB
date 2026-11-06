@@ -306,20 +306,58 @@ class TestRegression:
 
 # ─── Auth playbook checks (lockout, generic reset response, CORS) ──────────────
 class TestAuthPlaybook:
+    def test_account_mistakes_do_not_block_correct_password(self, api, anon, client, test_credentials):
+        import uuid
+        email = f"login_policy_{uuid.uuid4().hex[:8]}@example.com"
+        created = client.post(f"{api}/hub/users", json={
+            "name": "Login policy test", "email": email, "role": "admin",
+            "password": test_credentials["password"],
+        }, timeout=30)
+        assert created.status_code in (200, 201), created.text
+        for _ in range(6):
+            wrong = anon.post(f"{api}/auth/login", json={"email": email, "password": "wrong-pass"}, timeout=30)
+            assert wrong.status_code == 401, wrong.text
+        correct = anon.post(f"{api}/auth/login", json={"email": email, "password": test_credentials["password"]}, timeout=30)
+        assert correct.status_code == 200, correct.text
+
+    def test_invalid_password_returns_401_before_origin_limit(self, api, anon):
+        import uuid
+        response = anon.post(
+            f"{api}/auth/login",
+            json={"email": f"invalid_{uuid.uuid4().hex[:8]}@example.com", "password": "wrong-pass"},
+            timeout=30,
+        )
+        assert response.status_code == 401, response.text
+
     def test_brute_force_lockout(self, api, anon):
         import uuid
         email = f"test_lock_{uuid.uuid4().hex[:8]}@example.com"
         codes = []
-        for _ in range(16):
+        for _ in range(51):
             r = anon.post(f"{api}/auth/login", json={"email": email, "password": "wrong-pass"},
                           timeout=30)
             codes.append(r.status_code)
             if r.status_code == 429:
                 break
-        assert codes[:5] == [401] * 5, codes
-        # NOTE: lockout identifier uses request.client.host (ingress pod IP, several pods),
-        # so the 5-strike bucket can be split across pods -> 429 may take >6 attempts.
+        assert codes[:50] == [401] * 50, codes
         assert 429 in codes, codes
+
+    def test_successful_login_does_not_clear_origin_abuse_counter(self, api, anon, client, test_credentials):
+        import uuid
+        email = f"login_abuse_{uuid.uuid4().hex[:8]}@example.com"
+        created = client.post(f"{api}/hub/users", json={
+            "name": "Login abuse test", "email": email, "role": "admin",
+            "password": test_credentials["password"],
+        }, timeout=30)
+        assert created.status_code in (200, 201), created.text
+        for _ in range(50):
+            wrong = anon.post(f"{api}/auth/login", json={"email": email, "password": "wrong-pass"}, timeout=30)
+            assert wrong.status_code == 401, wrong.text
+
+        correct = anon.post(f"{api}/auth/login", json={"email": email, "password": test_credentials["password"]}, timeout=30)
+        assert correct.status_code == 200, correct.text
+        still_limited = anon.post(f"{api}/auth/login", json={"email": email, "password": "wrong-pass"}, timeout=30)
+        assert still_limited.status_code == 429, still_limited.text
 
     def test_forgot_password_identical_response(self, api, anon):
         known = anon.post(f"{api}/auth/forgot-password",

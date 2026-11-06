@@ -362,19 +362,23 @@ async def get_restaurant_admin(user: dict = Depends(get_restaurant_user)) -> dic
 
 
 # ─── Brute-force helpers ───────────────────────────────────────────────────────
+LOGIN_RATE_WINDOW = timedelta(minutes=15)
+LOGIN_ORIGIN_LIMIT = 50
+
+
 async def _check_lockout(ip: str, email: str) -> None:
-    ident = f"{ip}:{email}"
-    since = now_utc() - timedelta(minutes=15)
+    since = (now_utc() - LOGIN_RATE_WINDOW).isoformat()
     cnt = await db.login_attempts.count_documents({
-        "identifier": ident, "created_at": {"$gt": since.isoformat()}, "success": False
+        "ip": ip, "created_at": {"$gt": since}, "success": False
     })
-    if cnt >= 5:
-        raise HTTPException(429, "Muitas tentativas de login. Tente novamente em 15 minutos.")
+    if cnt >= LOGIN_ORIGIN_LIMIT:
+        raise HTTPException(429, "Muitas tentativas desta origem. Tente novamente em 15 minutos.")
 
 
 async def _record_attempt(ip: str, email: str, success: bool) -> None:
     await db.login_attempts.insert_one({
         "identifier": f"{ip}:{email}", "email": email, "success": success,
+        "ip": ip,
         "created_at": now_utc().isoformat(),
     })
 
@@ -479,7 +483,7 @@ async def _send_whatsapp_reset(number: str, token: str, purpose: str):
     result = await provider.send(number=number, token=token, purpose=purpose,
                                  request_id=hashlib.sha256(token.encode()).hexdigest())
     if result.value != "accepted":
-        logger.warning("whatsapp_delivery_unavailable purpose=%s", purpose)
+        logger.warning("whatsapp_delivery_result purpose=%s outcome=%s", purpose, result.value)
     return result
 
 
@@ -612,7 +616,6 @@ def _client_ip(request: Request) -> str:
 async def login(payload: LoginIn, request: Request, response: Response):
     email = payload.email.lower()
     ip = _client_ip(request)
-    await _check_lockout(ip, email)
     # Single login for both populations: staff first, then restaurant users.
     user = await db.hub_users.find_one({"email": email})
     ut = "staff"
@@ -640,10 +643,10 @@ async def login(payload: LoginIn, request: Request, response: Response):
         elif str(tenant.get("portal_owner_user_id") or "") != str(user["_id"]):
             valid = False
     if not valid:
+        await _check_lockout(ip, email)
         await _record_attempt(ip, email, False)
         raise HTTPException(401, "E-mail ou senha inválidos")
     coll = db.hub_users if ut == "staff" else db.tenant_users
-    await db.login_attempts.delete_many({"email": email})
     await coll.update_one({"_id": user["_id"]}, {"$set": {"last_login_at": now_utc().isoformat()}})
     uid = str(user["_id"])
     ver = _security_version(user, "token_version")

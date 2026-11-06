@@ -39,7 +39,17 @@ export default function ClienteNovo() {
         access_email: form.access_email.trim() || undefined,
       };
       const { data } = await api.post("/hub/tenants/onboard", payload);
-      if (data.invitation === "unavailable") toast.error("Cadastro concluído, mas o WhatsApp está indisponível. Solicite um novo link mais tarde.");
+      const invitationMessages = {
+        accepted: { type: "info", message: "Cadastro concluído. O gateway aceitou o envio do primeiro acesso; a entrega não foi confirmada." },
+        indeterminate: { type: "error", message: "Cadastro concluído, mas o resultado do envio é incerto. Verifique a conexão do WhatsApp antes de solicitar outro link." },
+        rejected: { type: "error", message: "Cadastro concluído, mas o gateway rejeitou o envio. Verifique a configuração e solicite novo link após corrigir." },
+        rate_limited: { type: "error", message: "Cadastro concluído, mas o gateway limitou o envio. Tente novamente mais tarde." },
+        network_error: { type: "error", message: "Cadastro concluído, mas o Hub não conseguiu alcançar o gateway. Verifique a conexão antes de solicitar outro link." },
+        configuration_error: { type: "error", message: "Cadastro concluído, mas a configuração do envio por WhatsApp está inválida." },
+        unavailable: { type: "error", message: "Cadastro concluído, mas o gateway está indisponível. Solicite um novo link mais tarde." },
+      };
+      const invitation = invitationMessages[data.invitation];
+      if (invitation) toast[invitation.type](invitation.message);
       nav(`/clientes/${data.id}`);
     } catch (e) {
       setErr(formatApiErrorDetail(e.response?.data?.detail) || e.message);

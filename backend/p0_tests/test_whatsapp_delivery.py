@@ -18,8 +18,9 @@ spec.loader.exec_module(module)
 
 
 class FakeClient:
-    def __init__(self, *, status=202, error=None):
+    def __init__(self, *, status=202, error=None, response_json=None):
         self.status, self.error, self.calls = status, error, []
+        self.response_json = response_json if response_json is not None else {"state": "accepted"}
 
     async def __aenter__(self):
         return self
@@ -32,7 +33,7 @@ class FakeClient:
         self.calls.append((url, headers, json.loads(content)))
         if self.error:
             raise self.error
-        return httpx.Response(self.status)
+        return httpx.Response(self.status, json=self.response_json)
 
 
 def test_accepted_request_is_not_a_delivery_receipt():
@@ -52,18 +53,29 @@ def test_failure_or_insecure_configuration_fails_closed(caplog):
                              ("https://sender.example.test", "x" * 32)):
         provider = module.WhatsAppDeliveryProvider(service_url=service_url, service_key=key,
                                                     frontend_url="https://hub.example.test", client_factory=lambda **_: client)
-        assert asyncio.run(provider.send(number="11912345678", token="synthetic-token", purpose="recovery", request_id="r")) == module.DeliveryResult.UNAVAILABLE
+        expected = module.DeliveryResult.CONFIGURATION_ERROR if key == "short" or service_url.startswith("http://") else module.DeliveryResult.NETWORK_ERROR
+        assert asyncio.run(provider.send(number="11912345678", token="synthetic-token", purpose="recovery", request_id="r")) == expected
     assert "synthetic-token" not in caplog.text
     assert "x" * 32 not in caplog.text
 
 
-def test_sender_rejection_and_redirect_are_not_success():
-    for status in (302, 400, 429, 500, 503):
-        client = FakeClient(status=status)
+def test_sender_response_states_are_classified_without_claiming_delivery():
+    cases = (
+        (302, None, module.DeliveryResult.UNAVAILABLE),
+        (400, None, module.DeliveryResult.REJECTED),
+        (401, None, module.DeliveryResult.REJECTED),
+        (429, None, module.DeliveryResult.RATE_LIMITED),
+        (500, None, module.DeliveryResult.UNAVAILABLE),
+        (503, None, module.DeliveryResult.UNAVAILABLE),
+        (503, {"state": "indeterminate"}, module.DeliveryResult.INDETERMINATE),
+        (202, {"state": "queued"}, module.DeliveryResult.UNAVAILABLE),
+    )
+    for status, response_json, expected in cases:
+        client = FakeClient(status=status, response_json=response_json)
         provider = module.WhatsAppDeliveryProvider(service_url="https://sender.example.test", service_key="x" * 32,
                                                     frontend_url="https://hub.example.test", client_factory=lambda **_: client)
         result = asyncio.run(provider.send(number="11912345678", token="synthetic-token", purpose="recovery", request_id="r"))
-        assert result == module.DeliveryResult.UNAVAILABLE
+        assert result == expected
 
 
 def test_missing_tls_ca_does_not_break_completed_onboarding():
@@ -73,7 +85,7 @@ def test_missing_tls_ca_does_not_break_completed_onboarding():
                                                 frontend_url="https://hub.example.test", client_factory=missing_ca,
                                                 ca_file="missing-test-ca.pem")
     result = asyncio.run(provider.send(number="11912345678", token="synthetic-token", purpose="first_access", request_id="r"))
-    assert result == module.DeliveryResult.UNAVAILABLE
+    assert result == module.DeliveryResult.NETWORK_ERROR
 
 
 def test_public_https_uses_default_certificate_validation_and_signed_body():
@@ -104,7 +116,7 @@ def test_tls_failure_is_unavailable_without_leaking_credentials(caplog):
     provider = module.WhatsAppDeliveryProvider(service_url="https://sender.example.test", service_key="x" * 32,
         frontend_url="https://hub.example.test", client_factory=lambda **_: client)
     assert asyncio.run(provider.send(number="11912345678", token="synthetic-token",
-                                    purpose="recovery", request_id="r")) == module.DeliveryResult.UNAVAILABLE
+                                    purpose="recovery", request_id="r")) == module.DeliveryResult.NETWORK_ERROR
     assert not caplog.text
 
 
