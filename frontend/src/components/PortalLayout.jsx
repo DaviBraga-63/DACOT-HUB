@@ -12,14 +12,14 @@ export default function PortalLayout() {
 
   return (
     <div className="min-h-screen bg-[var(--dh-bg)]">
-      <header className="dh-topnav sticky top-0 z-30 h-[68px] flex items-center px-3 sm:px-8 lg:px-10">
-        <div className="mr-2 flex items-center sm:mr-12">
-          <div className="flex items-center gap-2 rounded-lg bg-[#0A0A09] px-2 py-1.5 shadow-sm">
-            <img src="/dacot-symbol-orange-v1.png" alt="" className="h-7 w-7 object-contain" />
-            <span className="hidden sm:inline dh-font-display text-[15px] font-bold tracking-tight text-white">DACOT</span>
+      <header className="dh-topnav sticky top-0 z-30 flex h-[68px] items-center px-5 sm:px-8 lg:px-10">
+        <div className="shrink-0 pr-5 sm:pr-8 xl:pr-12">
+          <div className="flex items-center gap-3">
+            <img src="/dacot-symbol-orange-v1.png" alt="DACOT" className="dh-brand-logo" />
+            <span className="hidden sm:inline dh-font-display text-[17px] font-bold tracking-tight text-[var(--dh-text)]">DACOT</span>
           </div>
         </div>
-        <nav className="flex items-center gap-1 flex-1" aria-label="Navegação do portal">
+        <nav className="flex min-w-0 flex-1 items-center gap-1" aria-label="Navegação do portal">
           <PortalLink to="/portal" end icon={LayoutDashboard} label="Painel" testid="portal-nav-dashboard" />
           <PortalLink to="/portal/modulos" icon={Blocks} label="Módulos" testid="portal-nav-modules" />
           <PortalLink to="/portal/equipe" icon={Users} label="Equipe" testid="portal-nav-team" />
