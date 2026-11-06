@@ -35,7 +35,7 @@ export default function PortalEquipe() {
     return () => { mounted = false; };
   }, []);
 
-  return <div className="max-w-6xl space-y-6 dh-fade-in" data-testid="portal-team-page">
+  return <div className="w-full space-y-6 dh-fade-in" data-testid="portal-team-page">
     <div>
       <p className="text-xs font-semibold uppercase tracking-[.16em] text-[var(--dh-muted)]">Portal</p>
       <h1 className="dh-font-display mt-2 text-3xl font-bold text-[var(--dh-text)]">Equipe</h1>
@@ -45,7 +45,7 @@ export default function PortalEquipe() {
     </div>
 
     <div className="dh-card overflow-x-auto">
-      <table className="dh-table w-full">
+      <table className="dh-table min-w-[640px] w-full">
         <thead><tr><th>Nome</th><th>Cargo</th><th>Módulo</th><th>Situação</th><th>Acesso</th></tr></thead>
         <tbody>{team?.map((member, index) => <tr key={`${member.name}-${member.role}-${index}`}>
           <td>{member.name}</td>
