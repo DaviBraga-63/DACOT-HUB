@@ -383,8 +383,26 @@ async def _record_attempt(ip: str, email: str, success: bool) -> None:
     })
 
 
+# ─── Activity log helper ───────────────────────────────────────────────────────
+async def log_activity(*, actor_id: str, actor_name: str, action: str,
+                       target_type: str, target_id: Optional[str] = None,
+                       tenant_id: Optional[str] = None, metadata: Optional[dict] = None):
+    """Persist an audit event without copying credentials or reset material."""
+    await db.activity_log.insert_one({
+        "actor_id": actor_id, "actor_name": actor_name, "action": action,
+        "target_type": target_type, "target_id": target_id,
+        "tenant_id": tenant_id, "metadata": metadata or {},
+        "created_at": now_utc().isoformat(),
+    })
+
+
 # ─── Email (reset) ─────────────────────────────────────────────────────────────
 async def send_password_reset_email(to_email: str, token: str, validity_hours: int = 24) -> bool:
+    # Isolated integration tests generate a one-time credential but must never
+    # call an external mail provider. This flag is only accepted in the local
+    # development configuration created by the P0 harness.
+    if os.environ.get("APP_ENV") == "development" and os.environ.get("DACOT_LOCAL_INTEGRATION") == "1":
+        return True
     return await _send_password_reset_email(
         to_email,
         token,
@@ -942,8 +960,17 @@ async def _create_tenant_with_owner(payload: TenantOnboardingIn, background_task
     if raw_reset and payload.access_channel == "sms":
         invitation = (await _send_sms_reset(doc["mobile_phone"], raw_reset, "first_access", tenant_id=tid)).state
     elif raw_reset:
-        background_tasks.add_task(send_password_reset_email, access_email, raw_reset, 30 * 24)
-        invitation = "queued"
+        # Unlike the SMS provider, e-mail has no later delivery callback. Do
+        # the provider request before replying so the administrative UI can
+        # distinguish a completed registration from a failed first-access
+        # delivery. The identity and one-time token remain valid, allowing a
+        # safe recovery request after the provider configuration is corrected.
+        try:
+            email_sent = await send_password_reset_email(access_email, raw_reset, 30 * 24)
+        except Exception:
+            logger.error("first_access_email_delivery_failed")
+            email_sent = False
+        invitation = "email_sent" if email_sent else "email_delivery_failed"
     return {**_tenant_out(doc), "active_modules": 0, "users_count": 1,
             "initial_access_created": True,
             "invitation": invitation}
