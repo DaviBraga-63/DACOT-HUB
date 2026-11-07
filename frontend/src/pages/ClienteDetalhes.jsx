@@ -301,7 +301,7 @@ function MobilePhoneContact({ tenant, users, canWrite, reload }) {
                onChange={(e) => setNumber(formatBrazilianPhone(e.target.value))} disabled={!canWrite || busy} />
         {canWrite && <button type="submit" className="dh-btn dh-btn-ghost" disabled={busy}>{busy ? "Salvando…" : "Salvar"}</button>}
       </div>
-      <p className="text-[12px] text-[var(--dh-muted)]">{tenant.phone_user_id ? "Número vinculado ao responsável e disponível para recuperação por SMS; alterações invalidam links anteriores." : "Sem vínculo com usuário, este número é apenas um contato."}</p>
+      <p className="text-[12px] text-[var(--dh-muted)]">{tenant.phone_user_id ? "Número vinculado ao responsável e disponível para recuperação por WhatsApp; alterações invalidam links anteriores." : "Sem vínculo com usuário, este número é apenas um contato."}</p>
       {error && <p role="alert" className="dh-chip dh-chip-error">{error}</p>}
     </form>
   );

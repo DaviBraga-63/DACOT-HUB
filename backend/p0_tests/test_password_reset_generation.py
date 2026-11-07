@@ -50,6 +50,55 @@ def test_expiration_and_generation_for_new_tokens(hub, monkeypatch):
     assert users.update_one.call_args.args[1]["$set"]["password_reset_generation"] == recovery_doc["generation"]
 
 
+def _login_context(hub, monkeypatch, *, failures, password_valid):
+    uid = ObjectId()
+    staff = {"_id": uid, "email": "staff@example.com", "name": "Staff", "role": "admin",
+             "password_hash": "synthetic-hash", "token_version": 0, "active": True, "deleted_at": None}
+    users = SimpleNamespace(find_one=AsyncMock(return_value=staff), update_one=AsyncMock())
+    attempts = SimpleNamespace(count_documents=AsyncMock(return_value=failures), insert_one=AsyncMock())
+    activity = SimpleNamespace(insert_one=AsyncMock())
+    monkeypatch.setattr(hub, "db", SimpleNamespace(
+        hub_users=users, tenant_users=SimpleNamespace(find_one=AsyncMock()),
+        login_attempts=attempts, activity_log=activity,
+    ))
+    monkeypatch.setattr(hub, "_client_ip", lambda _request: "198.51.100.40")
+    monkeypatch.setattr(hub, "verify_password", lambda *_: password_valid)
+    monkeypatch.setattr(hub, "valid_tab_session_id", lambda _value: True)
+    monkeypatch.setattr(hub, "new_browser_binding", lambda: "synthetic-browser-binding")
+    create_session = AsyncMock()
+    monkeypatch.setattr(hub, "create_session", create_session)
+    request = SimpleNamespace(headers={hub.TAB_SESSION_HEADER: "synthetic-tab-session"}, cookies={})
+    return staff, attempts, activity, create_session, request
+
+
+def test_login_rate_limit_records_fiftieth_failure_then_limits_next(hub, monkeypatch):
+    _, attempts, _, _, request = _login_context(hub, monkeypatch, failures=49, password_valid=False)
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(hub.login(hub.LoginIn(email="staff@example.com", password="wrong"), request, Response()))
+    assert exc.value.status_code == 401
+    attempts.insert_one.assert_awaited_once()
+    assert attempts.insert_one.await_args.args[0]["success"] is False
+
+    attempts.insert_one.reset_mock()
+    attempts.count_documents.return_value = 50
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(hub.login(hub.LoginIn(email="staff@example.com", password="wrong"), request, Response()))
+    assert exc.value.status_code == 429
+    attempts.insert_one.assert_not_awaited()
+
+
+def test_correct_login_is_not_blocked_by_prior_origin_failures(hub, monkeypatch):
+    _, attempts, activity, create_session, request = _login_context(
+        hub, monkeypatch, failures=50, password_valid=True)
+    result = asyncio.run(hub.login(
+        hub.LoginIn(email="staff@example.com", password="correct"), request, Response()))
+    assert result["email"] == "staff@example.com"
+    attempts.count_documents.assert_not_awaited()
+    attempts.insert_one.assert_not_awaited()
+    create_session.assert_awaited_once()
+    activity.insert_one.assert_awaited_once()
+
+
 def test_reset_requires_token_generation_and_revokes_sessions(hub, monkeypatch):
     uid, tid = ObjectId(), ObjectId()
     token_doc = {"user_id": str(uid), "user_type": "restaurant", "email": "x@example.test", "generation": "gen-current"}
@@ -156,6 +205,16 @@ def test_tenant_creation_routes_require_super_admin(hub):
         assert any(dep.call is hub.get_super_admin for dep in route.dependant.dependencies)
 
 
+def test_whatsapp_pairing_routes_require_super_admin_and_default_off(hub, monkeypatch):
+    for path in ("/api/hub/whatsapp/status", "/api/hub/whatsapp/pairing-code"):
+        route = next(route for route in hub.app.routes if route.path == path)
+        assert any(dep.call is hub.get_super_admin for dep in route.dependant.dependencies)
+    monkeypatch.delenv("WHATSAPP_PAIRING_SELF_SERVICE_ENABLED", raising=False)
+    assert not hub._pairing_self_service_enabled()
+    monkeypatch.setenv("WHATSAPP_PAIRING_SELF_SERVICE_ENABLED", "true")
+    assert hub._pairing_self_service_enabled()
+
+
 def test_phone_link_is_bound_to_version_and_rotation_rejects_it(hub, monkeypatch):
     uid, tid = ObjectId(), ObjectId()
     user = {"_id": uid, "tenant_id": str(tid), "phone_binding_version": "new-version"}
@@ -202,7 +261,7 @@ def test_phone_binding_requires_super_admin_and_scopes_user_to_tenant(hub, monke
     users.update_one.assert_not_awaited()
 
 
-def test_forgot_sms_only_sends_to_bound_user_and_response_is_generic(hub, monkeypatch):
+def test_forgot_whatsapp_only_sends_to_bound_user_and_response_is_generic(hub, monkeypatch):
     uid, tid = ObjectId(), ObjectId()
     account = {"_id": uid, "email": "owner@example.com", "tenant_id": str(tid), "status": "active",
                "phone_number": "+5511912345678", "phone_binding_version": "version"}
@@ -218,18 +277,31 @@ def test_forgot_sms_only_sends_to_bound_user_and_response_is_generic(hub, monkey
     monkeypatch.setattr(hub, "_allow_recovery_request", allow)
     request = SimpleNamespace(client=SimpleNamespace(host="127.0.0.1"), headers={})
     tasks = hub.BackgroundTasks()
-    response = asyncio.run(hub.forgot(hub.ForgotIn(email=account["email"], channel="sms"), tasks, request))
+    response = asyncio.run(hub.forgot(hub.ForgotIn(email=account["email"], channel="whatsapp"), tasks, request))
     assert response == hub.GENERIC_RESET_RESPONSE
     assert issue.call_args.kwargs["phone_binding_version"] == "version"
     assert len(tasks.tasks) == 1
     tenants.find_one.return_value = {"_id": tid, "phone_user_id": str(ObjectId())}
     issue.reset_mock()
     tasks = hub.BackgroundTasks()
-    assert asyncio.run(hub.forgot(hub.ForgotIn(email=account["email"], channel="sms"), tasks, request)) == response
+    assert asyncio.run(hub.forgot(hub.ForgotIn(email=account["email"], channel="whatsapp"), tasks, request)) == response
     issue.assert_not_awaited()
+
+    tenants.find_one.return_value = {"_id": tid, "phone_user_id": str(uid)}
+    allow.return_value = True
+    issue.reset_mock()
+    email_send = AsyncMock()
+    monkeypatch.setattr(hub, "send_password_reset_email", email_send)
+    email_tasks = hub.BackgroundTasks()
+    assert asyncio.run(hub.forgot(hub.ForgotIn(email=account["email"], channel="email"), email_tasks, request)) == response
+    issue.assert_awaited_once_with(str(uid), account["email"], "restaurant")
+    assert len(email_tasks.tasks) == 1
+    assert email_tasks.tasks[0].func is email_send
+    assert email_tasks.tasks[0].args[0] == account["email"]
     assert not tasks.tasks
     allow.return_value = False
-    assert asyncio.run(hub.forgot(hub.ForgotIn(email=account["email"], channel="sms"), tasks, request)) == response
+    issue.reset_mock()
+    assert asyncio.run(hub.forgot(hub.ForgotIn(email=account["email"], channel="whatsapp"), tasks, request)) == response
     issue.assert_not_awaited()
 
 
@@ -254,24 +326,21 @@ def test_invalid_status_never_changes_mobile_phone(hub, monkeypatch):
     tenants.update_one.assert_not_awaited()
 
 
-def test_sms_reset_logs_only_safe_delivery_metadata(hub, monkeypatch, caplog):
-    monkeypatch.setenv("SMS_PROVIDER", "twilio")
-    monkeypatch.setenv("TWILIO_ACCOUNT_SID", "AC" + "a" * 32)
-    monkeypatch.setenv("TWILIO_AUTH_TOKEN", "synthetic-secret")
-    monkeypatch.setenv("SMS_FROM", "+15551234567")
-    monkeypatch.delenv("TWILIO_MESSAGING_SERVICE_SID", raising=False)
-    send = AsyncMock(return_value=SimpleNamespace(state="accepted", http_status=201,
-        provider_message_id="SM" + "b" * 32, error_code=None))
-    monkeypatch.setattr(hub, "SmsDeliveryProvider", lambda **_: SimpleNamespace(send=send))
+def test_whatsapp_reset_logs_only_safe_delivery_metadata(hub, monkeypatch, caplog):
+    caplog.set_level("INFO", logger="dacot-hub")
+    monkeypatch.setenv("WHATSAPP_SERVICE_URL", "https://whatsapp.example.test")
+    monkeypatch.setenv("WHATSAPP_SERVICE_SECRET", "synthetic-service-secret-not-logged")
+    send = AsyncMock(return_value=hub.DeliveryResult.ACCEPTED)
+    monkeypatch.setattr(hub, "WhatsAppDeliveryProvider", lambda **_: SimpleNamespace(send=send))
     raw_token = "synthetic-reset-token"
-    result = asyncio.run(hub._send_sms_reset(
+    result = asyncio.run(hub._send_whatsapp_reset(
         "+5511912345678", raw_token, "first_access", tenant_id="tenant-safe-id"))
-    assert result.state == "accepted"
+    assert result.value == "accepted"
     assert send.await_args.kwargs["number"] == "+5511912345678"
-    assert "reset-password?token=synthetic-reset-token" in send.await_args.kwargs["message"]
-    assert "sms_delivery_result" in caplog.text
+    assert send.await_args.kwargs["token"] == raw_token
+    assert send.await_args.kwargs["purpose"] == "first_access"
+    assert "whatsapp_delivery_result" in caplog.text
     assert "tenant-safe-id" in caplog.text
-    assert "SM" + "b" * 32 in caplog.text
     assert raw_token not in caplog.text
     assert "11912345678" not in caplog.text
-    assert "synthetic-secret" not in caplog.text
+    assert "synthetic-service-secret-not-logged" not in caplog.text

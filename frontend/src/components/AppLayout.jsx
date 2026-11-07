@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { NavLink, useLocation, useNavigate, Outlet, Navigate } from "react-router-dom";
-import { LayoutDashboard, Building2, Blocks, Users, LogOut, Menu, Moon, Sun, X, ChevronDown } from "lucide-react";
+import { LayoutDashboard, Building2, Blocks, Users, MessageCircle, LogOut, Menu, Moon, Sun, X, ChevronDown } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 import { useTheme } from "@/context/ThemeContext";
 import { api } from "@/lib/api";
@@ -15,6 +15,7 @@ const NAV = [
   { to: "/clientes", label: "Clientes", icon: Building2, testid: "menu-clientes" },
   { to: "/modulos", label: "Módulos", icon: Blocks, testid: "menu-modulos" },
   { to: "/equipe", label: "Equipe", icon: Users, testid: "menu-equipe" },
+  { to: "/integracao/whatsapp", label: "WhatsApp", icon: MessageCircle, testid: "menu-whatsapp" },
 ];
 
 function Brand({ compact }) {
@@ -171,7 +172,9 @@ export default function AppLayout() {
     </div>
   );
 
-  const navItems = (variant, onNavigate) => NAV.map(({ to, label, icon: Icon, testid, end }) => {
+  const navItems = (variant, onNavigate) => NAV
+    .filter((item) => item.to !== "/integracao/whatsapp" || user?.role === "super_admin")
+    .map(({ to, label, icon: Icon, testid, end }) => {
     if (variant === "desktop" && to === "/modulos") return desktopModulesMenu;
     return (
       <NavLink
@@ -186,7 +189,7 @@ export default function AppLayout() {
         <span>{label}</span>
       </NavLink>
     );
-  });
+    });
 
   const mobileBottomSection = (
     <div className="dh-sidebar-footer pt-4 pb-5 px-3 space-y-1">

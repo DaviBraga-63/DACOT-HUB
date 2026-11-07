@@ -1,0 +1,143 @@
+import { DatabaseSync } from 'node:sqlite';
+import { createCipheriv, createDecipheriv, createHmac, randomBytes } from 'node:crypto';
+import { chmodSync, mkdirSync } from 'node:fs';
+import { dirname } from 'node:path';
+
+// A single sender instance owns this local persistent database. Values are
+// encrypted independently; key material is supplied out of band, never in Git.
+export function openStore(path, key) {
+  if (!Buffer.isBuffer(key) || key.length !== 32) throw new Error('Invalid storage key');
+  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  const db = new DatabaseSync(path);
+  try { chmodSync(path, 0o600); } catch { /* Windows ACLs are managed externally. */ }
+  db.exec('PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; CREATE TABLE IF NOT EXISTS auth (id TEXT PRIMARY KEY, value BLOB NOT NULL); CREATE TABLE IF NOT EXISTS sends (id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, status TEXT NOT NULL, created_at INTEGER NOT NULL, recipient TEXT NOT NULL); CREATE TABLE IF NOT EXISTS pairing_requests (id TEXT PRIMARY KEY, phone TEXT NOT NULL, status TEXT NOT NULL, created_at INTEGER NOT NULL); CREATE TABLE IF NOT EXISTS service_lease (id TEXT PRIMARY KEY, owner TEXT NOT NULL, expires_at INTEGER NOT NULL);');
+  // Retain longer than the longest link lifetime (30 days), including replay
+  // tolerance. Pending/indeterminate records remain protected throughout it.
+  db.exec('CREATE INDEX IF NOT EXISTS sends_created_at ON sends(created_at); CREATE INDEX IF NOT EXISTS sends_recipient_time ON sends(recipient, created_at); CREATE INDEX IF NOT EXISTS pairing_requests_phone_time ON pairing_requests(phone, created_at);');
+  const seal = (value) => {
+    const nonce = randomBytes(12);
+    const cipher = createCipheriv('aes-256-gcm', key, nonce);
+    const ciphertext = Buffer.concat([cipher.update(value, 'utf8'), cipher.final()]);
+    return Buffer.concat([nonce, cipher.getAuthTag(), ciphertext]);
+  };
+  const open = (value) => {
+    const data = Buffer.from(value);
+    const decipher = createDecipheriv('aes-256-gcm', key, data.subarray(0, 12));
+    decipher.setAuthTag(data.subarray(12, 28));
+    return Buffer.concat([decipher.update(data.subarray(28)), decipher.final()]).toString('utf8');
+  };
+  const digest = (purpose, value) => createHmac('sha256', key).update(purpose).update('\0').update(value).digest('hex');
+  return {
+    acquireServiceLease(owner, now = Date.now(), leaseMs = 60000) {
+      if (!/^[a-f0-9-]{36}$/i.test(owner || '') || !Number.isSafeInteger(leaseMs) || leaseMs < 1000)
+        throw new Error('Invalid service lease');
+      db.exec('BEGIN IMMEDIATE');
+      try {
+        const current = db.prepare("SELECT owner, expires_at FROM service_lease WHERE id='active'").get();
+        if (current && current.expires_at > now && current.owner !== owner) {
+          db.exec('COMMIT');
+          return false;
+        }
+        db.prepare("INSERT INTO service_lease (id, owner, expires_at) VALUES ('active', ?, ?) ON CONFLICT(id) DO UPDATE SET owner=excluded.owner, expires_at=excluded.expires_at")
+          .run(owner, now + leaseMs);
+        db.exec('COMMIT');
+        return true;
+      } catch (error) { db.exec('ROLLBACK'); throw error; }
+    },
+    renewServiceLease(owner, now = Date.now(), leaseMs = 60000) {
+      return db.prepare("UPDATE service_lease SET expires_at=? WHERE id='active' AND owner=? AND expires_at>?")
+        .run(now + leaseMs, owner, now).changes === 1;
+    },
+    releaseServiceLease(owner) {
+      return db.prepare("DELETE FROM service_lease WHERE id='active' AND owner=?").run(owner).changes === 1;
+    },
+    get(id) { const row = db.prepare('SELECT value FROM auth WHERE id = ?').get(id); return row ? open(row.value) : null; },
+    clearAuth() { db.prepare('DELETE FROM auth').run(); },
+    setMany(values) {
+      db.exec('BEGIN IMMEDIATE');
+      try {
+        for (const [id, value] of Object.entries(values)) {
+          if (value === null) db.prepare('DELETE FROM auth WHERE id = ?').run(id);
+          else db.prepare('INSERT INTO auth (id, value) VALUES (?, ?) ON CONFLICT(id) DO UPDATE SET value=excluded.value').run(id, seal(value));
+        }
+        db.exec('COMMIT');
+      } catch (error) { db.exec('ROLLBACK'); throw error; }
+    },
+    reserve(id, payload, recipient) {
+      const fingerprint = digest('payload', payload);
+      const keyHash = digest('request', id);
+      const recipientHash = digest('recipient', recipient);
+      db.exec('BEGIN IMMEDIATE');
+      try {
+        const previous = db.prepare('SELECT fingerprint, status FROM sends WHERE id=?').get(keyHash);
+        if (!previous) {
+          const count = db.prepare('SELECT COUNT(*) AS n FROM sends WHERE recipient=? AND created_at>?').get(recipientHash, Date.now() - 900000).n;
+          if (count >= 5) { db.exec('COMMIT'); return 'limited'; }
+          db.prepare('INSERT INTO sends VALUES (?, ?, ?, ?, ?)').run(keyHash, fingerprint, 'pending', Date.now(), recipientHash);
+        }
+        db.exec('COMMIT');
+        if (!previous) return 'new';
+        return previous.fingerprint === fingerprint ? previous.status : 'conflict';
+      } catch (error) { db.exec('ROLLBACK'); throw error; }
+    },
+    complete(id, status) {
+      const keyHash = digest('request', id);
+      db.prepare('UPDATE sends SET status=? WHERE id=?').run(status, keyHash);
+    },
+    reservePairing(id, phone) {
+      const keyHash = digest('pairing-request', id);
+      const phoneHash = digest('pairing-phone', phone);
+      db.exec('BEGIN IMMEDIATE');
+      try {
+        if (db.prepare('SELECT id FROM pairing_requests WHERE id=?').get(keyHash)) {
+          db.exec('COMMIT'); return 'duplicate';
+        }
+        const since = Date.now() - 900000;
+        const count = db.prepare('SELECT COUNT(*) AS n FROM pairing_requests WHERE phone=? AND created_at>?').get(phoneHash, since).n;
+        if (count >= 3) { db.exec('COMMIT'); return 'limited'; }
+        db.prepare('INSERT INTO pairing_requests VALUES (?, ?, ?, ?)').run(keyHash, phoneHash, 'pending', Date.now());
+        db.exec('COMMIT'); return 'new';
+      } catch (error) { db.exec('ROLLBACK'); throw error; }
+    },
+    completePairing(id, status) {
+      db.prepare('UPDATE pairing_requests SET status=? WHERE id=?').run(status, digest('pairing-request', id));
+    },
+    cleanup(now = Date.now()) {
+      const sendChanges = db.prepare('DELETE FROM sends WHERE created_at < ?').run(now - 35 * 86400000).changes;
+      const pairingChanges = db.prepare('DELETE FROM pairing_requests WHERE created_at < ?').run(now - 900000).changes;
+      return sendChanges + pairingChanges;
+    },
+    close() { db.close(); },
+  };
+}
+
+export function baileysState(store, { BufferJSON, initAuthCreds, proto }) {
+  const decode = (value) => JSON.parse(value, BufferJSON.reviver);
+  const encode = (value) => JSON.stringify(value, BufferJSON.replacer);
+  const creds = store.get('creds') ? decode(store.get('creds')) : initAuthCreds();
+  const state = { creds, keys: {
+      async get(type, ids) {
+        const result = {};
+        for (const id of ids) {
+          const value = store.get(`${type}:${id}`);
+          if (value !== null) {
+            let parsed = decode(value);
+            if (type === 'app-state-sync-key') parsed = proto.Message.AppStateSyncKeyData.fromObject(parsed);
+            result[id] = parsed;
+          }
+        }
+        return result;
+      },
+      async set(data) {
+        const values = {};
+        for (const [type, entries] of Object.entries(data))
+          for (const [id, value] of Object.entries(entries)) values[`${type}:${id}`] = value == null ? null : encode(value);
+        store.setMany(values);
+      },
+    } };
+  return {
+    state,
+    saveCreds() { store.setMany({ creds: encode(state.creds) }); },
+    reset() { store.clearAuth(); state.creds = initAuthCreds(); },
+  };
+}
