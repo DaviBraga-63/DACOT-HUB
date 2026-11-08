@@ -8,7 +8,8 @@ import httpx
 import pytest
 
 from backend.whatsapp_delivery import (
-    DeliveryResult, WhatsAppDeliveryProvider, WhatsAppPairingProvider, WhatsAppStatusProvider,
+    DeliveryResult, WhatsAppAccountSwitchProvider, WhatsAppDeliveryProvider,
+    WhatsAppPairingProvider, WhatsAppStatusProvider,
 )
 
 
@@ -30,6 +31,12 @@ class FakeClient:
 
     async def get(self, url, *, headers):
         self.calls.append(("GET", url, headers, b""))
+        if self.error:
+            raise self.error
+        return self.response
+
+    async def request(self, method, url, *, content, headers):
+        self.calls.append((method, url, headers, content))
         if self.error:
             raise self.error
         return self.response
@@ -111,3 +118,21 @@ def test_pairing_and_status_have_separate_signed_api_contracts():
                                     client_factory=fake_factory(status_client))
     state = asyncio.run(status.get_status(request_id="status-request-identifier-1"))
     assert state.gateway_reachable and state.connection_state == "open" and state.pairing_enabled
+
+
+def test_account_switch_uses_a_separate_signed_control_contract():
+    client = FakeClient(response=httpx.Response(202, json={"state": "ready", "expires_at": 12345}))
+    provider = WhatsAppAccountSwitchProvider(
+        service_url="http://dacot-whatsapp:3002", service_key="s" * 40,
+        service_transport="speedtrail-private-http", client_factory=fake_factory(client),
+    )
+    operation_id = "a" * 48
+    result = asyncio.run(provider.prepare(operation_id=operation_id, number="(11) 91234-5678",
+                                          request_id="switch-request-identifier-1"))
+    assert result.available and result.state == "ready" and result.expires_at == 12345
+    method, url, headers, raw = client.calls[0]
+    assert method == "POST" and url.endswith(f"/internal/account-switch/{operation_id}/prepare")
+    assert json.loads(raw) == {"phone": "5511912345678"}
+    digest = hashlib.sha256(raw).hexdigest()
+    signed = f"{method}\n/internal/account-switch/{operation_id}/prepare\n{headers['X-DACOT-Timestamp']}\n{headers['Idempotency-Key']}\n{digest}".encode()
+    assert headers["X-DACOT-Signature"] == hmac.new(b"s" * 40, signed, hashlib.sha256).hexdigest()

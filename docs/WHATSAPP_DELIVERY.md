@@ -18,6 +18,10 @@ serviço valida origem, token e assinatura e monta a mensagem final.
 - `WHATSAPP_PAIRING_SELF_SERVICE_ENABLED`: habilita o pareamento protegido no
   Hub somente quando configurado como `true` nos dois serviços. O padrão é
   desativado.
+- `WHATSAPP_ACCOUNT_SWITCH_SERVICE_SECRET`: segredo separado, com pelo menos
+  32 caracteres, igual no Hub e no gateway. Habilita a troca assistida e
+  autenticada de conta; sem ele, o envio e a sessão ativa continuam funcionando,
+  mas a troca fica indisponível.
 
 ## Configuração do whatsapp-service
 
@@ -26,6 +30,8 @@ serviço valida origem, token e assinatura e monta a mensagem final.
 - `WHATSAPP_ADMIN_SECRET`: segredo distinto para o listener administrativo
   restrito a loopback.
 - `WHATSAPP_PAIRING_SERVICE_SECRET`: segredo distinto para pareamento.
+- `WHATSAPP_ACCOUNT_SWITCH_SERVICE_SECRET`: segredo distinto para a API de
+  troca de conta, nunca reutilizado para envio, pareamento ou administração.
 - `WHATSAPP_FRONTEND_ORIGIN`: origem HTTPS exata do frontend Hub, usada para
   validar os links.
 - `WHATSAPP_STORAGE_KEY`: chave base64 que decodifica para 32 bytes; protege as

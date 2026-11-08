@@ -34,6 +34,16 @@ class IntegrationStatusResult:
     connection_state: str = "unavailable"
     gateway_reachable: bool = False
     pairing_enabled: bool = False
+    connected_account_phone: str | None = None
+    account_switch_available: bool = False
+
+
+@dataclass(frozen=True)
+class AccountSwitchResult:
+    available: bool = False
+    state: str = "unavailable"
+    code: str | None = None
+    expires_at: int | None = None
 
 
 def _https_origin(value: str) -> bool:
@@ -165,12 +175,82 @@ class WhatsAppStatusProvider(_WhatsAppServiceClient):
                 return IntegrationStatusResult()
             state = data.get("connection_state")
             enabled = data.get("pairing_self_service_enabled")
+            switch_available = data.get("account_switch_available", False)
             if state not in {"open", "connecting", "pairing", "disconnected", "logged_out", "error", "stopped", "disabled"} or not isinstance(enabled, bool):
                 return IntegrationStatusResult()
-            return IntegrationStatusResult(state, True, enabled)
+            if not isinstance(switch_available, bool):
+                return IntegrationStatusResult()
+            phone = data.get("connected_account_phone")
+            if phone is not None:
+                try:
+                    phone = normalize_brazilian_phone(phone)
+                except ValueError:
+                    phone = None
+            return IntegrationStatusResult(state, True, enabled, phone, switch_available)
         except (httpx.HTTPError, ValueError, OSError, json.JSONDecodeError):
             return IntegrationStatusResult()
 
 
+class WhatsAppAccountSwitchProvider(_WhatsAppServiceClient):
+    """Separate HMAC-authenticated control channel for candidate sessions."""
+
+    STATES = {"preparing", "awaiting_pairing", "connecting", "ready", "failed", "cancelled", "expired", "promoted"}
+
+    async def _call(self, *, operation_id: str, action: str, request_id: str,
+                    payload: dict | None = None, method: str = "POST") -> AccountSwitchResult:
+        if (not self._valid_config()
+                or not re.fullmatch(r"[a-f0-9]{32,64}", operation_id or "")
+                or not re.fullmatch(r"[A-Za-z0-9_-]{16,128}", request_id or "")):
+            return AccountSwitchResult()
+        path = f"/internal/account-switch/{operation_id}/{action}"
+        body = json.dumps(payload, separators=(",", ":"), ensure_ascii=True).encode() if payload is not None else b""
+        timestamp = str(int(time.time()))
+        digest = hashlib.sha256(body).hexdigest()
+        signed = f"{method}\n{path}\n{timestamp}\n{request_id}\n{digest}".encode()
+        signature = hmac.new(self.service_key.encode(), signed, hashlib.sha256).hexdigest()
+        try:
+            async with self.client_factory(**self._client_options(timeout=5.0)) as client:
+                response = await client.request(method, f"{self.service_url}{path}", content=body,
+                    headers={"Authorization": f"Bearer {self.service_key}", "Idempotency-Key": request_id,
+                             "X-DACOT-Timestamp": timestamp, "X-DACOT-Signature": signature,
+                             "Content-Type": "application/json"})
+            if response.status_code not in {200, 202}:
+                return AccountSwitchResult()
+            data = response.json()
+            if not isinstance(data, dict) or data.get("state") not in self.STATES:
+                return AccountSwitchResult()
+            code = data.get("code")
+            if code is not None and (not isinstance(code, str) or not re.fullmatch(r"[A-Z0-9]{4}-?[A-Z0-9]{4}", code)):
+                return AccountSwitchResult()
+            expires = data.get("expires_at")
+            if expires is not None and (not isinstance(expires, int) or isinstance(expires, bool)):
+                return AccountSwitchResult()
+            return AccountSwitchResult(True, data["state"], code, expires)
+        except (httpx.HTTPError, ValueError, OSError, json.JSONDecodeError):
+            return AccountSwitchResult()
+
+    async def prepare(self, *, operation_id: str, number: str, request_id: str) -> AccountSwitchResult:
+        try:
+            phone = normalize_brazilian_mobile(number).lstrip("+")
+        except ValueError:
+            return AccountSwitchResult()
+        return await self._call(operation_id=operation_id, action="prepare", request_id=request_id,
+                                payload={"phone": phone})
+
+    async def status(self, *, operation_id: str, request_id: str) -> AccountSwitchResult:
+        return await self._call(operation_id=operation_id, action="status", request_id=request_id, method="GET")
+
+    async def code(self, *, operation_id: str, request_id: str) -> AccountSwitchResult:
+        return await self._call(operation_id=operation_id, action="code", request_id=request_id, payload={})
+
+    async def cancel(self, *, operation_id: str, request_id: str) -> AccountSwitchResult:
+        return await self._call(operation_id=operation_id, action="cancel", request_id=request_id, payload={})
+
+    async def promote(self, *, operation_id: str, request_id: str) -> AccountSwitchResult:
+        return await self._call(operation_id=operation_id, action="promote", request_id=request_id,
+                                payload={"confirm": True})
+
+
 __all__ = ["DeliveryResult", "IntegrationStatusResult", "WhatsAppDeliveryProvider",
-           "WhatsAppPairingProvider", "WhatsAppStatusProvider", "normalize_brazilian_phone"]
+           "WhatsAppPairingProvider", "WhatsAppStatusProvider", "WhatsAppAccountSwitchProvider",
+           "normalize_brazilian_phone"]

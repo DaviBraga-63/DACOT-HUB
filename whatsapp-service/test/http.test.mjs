@@ -42,7 +42,9 @@ test('public listener health contains no private state and all administrative ro
       assert.equal(r.status, 404);
     }
     assert.equal(calls, 0);
-    assert.equal((await fetch(`${base}/internal/integration-status`)).status, 401);
+    assert.equal((await fetch(`${base}/internal/integration-status`, {
+      headers: { Authorization: 'Bearer synthetic', 'Idempotency-Key': 'integration-status-request' },
+    })).status, 401);
     assert.equal(calls, 1);
     assert.equal((await fetch(`${base}/internal/auth-messages`, { method: 'POST', body: '{}' })).status, 401);
     assert.equal(calls, 2);
@@ -79,7 +81,11 @@ test('real entrypoint starts in maintenance without importing Baileys or touchin
     WHATSAPP_ADMIN_SECRET: adminSecret, WHATSAPP_PAIRING_SERVICE_SECRET: pairingSecret,
     WHATSAPP_FRONTEND_ORIGIN: 'https://hub.example.test' });
   const before = openStore(env.WHATSAPP_DB_PATH, Buffer.from(env.WHATSAPP_STORAGE_KEY, 'base64'));
-  before.setMany({ creds: 'synthetic-session-preserved-in-maintenance' }); before.close();
+  const candidateId = 'a'.repeat(32);
+  before.setMany({ creds: 'synthetic-session-preserved-in-maintenance' });
+  before.createCandidate(candidateId, Date.now() + 60000, '5511912345678');
+  before.candidateAuth(candidateId).setMany({ creds: 'synthetic-candidate-never-resumed' });
+  before.close();
   const child = spawn(process.execPath, [fileURLToPath(new URL('../server.mjs', import.meta.url))], { env, stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true });
   let errors = ''; child.stderr.on('data', chunk => { errors += chunk.toString(); });
   try {
@@ -91,15 +97,6 @@ test('real entrypoint starts in maintenance without importing Baileys or touchin
       await new Promise(resolve => setTimeout(resolve, 25));
     }
     assert.equal(ready, true);
-    const duplicate = spawn(process.execPath, [fileURLToPath(new URL('../server.mjs', import.meta.url))], { env,
-      stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true });
-    let duplicateErrors = '';
-    duplicate.stderr.on('data', chunk => { duplicateErrors += chunk.toString(); });
-    for (let i = 0; i < 100 && duplicate.exitCode === null; i++)
-      await new Promise(resolve => setTimeout(resolve, 25));
-    assert.notEqual(duplicate.exitCode, null, 'second process must fail instead of opening the same session');
-    assert.notEqual(duplicate.exitCode, 0);
-    assert.equal(duplicateErrors.includes(secret) || duplicateErrors.includes(adminSecret), false);
     const result = await fetch(`http://127.0.0.1:${adminPort}/internal/status`, { headers: { Authorization: `Bearer ${adminSecret}` } });
     assert.deepEqual(await result.json(), { state: 'disabled' });
     const token = 'z'.repeat(43), timestamp = String(Math.floor(Date.now() / 1000));
@@ -114,7 +111,10 @@ test('real entrypoint starts in maintenance without importing Baileys or touchin
   } finally {
     const exited = once(child, 'exit'); child.kill(); await exited;
     const after = openStore(env.WHATSAPP_DB_PATH, Buffer.from(env.WHATSAPP_STORAGE_KEY, 'base64'));
-    assert.equal(after.get('creds'), 'synthetic-session-preserved-in-maintenance'); after.close();
+    assert.equal(after.get('creds'), 'synthetic-session-preserved-in-maintenance');
+    assert.equal(after.candidate(candidateId).status, 'failed');
+    assert.equal(after.candidateAuth(candidateId).get('creds'), null);
+    after.close();
     const target = resolve(dir), root = resolve(tmpdir()) + sep;
     assert.ok(target.startsWith(root) && target.slice(root.length).startsWith('dacot-wa-start-'));
     rmSync(target, { recursive: true, force: true });

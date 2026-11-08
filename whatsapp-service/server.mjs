@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { baileysState, openStore } from './store.mjs';
 import { createConnection } from './connection.mjs';
+import { createCandidateSessionManager } from './candidate-session.mjs';
 import { createGateway } from './gateway.mjs';
 import { createListener, transportConfiguration } from './http-app.mjs';
 
@@ -8,14 +9,32 @@ const env = process.env;
 const config = transportConfiguration(env);
 const key = Buffer.from(env.WHATSAPP_STORAGE_KEY || '', 'base64');
 const store = openStore(env.WHATSAPP_DB_PATH || '/var/data/whatsapp.sqlite', key);
-let connection = { state: 'disabled', qr: null, stop() {}, resetPairing() { return false; }, requestPairingCode() { throw new Error('Pairing unavailable'); } };
+let connection = { state: 'disabled', qr: null, stop() {}, accountId() { return null; }, resetPairing() { return false; }, requestPairingCode() { throw new Error('Pairing unavailable'); } };
+let candidateManager = null;
+let createActiveConnection = () => { throw new Error('Active connection unavailable'); };
+const switchController = {
+  available() { return candidateManager !== null; },
+  prepare(args) { return candidateManager?.prepare(args) || null; },
+  status(id) { return candidateManager?.status(id) || null; },
+  requestPairingCode(id) { return candidateManager?.requestPairingCode(id) || Promise.resolve(null); },
+  cancel(id) { return candidateManager?.cancel(id) || false; },
+  promote(id) {
+    if (!candidateManager) return { status: 'rejected' };
+    return candidateManager.promote(id, {
+      suspendActive() { connection.stop(); return true; },
+      restoreActive() { connection = createActiveConnection(); },
+      activateCandidate(next) { connection = next; },
+    });
+  },
+};
 const proxyConnection = {
   get state() { return connection.state; }, get qr() { return connection.qr; },
-  send(...args) { return connection.send(...args); }, resetPairing() { return connection.resetPairing(); },
+  send(...args) { return connection.send(...args); }, accountId() { return connection.accountId(); }, resetPairing() { return connection.resetPairing(); },
   requestPairingCode(...args) { return connection.requestPairingCode(...args); },
 };
 const gateway = createGateway({ secret: env.WHATSAPP_SERVICE_SECRET, adminSecret: env.WHATSAPP_ADMIN_SECRET,
   pairingSecret: env.WHATSAPP_PAIRING_SERVICE_SECRET,
+  switchSecret: env.WHATSAPP_ACCOUNT_SWITCH_SERVICE_SECRET || '', switchController,
   pairingEnabled: env.WHATSAPP_PAIRING_SELF_SERVICE_ENABLED === 'true',
   frontendOrigin: env.WHATSAPP_FRONTEND_ORIGIN, connection: proxyConnection, store });
 const serviceInstanceId = randomUUID();
@@ -24,6 +43,9 @@ if (!store.acquireServiceLease(serviceInstanceId, Date.now(), SERVICE_LEASE_MS))
   store.close();
   throw new Error('Another WhatsApp service instance already owns the persistent session');
 }
+// Only after owning the SQLite lease may this process clean interrupted
+// candidate namespaces. The active credential namespace is never touched.
+store.recoverCandidatesAfterRestart();
 const server = createListener({ gateway, tls: config.tls });
 // Administration is loopback-only, reachable through an authorized shell/SSH tunnel.
 const admin = createListener({ gateway, administrative: true });
@@ -35,6 +57,7 @@ async function shutdown(code = 0) {
   stopping = true;
   clearInterval(cleanup);
   clearInterval(leaseHeartbeat);
+  candidateManager?.shutdown();
   connection.stop();
   const deadline = setTimeout(() => process.exit(1), 10000);
   deadline.unref();
@@ -73,9 +96,21 @@ try {
   if (config.enabled) {
     const { default: makeWASocket, BufferJSON, initAuthCreds, proto, DisconnectReason } = await import('@whiskeysockets/baileys');
     const { default: pino } = await import('pino');
-    const auth = baileysState(store, { BufferJSON, initAuthCreds, proto });
-    connection = createConnection({ makeSocket: makeWASocket, auth, logger: pino({ level: 'silent' }),
-      loggedOutCode: DisconnectReason.loggedOut,
-      onStateChange: state => console.info('whatsapp_connection_state=%s', state) });
+    const logger = pino({ level: 'silent' });
+    createActiveConnection = () => {
+      const auth = baileysState(store, { BufferJSON, initAuthCreds, proto });
+      return createConnection({ makeSocket: makeWASocket, auth, logger,
+        loggedOutCode: DisconnectReason.loggedOut,
+        onStateChange: state => console.info('whatsapp_connection_state=%s', state) });
+    };
+    connection = createActiveConnection();
+    if ((env.WHATSAPP_ACCOUNT_SWITCH_SERVICE_SECRET || '').length >= 32) {
+      candidateManager = createCandidateSessionManager({
+        store,
+        createAuth: credentialStore => baileysState(credentialStore, { BufferJSON, initAuthCreds, proto }),
+        createConnection: ({ auth, onStateChange }) => createConnection({ makeSocket: makeWASocket, auth, logger,
+          loggedOutCode: DisconnectReason.loggedOut, onStateChange }),
+      });
+    }
   }
 } catch { console.error('whatsapp_startup_failure'); await shutdown(1); }

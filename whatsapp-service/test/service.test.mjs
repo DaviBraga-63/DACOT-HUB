@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve, sep } from 'node:path';
 import { randomBytes, createHash, createHmac } from 'node:crypto';
 import { openStore } from '../store.mjs';
-import { createGateway } from '../gateway.mjs';
+import { connectedBrazilianAccountPhone, createGateway } from '../gateway.mjs';
 import { createConnection } from '../connection.mjs';
 
 function removeTestDirectory(dir) {
@@ -38,30 +38,37 @@ test('encrypted auth persists and idempotency survives restart', () => {
   } finally { removeTestDirectory(dir); }
 });
 
-test('persistent session lease prevents a second sender and is released by its owner', () => {
+test('persistent SQLite lease prevents a second sender and expires safely', () => {
   const dir = mkdtempSync(join(tmpdir(), 'dacot-wa-'));
   const path = join(dir, 'state.sqlite'), key = randomBytes(32);
   const first = openStore(path, key), second = openStore(path, key);
-  const ownerA = '11111111-1111-4111-8111-111111111111';
-  const ownerB = '22222222-2222-4222-8222-222222222222';
   try {
-    assert.equal(first.acquireServiceLease(ownerA, 1000, 60000), true);
-    assert.equal(second.acquireServiceLease(ownerB, 2000, 60000), false);
-    assert.equal(first.renewServiceLease(ownerA, 15000, 60000), true);
-    assert.equal(second.acquireServiceLease(ownerB, 30000, 60000), false);
-    assert.equal(first.releaseServiceLease(ownerA), true);
-    assert.equal(second.acquireServiceLease(ownerB, 30000, 60000), true);
-  } finally {
-    first.close(); second.close(); removeTestDirectory(dir);
-  }
+    const owner = '11111111-1111-4111-8111-111111111111';
+    const other = '22222222-2222-4222-8222-222222222222';
+    assert.equal(first.acquireServiceLease(owner, 1000, 60000), true);
+    assert.equal(second.acquireServiceLease(other, 2000, 60000), false);
+    assert.equal(first.renewServiceLease(owner, 3000, 60000), true);
+    assert.equal(second.acquireServiceLease(other, 63001, 60000), true);
+    assert.equal(first.releaseServiceLease(owner), false);
+    assert.equal(second.releaseServiceLease(other), true);
+  } finally { first.close(); second.close(); removeTestDirectory(dir); }
+});
+
+test('connected account identity exposes only a validated Brazilian phone JID', () => {
+  assert.equal(connectedBrazilianAccountPhone('5511912345678@s.whatsapp.net'), '+5511912345678');
+  assert.equal(connectedBrazilianAccountPhone('5511912345678:23@s.whatsapp.net'), '+5511912345678');
+  assert.equal(connectedBrazilianAccountPhone('123456789@lid'), null);
+  assert.equal(connectedBrazilianAccountPhone('12025550123@s.whatsapp.net'), null);
+  assert.equal(connectedBrazilianAccountPhone('not-a-jid'), null);
+  assert.equal(connectedBrazilianAccountPhone(null), null);
 });
 
 test('gateway rejects unauthenticated requests and does not resend accepted or indeterminate requests', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'dacot-wa-'));
   try {
     const store = openStore(join(dir, 'state.sqlite'), randomBytes(32));
-    const sends = [];
-    const connection = { state: 'open', send: async (number, text) => { sends.push({ number, text }); } };
+    let sends = 0;
+    const connection = { state: 'open', send: async () => { sends++; } };
     const secret = 'x'.repeat(32);
     const adminSecret = 'y'.repeat(32);
     const pairingSecret = 'z'.repeat(32);
@@ -78,52 +85,63 @@ test('gateway rejects unauthenticated requests and does not resend accepted or i
     assert.equal((await gateway.handle({ ...request, id: 'another-id' })).status, 400);
     assert.equal((await gateway.handle({ method: 'GET', path: '/internal/pairing', authorization: `Bearer ${secret}` })).status, 401);
     assert.equal((await gateway.handle({ method: 'GET', path: '/internal/status', authorization: `Bearer ${adminSecret}` })).status, 200);
-    const accepted = await gateway.handle(request);
-    assert.deepEqual(accepted, { status: 202, body: { state: 'accepted' } });
     assert.equal((await gateway.handle(request)).status, 202);
-    assert.equal(accepted.body.state, 'accepted');
-    assert.notEqual(accepted.body.state, 'delivered');
-    assert.equal(sends.length, 1);
-    assert.equal(sends[0].number, '+5511912345678');
-    assert.match(sends[0].text, /recuperação de senha/);
-    const firstAccessToken = 'c'.repeat(43);
-    const firstAccess = { ...request, id: createHash('sha256').update(firstAccessToken).digest('hex'),
-      body: { ...request.body, purpose: 'first_access', link: `https://hub.example.test/reset-password?token=${firstAccessToken}` } };
-    firstAccess.rawBody = Buffer.from(JSON.stringify(firstAccess.body));
-    firstAccess.signature = createHmac('sha256', secret).update(firstAccess.timestamp + '.').update(firstAccess.rawBody).digest('hex');
-    assert.deepEqual(await gateway.handle(firstAccess), { status: 202, body: { state: 'accepted' } });
-    assert.match(sends[1].text, /acesso ao DACOT foi criado/);
-    connection.send = async () => { sends.push({}); throw new Error('test'); };
+    assert.equal((await gateway.handle(request)).status, 202);
+    assert.equal(sends, 1);
+    connection.send = async () => { sends++; throw new Error('test'); };
     const secondToken = 'b'.repeat(43);
     const second = { ...request, id: createHash('sha256').update(secondToken).digest('hex'), body: { ...request.body, link: `https://hub.example.test/reset-password?token=${secondToken}` } };
     second.rawBody = Buffer.from(JSON.stringify(second.body));
     second.signature = createHmac('sha256', secret).update(second.timestamp + '.').update(second.rawBody).digest('hex');
     assert.equal((await gateway.handle(second)).status, 503);
     assert.equal((await gateway.handle(second)).status, 409);
-    assert.equal(sends.length, 3);
+    assert.equal(sends, 2);
     connection.state = 'disconnected';
     assert.equal((await gateway.handle({ ...request })).status, 503);
     store.close();
   } finally { removeTestDirectory(dir); }
 });
 
-test('integration status is HMAC-authenticated, replay-safe, and contains only connection state', async () => {
+test('integration status is authenticated, replay-safe, and exposes only sanitized state', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'dacot-wa-'));
   try {
     const store = openStore(join(dir, 'state.sqlite'), randomBytes(32));
-    const secret = 'x'.repeat(32), adminSecret = 'y'.repeat(32);
-    const gateway = createGateway({ secret, adminSecret, frontendOrigin: 'https://hub.example.test',
-      connection: { state: 'open' }, store });
-    const id = 'status-request-identifier-001';
-    const timestamp = String(Math.floor(Date.now() / 1000));
-    const signed = `GET\n/internal/integration-status\n${timestamp}\n${id}`;
-    const request = { method: 'GET', path: '/internal/integration-status', authorization: `Bearer ${secret}`,
-      id, timestamp, rawBody: Buffer.alloc(0),
-      signature: createHmac('sha256', secret).update(signed).digest('hex') };
-    assert.deepEqual(await gateway.handle({ ...request, authorization: `Bearer ${adminSecret}` }), { status: 401 });
-    const status = await gateway.handle(request);
-    assert.deepEqual(status, { status: 200, body: { connection_state: 'open', pairing_self_service_enabled: false } });
-    assert.equal((await gateway.handle(request)).status, 409);
+    const secret = 'x'.repeat(32), adminSecret = 'y'.repeat(32), pairingSecret = 'z'.repeat(32);
+    const connection = { state: 'open', accountId: () => '5511912345678:4@s.whatsapp.net' };
+    const gateway = createGateway({ secret, adminSecret, pairingSecret, pairingEnabled: false,
+      frontendOrigin: 'https://hub.example.test', connection, store });
+    const request = (id) => {
+      const timestamp = String(Math.floor(Date.now() / 1000));
+      const signed = `GET\n/internal/integration-status\n${timestamp}\n${id}`;
+      return { method: 'GET', path: '/internal/integration-status', authorization: `Bearer ${secret}`,
+        id, rawBody: Buffer.alloc(0), timestamp,
+        signature: createHmac('sha256', secret).update(signed).digest('hex') };
+    };
+    const first = request('integration-status-request-one');
+    assert.equal((await gateway.handle({ ...first, authorization: `Bearer ${adminSecret}` })).status, 401);
+    assert.equal((await gateway.handle({ ...first, signature: '0'.repeat(64) })).status, 401);
+    assert.equal((await gateway.handle({ ...first, method: 'POST' })).status, 400);
+    assert.deepEqual(await gateway.handle(first), {
+      status: 200,
+      body: {
+        connection_state: 'open',
+        pairing_self_service_enabled: false,
+        account_switch_available: false,
+        connected_account_phone: '+5511912345678',
+      },
+    });
+    assert.equal((await gateway.handle(first)).status, 409);
+    for (const [index, state] of ['connecting', 'pairing', 'disconnected', 'logged_out', 'error', 'stopped', 'disabled'].entries()) {
+      connection.state = state;
+      const response = await gateway.handle(request(`integration-status-request-${index + 20}`));
+      assert.deepEqual(response.body, {
+        connection_state: state,
+        pairing_self_service_enabled: false,
+        account_switch_available: false,
+        connected_account_phone: null,
+      });
+      assert.equal(Object.keys(response.body).length, 4);
+    }
     store.close();
   } finally { removeTestDirectory(dir); }
 });
@@ -156,6 +174,47 @@ test('pairing-code delegation is opt-in, separately signed, replay-safe, and nev
   } finally { removeTestDirectory(dir); }
 });
 
+test('account switch controls require their own HMAC secret, are replay-safe, and expose only candidate state/code', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dacot-wa-'));
+  try {
+    const store = openStore(join(dir, 'state.sqlite'), randomBytes(32));
+    const secret = 'x'.repeat(32), adminSecret = 'y'.repeat(32), pairingSecret = 'z'.repeat(32), switchSecret = 'w'.repeat(32);
+    const calls = [];
+    const controller = {
+      available: () => true,
+      prepare: ({ operationId, requestedPhone }) => { calls.push(['prepare', operationId, requestedPhone]); return { state: 'connecting', expiresAt: 12345 }; },
+      status: () => ({ state: 'ready', expiresAt: 12345 }),
+      requestPairingCode: async () => 'ABCD1234', cancel: () => true, promote: () => ({ status: 'promoted' }),
+    };
+    const gateway = createGateway({ secret, adminSecret, pairingSecret, switchSecret, switchController: controller,
+      frontendOrigin: 'https://hub.example.test', connection: { state: 'open' }, store });
+    const operationId = 'a'.repeat(48);
+    const request = (action, id, body = {}) => {
+      const path = `/internal/account-switch/${operationId}/${action}`;
+      const method = action === 'status' ? 'GET' : 'POST';
+      const rawBody = method === 'GET' ? Buffer.alloc(0) : Buffer.from(JSON.stringify(body));
+      const timestamp = String(Math.floor(Date.now() / 1000));
+      const digest = createHash('sha256').update(rawBody).digest('hex');
+      const signed = `${method}\n${path}\n${timestamp}\n${id}\n${digest}`;
+      return { method, path, id, body: method === 'GET' ? null : body, rawBody, timestamp,
+        authorization: `Bearer ${switchSecret}`, signature: createHmac('sha256', switchSecret).update(signed).digest('hex') };
+    };
+    const prepared = request('prepare', 'switch-request-one-1234', { phone: '+5511912345678' });
+    assert.equal((await gateway.handle({ ...prepared, authorization: `Bearer ${secret}` })).status, 401);
+    assert.equal((await gateway.handle({ ...prepared, signature: '0'.repeat(64) })).status, 401);
+    assert.deepEqual(await gateway.handle(prepared), { status: 202, body: { state: 'connecting', expires_at: 12345 } });
+    assert.equal((await gateway.handle(prepared)).status, 409);
+    assert.deepEqual(calls, [['prepare', operationId, '+5511912345678']]);
+    const status = await gateway.handle(request('status', 'switch-request-two-1234'));
+    assert.deepEqual(status, { status: 200, body: { state: 'ready', expires_at: 12345 } });
+    const code = await gateway.handle(request('code', 'switch-request-three-12'));
+    assert.deepEqual(code, { status: 202, body: { code: 'ABCD1234', state: 'ready', expires_at: 12345 } });
+    const promote = await gateway.handle(request('promote', 'switch-request-four-123', { confirm: true }));
+    assert.deepEqual(promote, { status: 200, body: { state: 'promoted' } });
+    store.close();
+  } finally { removeTestDirectory(dir); }
+});
+
 test('storage failure stops the connection without reconnecting', () => {
   const events = new EventEmitter(), scheduled = [];
   const socket = { ev: events, end() { events.emit('connection.update', { connection: 'close' }); } };
@@ -181,16 +240,14 @@ test('retention preserves auth and replay records beyond all valid link lifetime
   } finally { store.close(); removeTestDirectory(dir); }
 });
 
-test('connection enters pairing, opens, requests a code, reconnects, and stops on logout', async () => {
+test('connection enters pairing, opens, reconnects, and stops on logout', async () => {
   const sockets = [], scheduled = [];
-  const makeSocket = () => { const ev = new EventEmitter(); const socket = { ev, end() {}, sendMessage: async () => {},
-    requestPairingCode: async () => 'ABCD1234' }; sockets.push(socket); return socket; };
-  let resets = 0;
-  const connection = createConnection({ makeSocket, auth: { state: {}, saveCreds() {}, reset() { resets++; } }, logger: {}, loggedOutCode: 401,
+  const makeSocket = () => { const ev = new EventEmitter(); const socket = { ev, end() {}, sendMessage: async () => {} }; sockets.push(socket); return socket; };
+  let resets = 0, saves = 0;
+  const connection = createConnection({ makeSocket, auth: { state: {}, saveCreds() { saves++; }, reset() { resets++; } }, logger: {}, loggedOutCode: 401,
     schedule: (fn) => scheduled.push(fn) });
   sockets[0].ev.emit('connection.update', { qr: 'synthetic-qr' });
   assert.equal(connection.state, 'pairing');
-  assert.equal(await connection.requestPairingCode('5511912345678'), 'ABCD1234');
   sockets[0].ev.emit('connection.update', { connection: 'open' });
   assert.equal(connection.state, 'open');
   assert.equal(connection.qr, null);
@@ -198,6 +255,13 @@ test('connection enters pairing, opens, requests a code, reconnects, and stops o
   assert.equal(connection.state, 'disconnected');
   scheduled.shift()();
   assert.equal(sockets.length, 2);
+  sockets[1].ev.emit('connection.update', { connection: 'open' });
+  assert.equal(connection.state, 'open');
+  // A delayed close from the replaced socket must not report the healthy
+  // replacement as disconnected or schedule a second reconnect.
+  sockets[0].ev.emit('connection.update', { connection: 'close' });
+  assert.equal(connection.state, 'open');
+  assert.equal(scheduled.length, 0);
   sockets[1].ev.emit('connection.update', { connection: 'close', lastDisconnect: { error: { output: { statusCode: 401 } } } });
   assert.equal(connection.state, 'logged_out');
   assert.equal(scheduled.length, 0);
@@ -206,24 +270,34 @@ test('connection enters pairing, opens, requests a code, reconnects, and stops o
   assert.equal(sockets.length, 3);
   assert.equal(connection.resetPairing(), false);
   connection.stop();
+  sockets[2].ev.emit('creds.update');
+  assert.equal(saves, 0, 'a stopped candidate or active connection cannot rewrite cleared credentials');
 });
 
-test('reconnection ignores stale socket events and stops after the configured retry budget', () => {
+test('reconnection ignores stale socket events and stops after eight retries', () => {
   const sockets = [], scheduled = [];
-  const makeSocket = () => { const ev = new EventEmitter(); const socket = { ev, end() {} }; sockets.push(socket); return socket; };
-  const connection = createConnection({ makeSocket, auth: { state: {}, saveCreds() {}, reset() {} }, logger: {},
-    loggedOutCode: 401, maxReconnectAttempts: 2, schedule: (fn, delay) => scheduled.push({ fn, delay }) });
+  const makeSocket = () => {
+    const ev = new EventEmitter();
+    const socket = { ev, end() {} };
+    sockets.push(socket);
+    return socket;
+  };
+  const connection = createConnection({ makeSocket,
+    auth: { state: {}, saveCreds() {}, reset() {} }, logger: {}, loggedOutCode: 401,
+    schedule: (fn, delay) => scheduled.push({ fn, delay }) });
+
   sockets[0].ev.emit('connection.update', { connection: 'close' });
-  assert.equal(scheduled[0].delay, 1000);
   scheduled.shift().fn();
-  assert.equal(sockets.length, 2);
   sockets[0].ev.emit('connection.update', { connection: 'close' });
-  assert.equal(scheduled.length, 0, 'old socket must not schedule a second connection');
-  sockets[1].ev.emit('connection.update', { connection: 'close' });
-  assert.equal(scheduled[0].delay, 2000);
-  scheduled.shift().fn();
-  sockets[2].ev.emit('connection.update', { connection: 'close' });
+  assert.equal(scheduled.length, 0, 'a replaced socket cannot trigger another retry');
+
+  for (let attempt = 0; attempt < 7; attempt++) {
+    sockets.at(-1).ev.emit('connection.update', { connection: 'close' });
+    assert.equal(scheduled.length, 1);
+    scheduled.shift().fn();
+  }
+  sockets.at(-1).ev.emit('connection.update', { connection: 'close' });
   assert.equal(connection.state, 'error');
-  assert.equal(scheduled.length, 0, 'reconnect loop must stop at its retry budget');
+  assert.equal(scheduled.length, 0, 'retry loop must stop at eight attempts');
   connection.stop();
 });

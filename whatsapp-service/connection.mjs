@@ -3,6 +3,11 @@ export function createConnection({ makeSocket, auth, logger, loggedOutCode, sche
   let socket, stopped = false, reconnectScheduled = false, reconnectAttempts = 0;
   const connection = {
     state: 'connecting', qr: null,
+    accountId() {
+      if (connection.state !== 'open') return null;
+      return typeof socket?.user?.id === 'string' ? socket.user.id
+        : (typeof auth.state.creds.me?.id === 'string' ? auth.state.creds.me.id : null);
+    },
     async send(number, text) {
       if (connection.state !== 'open' || !socket) throw new Error('Not connected');
       await socket.sendMessage(`${number.slice(1)}@s.whatsapp.net`, { text });
