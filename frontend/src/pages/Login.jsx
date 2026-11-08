@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useNavigate, Link } from "react-router-dom";
 import { Eye, EyeOff } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
-import TopoField from "@/components/TopoField";
+import LoginParticles from "@/components/LoginParticles";
 
 export default function Login() {
   const { login, error, setError } = useAuth();
@@ -23,19 +23,16 @@ export default function Login() {
   return (
     <div className="relative min-h-[100svh] overflow-x-hidden bg-[#090909]">
       <div className="dh-login-background absolute inset-0" aria-hidden="true">
-        <TopoField />
+        <LoginParticles />
       </div>
 
       <main className="relative z-10 flex min-h-[100svh] items-center justify-center px-6 py-28 sm:px-10 sm:py-24 lg:px-16">
         <div className="max-w-md w-full py-10 lg:py-0">
-          <div className="text-[11px] uppercase tracking-widest font-bold text-[var(--dh-accent)] mb-5">
-            Painel Administrativo
-          </div>
           <h1 className="text-5xl lg:text-[56px] font-bold tracking-tight text-white leading-[1.1] mb-4" style={{fontFamily:"Cabinet Grotesk"}}>
-            Bem-vindo ao DACOT Hub
+            Bem-vindo ao <span className="text-[#A56D45]">DACOT</span> Hub
           </h1>
           <p className="text-[15px] text-slate-300 mb-8 leading-relaxed">
-            Gerencie restaurantes clientes, módulos disponibilizados e usuários — tudo num só lugar.
+            Gerencie restaurantes clientes, módulos disponibilizados e usuários.
           </p>
 
           <form onSubmit={submit} className="space-y-5" data-testid="login-form">
