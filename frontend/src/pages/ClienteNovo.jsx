@@ -40,7 +40,7 @@ export default function ClienteNovo() {
       };
       const { data } = await api.post("/hub/tenants/onboard", payload);
       const invitationMessages = {
-        email_sent: { type: "success", message: "Cadastro concluído. O e-mail de primeiro acesso foi enviado." },
+        email_sent: { type: "success", message: "Cadastro concluído. O provedor aceitou a solicitação de envio do primeiro acesso; isso não confirma a entrega." },
         email_delivery_failed: { type: "error", message: "Cadastro concluído, mas o e-mail de primeiro acesso não foi enviado. Após corrigir o provedor, use a recuperação de senha para enviar um novo link com segurança." },
         accepted: { type: "info", message: "Cadastro concluído. O gateway aceitou a solicitação de envio pelo WhatsApp; isso ainda não confirma a entrega." },
         rejected: { type: "error", message: "Cadastro concluído, mas o gateway rejeitou o envio pelo WhatsApp." },

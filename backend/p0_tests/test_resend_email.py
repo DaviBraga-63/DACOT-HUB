@@ -76,7 +76,7 @@ def test_resend_rejects_missing_configuration_without_logging_token(caplog):
 
 def test_resend_request_uses_official_endpoint_and_safe_payload(monkeypatch):
     request = httpx.Request("POST", email_delivery.RESEND_EMAILS_URL)
-    client = _Client(response=httpx.Response(202, request=request))
+    client = _Client(response=httpx.Response(200, json={"id": "email-test-id"}, request=request))
     _install_client(monkeypatch, client)
 
     assert _send() is True
@@ -92,7 +92,7 @@ def test_resend_request_uses_official_endpoint_and_safe_payload(monkeypatch):
 
 def test_email_states_the_actual_link_validity(monkeypatch):
     request = httpx.Request("POST", email_delivery.RESEND_EMAILS_URL)
-    client = _Client(response=httpx.Response(202, request=request))
+    client = _Client(response=httpx.Response(200, json={"id": "email-test-id"}, request=request))
     _install_client(monkeypatch, client)
     assert _send(validity_hours=720) is True
     assert "30 dias" in client.calls[-1]["json"]["html"]
@@ -115,10 +115,17 @@ def test_resend_http_and_network_failures_return_false_without_logging_secrets(m
 
 def test_orders_invite_uses_pedidos_link_and_failure_is_safe(monkeypatch, caplog):
     request = httpx.Request("POST", email_delivery.RESEND_EMAILS_URL)
-    client = _Client(response=httpx.Response(202, request=request))
+    client = _Client(response=httpx.Response(200, json={"id": "email-test-id"}, request=request))
     _install_client(monkeypatch, client)
     assert _send_orders() is True
     assert "https://pedidos.dacot.com.br/primeiro-acesso?token=orders-invite-token" in client.calls[0]["json"]["html"]
     _install_client(monkeypatch, _Client(error=httpx.ConnectTimeout("synthetic timeout")))
     assert _send_orders() is False
     assert "orders-invite-token" not in caplog.text
+
+
+def test_resend_2xx_without_message_id_is_not_reported_as_accepted(monkeypatch):
+    request = httpx.Request("POST", email_delivery.RESEND_EMAILS_URL)
+    _install_client(monkeypatch, _Client(response=httpx.Response(200, json={}, request=request)))
+    assert _send() is False
+    assert _send_orders() is False
