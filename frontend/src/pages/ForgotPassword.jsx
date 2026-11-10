@@ -35,13 +35,13 @@ export default function ForgotPassword() {
         ) : (
           <form onSubmit={submit} className="space-y-5">
             <p className="text-[15px] text-slate-600">
-              Informe o e-mail da sua conta DACOT Hub e escolha receber o link por e-mail ou SMS.
+              Informe o e-mail da sua conta DACOT Hub e escolha receber o link por e-mail ou WhatsApp.
             </p>
             <input type="email" required value={email} onChange={(e) => setEmail(e.target.value)}
                    className="dh-input" placeholder="voce@dacot.com" data-testid="forgot-email" />
             <label className="block text-[13px]">Canal de recuperação
               <select className="dh-input mt-1" value={channel} onChange={(e) => setChannel(e.target.value)}>
-                <option value="email">E-mail</option><option value="sms">SMS</option>
+                <option value="email">E-mail</option><option value="whatsapp">WhatsApp</option>
               </select>
             </label>
             {err && <div className="dh-chip dh-chip-error">{err}</div>}

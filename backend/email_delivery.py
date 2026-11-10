@@ -11,6 +11,13 @@ RESEND_EMAILS_URL = "https://api.resend.com/emails"
 logger = logging.getLogger("dacot-hub")
 
 
+def _resend_accepted(response: httpx.Response) -> bool:
+    """A successful HTTP status alone is insufficient without Resend's email ID."""
+    response.raise_for_status()
+    payload = response.json()
+    return isinstance(payload, dict) and isinstance(payload.get("id"), str) and bool(payload["id"].strip())
+
+
 async def send_password_reset_email(
     to_email: str,
     token: str,
@@ -59,8 +66,7 @@ async def send_password_reset_email(
                 json={"from": f"{from_name} <{from_address}>", "to": [to_email],
                       "subject": f"Defina sua senha do {from_name}", "html": html},
             )
-        response.raise_for_status()
-        return True
+        return _resend_accepted(response)
     except Exception as exc:
         logger.error("Password reset email delivery failed: %s", type(exc).__name__)
         return False
@@ -101,8 +107,7 @@ async def send_orders_first_access_email(
                 json={"from": f"{from_name} <{from_address}>", "to": [to_email],
                       "subject": "Crie sua senha do DACOT Pedidos", "html": html},
             )
-        response.raise_for_status()
-        return True
+        return _resend_accepted(response)
     except Exception as exc:
         logger.error("Orders first-access email delivery failed: %s", type(exc).__name__)
         return False

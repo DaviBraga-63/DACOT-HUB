@@ -1,4 +1,4 @@
-"""Brazilian phone formatting for transactional SMS delivery."""
+"""Brazilian phone formatting for transactional delivery channels."""
 
 import re
 
@@ -34,7 +34,7 @@ def normalize_brazilian_phone(value: str) -> str:
 
 
 def normalize_brazilian_mobile(value: str) -> str:
-    """Return a Brazilian E.164 mobile number suitable for SMS delivery."""
+    """Return a Brazilian E.164 mobile number suitable for phone messaging."""
     number = normalize_brazilian_phone(value)
     national = number[3:]
     if len(national) != 11 or national[2] != "9":

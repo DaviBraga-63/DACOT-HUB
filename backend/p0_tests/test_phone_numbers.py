@@ -21,7 +21,7 @@ class BrazilianPhoneTests(unittest.TestCase):
     def test_mask_does_not_expose_subscriber_number(self):
         self.assertEqual(mask_brazilian_phone("(11) 91234-5678"), "+55 (11) *****5678")
 
-    def test_sms_mobile_normalizer_rejects_landlines(self):
+    def test_whatsapp_mobile_normalizer_rejects_landlines(self):
         self.assertEqual(normalize_brazilian_mobile("(11) 91234-5678"), "+5511912345678")
         with self.assertRaises(ValueError):
             normalize_brazilian_mobile("(21) 3456-7890")

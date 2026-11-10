@@ -40,15 +40,15 @@ export default function ClienteNovo() {
       };
       const { data } = await api.post("/hub/tenants/onboard", payload);
       const invitationMessages = {
-        email_sent: { type: "success", message: "Cadastro concluído. O e-mail de primeiro acesso foi enviado." },
+        email_sent: { type: "success", message: "Cadastro concluído. O provedor aceitou a solicitação de envio do primeiro acesso; isso não confirma a entrega." },
         email_delivery_failed: { type: "error", message: "Cadastro concluído, mas o e-mail de primeiro acesso não foi enviado. Após corrigir o provedor, use a recuperação de senha para enviar um novo link com segurança." },
-        accepted: { type: "info", message: "Cadastro concluído. Solicitação de envio por SMS aceita pelo provedor." },
-        sent: { type: "info", message: "Cadastro concluído. O provedor confirmou o envio do SMS à operadora." },
-        delivered: { type: "success", message: "Cadastro concluído. O provedor confirmou a entrega do SMS." },
-        undelivered: { type: "error", message: "Cadastro concluído, mas o provedor confirmou que o SMS não foi entregue." },
-        failed: { type: "error", message: "Cadastro concluído, mas o provedor recusou o SMS. Verifique a configuração antes de solicitar outro link." },
-        unknown: { type: "error", message: "Cadastro concluído, mas não foi possível confirmar o resultado do SMS. Verifique o provedor antes de solicitar outro link." },
-        configuration_error: { type: "error", message: "Cadastro concluído, mas a configuração de SMS está incompleta ou inválida." },
+        accepted: { type: "info", message: "Cadastro concluído. O gateway aceitou a solicitação de envio pelo WhatsApp; isso ainda não confirma a entrega." },
+        rejected: { type: "error", message: "Cadastro concluído, mas o gateway rejeitou o envio pelo WhatsApp." },
+        network_error: { type: "error", message: "Cadastro concluído, mas não foi possível confirmar a comunicação com o gateway WhatsApp." },
+        configuration_error: { type: "error", message: "Cadastro concluído, mas a configuração de WhatsApp está incompleta ou inválida." },
+        rate_limited: { type: "error", message: "Cadastro concluído, mas o limite de envio do WhatsApp foi atingido. Tente mais tarde." },
+        indeterminate: { type: "error", message: "Cadastro concluído, mas o resultado do envio pelo WhatsApp é indeterminado. Não solicite outro link até verificar o gateway." },
+        failed: { type: "error", message: "Cadastro concluído, mas o gateway não conseguiu enviar a mensagem pelo WhatsApp." },
       };
       const invitation = invitationMessages[data.invitation];
       if (invitation) toast[invitation.type](invitation.message);
@@ -84,8 +84,8 @@ export default function ClienteNovo() {
           <Field label="Telefone">
             <input className="dh-input" value={form.phone} onChange={set("phone")} data-testid="input-phone" />
           </Field>
-          <Field label="Telefone móvel do responsável" required={form.access_channel === "sms"}>
-            <input type="tel" className="dh-input" value={form.mobile_phone} required={form.access_channel === "sms"}
+          <Field label="Telefone móvel do responsável" required={form.access_channel === "whatsapp"}>
+            <input type="tel" className="dh-input" value={form.mobile_phone} required={form.access_channel === "whatsapp"}
                    onChange={(e) => setForm((f) => ({ ...f, mobile_phone: formatBrazilianPhone(e.target.value) }))}
                    data-testid="input-mobile-phone" />
           </Field>
@@ -119,7 +119,7 @@ export default function ClienteNovo() {
           </div>
           <Field label="Enviar primeiro acesso por">
             <select className="dh-input" value={form.access_channel} onChange={set("access_channel")}>
-              <option value="email">E-mail</option><option value="sms">SMS</option>
+              <option value="email">E-mail</option><option value="whatsapp">WhatsApp</option>
             </select>
           </Field>
           <p className="text-[12px] text-[var(--dh-muted)]">O proprietário receberá um link seguro para definir a própria senha.</p>
