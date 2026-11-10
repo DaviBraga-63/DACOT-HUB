@@ -173,7 +173,7 @@ def test_replacement_invalidates_previous_link_and_new_link_is_single_use(hub, m
         asyncio.run(hub.reset(hub.ResetIn(token=second, password="long-enough")))
 
 
-def test_only_super_admin_can_modify_mobile_phone_and_audit_is_atomic(hub, monkeypatch):
+def test_generic_tenant_patch_cannot_activate_mobile_recovery(hub, monkeypatch):
     tenant_id = ObjectId()
     admin = {"_id": "staff-id", "role": "admin", "email": "admin@example.test"}
     tenants = SimpleNamespace(
@@ -183,14 +183,12 @@ def test_only_super_admin_can_modify_mobile_phone_and_audit_is_atomic(hub, monke
     monkeypatch.setattr(hub, "db", SimpleNamespace(tenants=tenants))
     with pytest.raises(HTTPException) as exc:
         asyncio.run(hub.patch_tenant(str(tenant_id), hub.TenantPatch(mobile_phone="11912345678"), admin))
-    assert exc.value.status_code == 403
+    assert exc.value.status_code == 400
     tenants.update_one.assert_not_awaited()
     super_admin = {**admin, "role": "super_admin"}
-    asyncio.run(hub.patch_tenant(str(tenant_id), hub.TenantPatch(mobile_phone="11912345678"), super_admin))
-    mutation = tenants.update_one.call_args.args[1]
-    assert mutation["$set"]["mobile_phone"] == "+5511912345678"
-    assert mutation["$push"]["phone_audit"]["actor_id"] == "staff-id"
-    assert mutation["$push"]["phone_audit"]["at"]
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(hub.patch_tenant(str(tenant_id), hub.TenantPatch(mobile_phone="11912345678"), super_admin))
+    assert exc.value.status_code == 400
     assert asyncio.run(hub.get_super_admin(super_admin)) == super_admin
     with pytest.raises(HTTPException):
         asyncio.run(hub.get_super_admin(admin))
@@ -252,13 +250,87 @@ def test_phone_binding_requires_super_admin_and_scopes_user_to_tenant(hub, monke
     assert any(dep.call is hub.get_super_admin for dep in route.dependant.dependencies)
     tid, uid = str(ObjectId()), str(ObjectId())
     users = SimpleNamespace(find_one=AsyncMock(return_value=None), update_one=AsyncMock())
-    tenants = SimpleNamespace(find_one=AsyncMock())
+    tenants = SimpleNamespace(find_one=AsyncMock(return_value={"_id": ObjectId(tid), "portal_owner_user_id": uid}))
     monkeypatch.setattr(hub, "db", SimpleNamespace(tenant_users=users, tenants=tenants))
     with pytest.raises(HTTPException) as exc:
         asyncio.run(hub.bind_phone(tid, hub.PhoneBindingIn(user_id=uid, phone="11912345678"), {"_id": "actor"}))
-    assert exc.value.status_code == 404
+    assert exc.value.status_code == 409
     assert users.find_one.call_args.args[0]["tenant_id"] == tid
     users.update_one.assert_not_awaited()
+
+
+def test_owner_whatsapp_change_stays_pending_until_the_link_is_confirmed(hub, monkeypatch):
+    tid, uid = str(ObjectId()), ObjectId()
+    owner = {"_id": uid, "tenant_id": tid, "email": "owner@example.test", "status": "active"}
+    tenant = {"_id": ObjectId(tid), "portal_owner_user_id": str(uid), "mobile_phone": "+5511911111111"}
+    confirmations = SimpleNamespace(update_many=AsyncMock(), insert_one=AsyncMock(), delete_one=AsyncMock())
+    users = SimpleNamespace(find_one=AsyncMock(side_effect=[owner, None]), update_one=AsyncMock())
+    tenants = SimpleNamespace(find_one=AsyncMock(return_value=tenant), update_one=AsyncMock())
+    monkeypatch.setattr(hub, "db", SimpleNamespace(
+        tenants=tenants, tenant_users=users, hub_users=SimpleNamespace(find_one=AsyncMock(return_value=None)),
+        owner_contact_confirmations=confirmations,
+    ))
+    monkeypatch.setattr(hub, "_owner_contact_confirmation_allowed", AsyncMock(return_value=True))
+    monkeypatch.setattr(hub, "_send_whatsapp_reset", AsyncMock(return_value=hub.DeliveryResult.ACCEPTED))
+    monkeypatch.setattr(hub, "log_activity", AsyncMock())
+    result = asyncio.run(hub.request_owner_whatsapp_change(
+        tid, hub.OwnerWhatsAppChangeIn(phone="11912345678"),
+        {"_id": "staff", "email": "staff@example.test", "name": "Staff", "role": "super_admin"},
+    ))
+    assert result == {"state": "confirmation_requested"}
+    doc = confirmations.insert_one.await_args.args[0]
+    assert doc["kind"] == "whatsapp" and doc["proposed_value"] == "+5511912345678"
+    assert len(doc["token_hash"]) == 64 and "11912345678" not in doc["token_hash"]
+    users.update_one.assert_not_awaited()
+    tenants.update_one.assert_not_awaited()
+
+
+def test_owner_email_change_does_not_replace_login_until_confirmed(hub, monkeypatch):
+    tid, uid = str(ObjectId()), ObjectId()
+    owner = {"_id": uid, "tenant_id": tid, "email": "old@example.com", "status": "active"}
+    tenant = {"_id": ObjectId(tid), "portal_owner_user_id": str(uid)}
+    confirmations = SimpleNamespace(update_many=AsyncMock(), insert_one=AsyncMock(), delete_one=AsyncMock())
+    async def find_user(query):
+        return owner if query.get("_id") == uid else None
+    users = SimpleNamespace(find_one=AsyncMock(side_effect=find_user), update_one=AsyncMock())
+    monkeypatch.setattr(hub, "db", SimpleNamespace(
+        tenants=SimpleNamespace(find_one=AsyncMock(return_value=tenant), update_one=AsyncMock()),
+        tenant_users=users, hub_users=SimpleNamespace(find_one=AsyncMock(return_value=None)),
+        owner_contact_confirmations=confirmations,
+    ))
+    monkeypatch.setattr(hub, "_owner_contact_confirmation_allowed", AsyncMock(return_value=True))
+    monkeypatch.setattr(hub, "send_owner_email_confirmation", AsyncMock(return_value=True))
+    monkeypatch.setattr(hub, "log_activity", AsyncMock())
+    result = asyncio.run(hub.request_owner_email_change(
+        tid, hub.OwnerEmailChangeIn(email="new@example.com"),
+        {"_id": "staff", "email": "staff@example.com", "name": "Staff", "role": "super_admin"},
+    ))
+    assert result == {"state": "confirmation_sent"}
+    assert confirmations.insert_one.await_args.args[0]["proposed_value"] == "new@example.com"
+    users.update_one.assert_not_awaited()
+
+
+def test_confirmed_owner_whatsapp_binds_only_the_portal_owner_and_revokes_sessions(hub, monkeypatch):
+    tid, uid = str(ObjectId()), ObjectId()
+    owner = {"_id": uid, "tenant_id": tid, "email": "owner@example.com", "name": "Owner", "status": "active"}
+    tenant = {"_id": ObjectId(tid), "portal_owner_user_id": str(uid)}
+    users = SimpleNamespace(find_one=AsyncMock(side_effect=[owner, None]),
+                            update_one=AsyncMock(return_value=SimpleNamespace(matched_count=1)))
+    tenants = SimpleNamespace(find_one=AsyncMock(return_value=tenant), update_one=AsyncMock())
+    monkeypatch.setattr(hub, "db", SimpleNamespace(tenant_users=users, tenants=tenants))
+    monkeypatch.setattr(hub, "_consume_owner_contact_confirmation", AsyncMock(return_value={
+        "tenant_id": tid, "owner_user_id": str(uid), "proposed_value": "+5511912345678", "first_access": False,
+    }))
+    revoke = AsyncMock()
+    monkeypatch.setattr(hub, "revoke_user_sessions", revoke)
+    monkeypatch.setattr(hub, "log_activity", AsyncMock())
+    result = asyncio.run(hub.confirm_owner_whatsapp(hub.OwnerContactConfirmationIn(token="x" * 32)))
+    assert result == {"ok": True, "first_access_delivery": None}
+    mutation = users.update_one.await_args.args[1][0]["$set"]
+    assert mutation["phone_number"]["$literal"] == "+5511912345678"
+    assert "phone_binding_version" in mutation
+    assert tenants.update_one.await_args.args[1]["$set"]["phone_user_id"] == str(uid)
+    revoke.assert_awaited_once_with(hub.db, user_id=str(uid), user_type="restaurant", reason="owner_whatsapp_changed")
 
 
 def test_forgot_whatsapp_only_sends_to_bound_user_and_response_is_generic(hub, monkeypatch):

@@ -28,6 +28,7 @@ from whatsapp_delivery import (
 )
 from email_delivery import (
     send_orders_first_access_email as _send_orders_first_access_email,
+    send_owner_email_confirmation as _send_owner_email_confirmation,
     send_password_reset_email as _send_password_reset_email,
 )
 from auth_sessions import (
@@ -159,7 +160,9 @@ api_router = APIRouter(prefix="/api")
 @app.middleware("http")
 async def protect_reset_response(request: Request, call_next):
     response = await call_next(request)
-    if (request.url.path in {"/reset-password", "/api/auth/reset-password", "/api/hub/whatsapp/pairing-code"}
+    if (request.url.path in {"/reset-password", "/confirm-owner-email", "/confirm-owner-whatsapp",
+                             "/api/auth/reset-password", "/api/auth/confirm-owner-email",
+                             "/api/auth/confirm-owner-whatsapp", "/api/hub/whatsapp/pairing-code"}
             or request.url.path.startswith("/api/hub/whatsapp/account-switch")):
         response.headers["Referrer-Policy"] = "no-referrer"
         response.headers["Cache-Control"] = "no-store"
@@ -424,6 +427,15 @@ async def send_orders_first_access_email(to_email: str, token: str) -> bool:
         to_email, token, orders_frontend_url=_orders_frontend_url(),
         resend_api_key=RESEND_API_KEY, email_from_address=EMAIL_FROM_ADDRESS,
         email_from_name=EMAIL_FROM_NAME,
+    )
+
+
+async def send_owner_email_confirmation(to_email: str, token: str) -> bool:
+    if os.environ.get("APP_ENV") == "development" and os.environ.get("DACOT_LOCAL_INTEGRATION") == "1":
+        return True
+    return await _send_owner_email_confirmation(
+        to_email, token, frontend_url=FRONTEND_URL, resend_api_key=RESEND_API_KEY,
+        email_from_address=EMAIL_FROM_ADDRESS, email_from_name=EMAIL_FROM_NAME,
     )
 
 
@@ -1086,6 +1098,18 @@ class PhoneBindingIn(BaseModel):
     phone: str
 
 
+class OwnerEmailChangeIn(BaseModel):
+    email: EmailStr
+
+
+class OwnerWhatsAppChangeIn(BaseModel):
+    phone: str
+
+
+class OwnerContactConfirmationIn(BaseModel):
+    token: str = Field(min_length=32, max_length=256)
+
+
 VALID_STATUS = {"active", "trial", "suspended", "inactive"}
 # A tenant is operational (can log in, use the portal, or receive a handoff
 # into an external module) only in "active"/"trial". "suspended"/"inactive"
@@ -1197,6 +1221,7 @@ async def _create_tenant_with_owner(payload: TenantOnboardingIn, background_task
     doc["_id"] = inserted.inserted_id
     created_user_id: Optional[str] = None
     raw_reset: Optional[str] = None
+    raw_whatsapp_confirmation: Optional[str] = None
     try:
         created_user_id = await _create_initial_tenant_manager(tid, access_name, access_email)
         owner_update = await db.tenants.update_one(
@@ -1208,20 +1233,19 @@ async def _create_tenant_with_owner(payload: TenantOnboardingIn, background_task
         if owner_update.matched_count != 1:
             raise HTTPException(409, "Proprietário do portal já está configurado")
         doc["portal_owner_user_id"] = created_user_id
-        version = None
-        if doc["mobile_phone"]:
-            version = secrets.token_urlsafe(32)
-            binding = await db.tenant_users.update_one(
-                {"_id": ObjectId(created_user_id), "tenant_id": tid, "deleted_at": None},
-                {"$set": {"phone_number": doc["mobile_phone"], "phone_binding_version": version},
-                 "$push": {"phone_audit": {"actor_id": user["_id"], "at": now_utc().isoformat()}}},
+        owner = await db.tenant_users.find_one({"_id": ObjectId(created_user_id), "tenant_id": tid, "deleted_at": None})
+        if not owner:
+            raise HTTPException(409, "Responsável não está disponível")
+        if payload.access_channel == "whatsapp":
+            # The mobile number remains only a tenant contact until its holder
+            # follows a one-time confirmation link.  It cannot receive account
+            # recovery merely because an administrator typed it in a form.
+            raw_whatsapp_confirmation = await _create_owner_contact_confirmation(
+                tid=tid, owner=owner, kind="whatsapp", proposed_value=doc["mobile_phone"],
+                actor=user, first_access=True,
             )
-            if binding.matched_count != 1:
-                raise HTTPException(409, "Responsável não está disponível")
-            await db.tenants.update_one({"_id": inserted.inserted_id}, {"$set": {"phone_user_id": created_user_id}})
-            doc["phone_user_id"] = created_user_id
-        raw_reset = await _issue_password_reset(created_user_id, access_email, "restaurant", first_access=True,
-                                                 phone_binding_version=version if payload.access_channel == "whatsapp" else None)
+        else:
+            raw_reset = await _issue_password_reset(created_user_id, access_email, "restaurant", first_access=True)
         await log_activity(
             actor_id=user["_id"], actor_name=user.get("name", user["email"]),
             action="tenant.onboarded", target_type="tenant", target_id=tid, tenant_id=tid,
@@ -1236,8 +1260,9 @@ async def _create_tenant_with_owner(payload: TenantOnboardingIn, background_task
         await db.tenants.delete_one({"_id": inserted.inserted_id})
         raise
     invitation = None
-    if raw_reset and payload.access_channel == "whatsapp":
-        invitation = (await _send_whatsapp_reset(doc["mobile_phone"], raw_reset, "first_access", tenant_id=tid)).value
+    if raw_whatsapp_confirmation:
+        invitation = (await _send_whatsapp_reset(doc["mobile_phone"], raw_whatsapp_confirmation,
+                                                  "contact_confirmation", tenant_id=tid)).value
     elif raw_reset:
         # E-mail has no later delivery callback. Do
         # the provider request before replying so the administrative UI can
@@ -1280,6 +1305,12 @@ async def get_tenant(tid: str, _u: dict = Depends(get_staff_user)):
         owner = await db.tenant_users.find_one({"_id": ObjectId(phone_user_id), "tenant_id": tid, "deleted_at": None})
         d["mobile_phone"] = (owner.get("phone_number") or owner.get("whatsapp_number", "")) if owner else ""
     base = _tenant_out(d)
+    owner_id = d.get("portal_owner_user_id")
+    if owner_id and ObjectId.is_valid(owner_id):
+        portal_owner = await db.tenant_users.find_one({"_id": ObjectId(owner_id), "tenant_id": tid, "deleted_at": None})
+        base["portal_owner_email"] = portal_owner.get("email") if portal_owner else None
+    else:
+        base["portal_owner_email"] = None
     base["active_modules"] = await db.tenant_modules.count_documents({"tenant_id": tid, "active": True})
     base["users_count"] = await db.tenant_users.count_documents({"tenant_id": tid, "deleted_at": None})
     return base
@@ -1317,37 +1348,212 @@ async def assign_portal_owner(tid: str, payload: PortalOwnerIn, user: dict = Dep
     return {"portal_owner_configured": True}
 
 
-@api_router.put("/hub/tenants/{tid}/phone")
-async def bind_phone(tid: str, payload: PhoneBindingIn, user: dict = Depends(get_super_admin)):
-    if not ObjectId.is_valid(tid) or not ObjectId.is_valid(payload.user_id):
-        raise HTTPException(404, "Cliente ou usuário não encontrado")
+
+OWNER_CONTACT_CONFIRMATION_TTL = timedelta(hours=24)
+
+
+async def _owner_contact_confirmation_allowed(tid: str, kind: str) -> bool:
+    """Small Mongo-backed rate limit for privileged channel-change requests."""
+    now = now_utc()
+    bucket = int(now.timestamp()) // 900
+    key = hashlib.sha256(f"owner-contact:{tid}:{kind}:{bucket}".encode()).hexdigest()
+    try:
+        doc = await db.owner_contact_confirmation_requests.find_one_and_update(
+            {"_id": key}, {"$inc": {"count": 1}, "$setOnInsert": {"created_at": now}},
+            upsert=True, return_document=ReturnDocument.AFTER,
+        )
+        return bool(doc and doc.get("count", 0) <= 5)
+    except PyMongoError:
+        logger.warning("owner_contact_confirmation_rate_limiter_unavailable")
+        return False
+
+
+async def _portal_owner_for_contact_change(tid: str) -> tuple[dict, dict]:
+    if not ObjectId.is_valid(tid):
+        raise HTTPException(404, "Cliente não encontrado")
+    tenant = await db.tenants.find_one({"_id": ObjectId(tid), "deleted_at": None})
+    owner_id = tenant.get("portal_owner_user_id") if tenant else None
+    if not tenant or not ObjectId.is_valid(owner_id or ""):
+        raise HTTPException(409, "Proprietário do portal não está configurado")
+    owner = await db.tenant_users.find_one({
+        "_id": ObjectId(owner_id), "tenant_id": tid, "deleted_at": None, "status": "active",
+    })
+    if not owner:
+        raise HTTPException(409, "Proprietário do portal não está disponível")
+    return tenant, owner
+
+
+async def _create_owner_contact_confirmation(*, tid: str, owner: dict, kind: str,
+                                             proposed_value: str, actor: dict,
+                                             first_access: bool = False) -> str:
+    """Persist only a hash of a high-entropy confirmation credential.
+
+    Existing channels stay authoritative until this credential is redeemed.
+    Superseding an old pending request makes retries idempotent without
+    granting a new channel early.
+    """
+    raw = secrets.token_urlsafe(32)
+    now = now_utc()
+    await db.owner_contact_confirmations.update_many(
+        {"tenant_id": tid, "owner_user_id": str(owner["_id"]), "kind": kind,
+         "used": False, "expires_at": {"$gt": now}},
+        {"$set": {"superseded_at": now}},
+    )
+    await db.owner_contact_confirmations.insert_one({
+        "token_hash": hashlib.sha256(raw.encode()).hexdigest(), "tenant_id": tid,
+        "owner_user_id": str(owner["_id"]), "kind": kind,
+        "proposed_value": proposed_value, "used": False,
+        "expires_at": now + OWNER_CONTACT_CONFIRMATION_TTL, "created_at": now,
+        "requested_by": actor["_id"], "first_access": first_access,
+    })
+    return raw
+
+
+@api_router.put("/hub/tenants/{tid}/owner-email")
+async def request_owner_email_change(tid: str, payload: OwnerEmailChangeIn,
+                                     user: dict = Depends(get_super_admin)):
+    tenant, owner = await _portal_owner_for_contact_change(tid)
+    email = str(payload.email).lower()
+    if email == owner.get("email"):
+        return {"state": "already_confirmed"}
+    if await _email_in_use(email, exclude_collection="tenant_users", exclude_id=owner["_id"]):
+        raise HTTPException(409, "Já existe um usuário com este e-mail")
+    if not await _owner_contact_confirmation_allowed(tid, "email"):
+        raise HTTPException(429, "Muitas solicitações. Tente novamente mais tarde.")
+    raw = await _create_owner_contact_confirmation(
+        tid=tid, owner=owner, kind="email", proposed_value=email, actor=user,
+    )
+    if not await send_owner_email_confirmation(email, raw):
+        await db.owner_contact_confirmations.delete_one({"token_hash": hashlib.sha256(raw.encode()).hexdigest(), "used": False})
+        raise HTTPException(503, "Não foi possível enviar a confirmação por e-mail")
+    await log_activity(actor_id=user["_id"], actor_name=user.get("name", user["email"]),
+                       action="tenant.owner_email_confirmation_requested", target_type="tenant",
+                       target_id=tid, tenant_id=tid, metadata={})
+    return {"state": "confirmation_sent"}
+
+
+@api_router.put("/hub/tenants/{tid}/owner-whatsapp")
+async def request_owner_whatsapp_change(tid: str, payload: OwnerWhatsAppChangeIn,
+                                        user: dict = Depends(get_super_admin)):
+    tenant, owner = await _portal_owner_for_contact_change(tid)
     try:
         phone = normalize_brazilian_mobile(payload.phone)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from None
-    async def bind(session):
-        owner = await db.tenant_users.find_one({"_id": ObjectId(payload.user_id), "tenant_id": tid,
-                                                "deleted_at": None, "status": "active"}, session=session)
-        if not owner:
-            raise HTTPException(404, "Usuário ativo não encontrado neste restaurante")
-        tenant = await db.tenants.find_one({"_id": ObjectId(tid), "deleted_at": None}, session=session)
-        if not tenant:
-            raise HTTPException(404, "Cliente não encontrado")
-        current_user = tenant.get("phone_user_id", tenant.get("whatsapp_user_id"))
-        if current_user and current_user != payload.user_id:
-            raise HTTPException(409, "Outro responsável já está vinculado ao telefone")
-        await db.tenant_users.update_one(
-            {"_id": ObjectId(payload.user_id), "tenant_id": tid, "deleted_at": None, "status": "active"},
-            {"$set": {"phone_number": phone, "phone_binding_version": secrets.token_urlsafe(32)},
-             "$push": {"phone_audit": {"actor_id": user["_id"], "at": now_utc().isoformat(), "action": "set"}}},
-            session=session,
-        )
-        await db.tenants.update_one(
-            {"_id": ObjectId(tid), "deleted_at": None},
-            {"$set": {"phone_user_id": payload.user_id, "mobile_phone": phone}}, session=session,
-        )
-    await _phone_transaction(bind)
+    current_phone = owner.get("phone_number") or owner.get("whatsapp_number")
+    if tenant.get("phone_user_id") == str(owner["_id"]) and phone == current_phone:
+        return {"state": "already_confirmed"}
+    duplicate = await db.tenant_users.find_one({
+        "$or": [{"phone_number": phone}, {"whatsapp_number": phone}],
+        "_id": {"$ne": owner["_id"]}, "deleted_at": None,
+    })
+    if duplicate:
+        raise HTTPException(409, "Este WhatsApp já está vinculado a outra conta")
+    if not await _owner_contact_confirmation_allowed(tid, "whatsapp"):
+        raise HTTPException(429, "Muitas solicitações. Tente novamente mais tarde.")
+    raw = await _create_owner_contact_confirmation(
+        tid=tid, owner=owner, kind="whatsapp", proposed_value=phone, actor=user,
+    )
+    delivered = await _send_whatsapp_reset(phone, raw, "contact_confirmation", tenant_id=tid)
+    if delivered is not DeliveryResult.ACCEPTED:
+        await db.owner_contact_confirmations.delete_one({"token_hash": hashlib.sha256(raw.encode()).hexdigest(), "used": False})
+        raise HTTPException(503, "Não foi possível solicitar a confirmação pelo WhatsApp")
+    await log_activity(actor_id=user["_id"], actor_name=user.get("name", user["email"]),
+                       action="tenant.owner_whatsapp_confirmation_requested", target_type="tenant",
+                       target_id=tid, tenant_id=tid, metadata={})
+    return {"state": "confirmation_requested"}
+
+
+async def _consume_owner_contact_confirmation(token: str, kind: str) -> dict:
+    digest = hashlib.sha256(token.encode()).hexdigest()
+    doc = await db.owner_contact_confirmations.find_one_and_update(
+        {"token_hash": digest, "kind": kind, "used": False, "superseded_at": {"$exists": False},
+         "expires_at": {"$gt": now_utc()}},
+        {"$set": {"used": True, "used_at": now_utc()}},
+        return_document=ReturnDocument.BEFORE,
+    )
+    if not doc:
+        raise HTTPException(400, "Confirmação inválida ou expirada")
+    return doc
+
+
+@api_router.post("/auth/confirm-owner-email")
+async def confirm_owner_email(payload: OwnerContactConfirmationIn):
+    doc = await _consume_owner_contact_confirmation(payload.token, "email")
+    tid, owner_id, new_email = doc["tenant_id"], doc["owner_user_id"], doc["proposed_value"]
+    if await _email_in_use(new_email, exclude_collection="tenant_users", exclude_id=ObjectId(owner_id)):
+        raise HTTPException(409, "Este e-mail não está mais disponível")
+    owner = await db.tenant_users.find_one({"_id": ObjectId(owner_id), "tenant_id": tid,
+                                             "deleted_at": None, "status": "active"})
+    tenant = await db.tenants.find_one({"_id": ObjectId(tid), "portal_owner_user_id": owner_id,
+                                        "deleted_at": None})
+    if not owner or not tenant:
+        raise HTTPException(400, "Confirmação inválida ou expirada")
+    old_email = owner["email"]
+    updated = await db.tenant_users.update_one(
+        {"_id": owner["_id"], "tenant_id": tid, "email": old_email},
+        _version_increment_update("token_version", {"email": new_email}),
+    )
+    if updated.matched_count != 1:
+        raise HTTPException(400, "Confirmação inválida ou expirada")
+    # Keep a separate commercial address intact.  Legacy tenants where both
+    # addresses were the same stay consistent without changing another party.
+    await db.tenants.update_one({"_id": tenant["_id"], "email": old_email},
+                                {"$set": {"email": new_email, "updated_at": now_utc().isoformat()}})
+    await revoke_user_sessions(db, user_id=owner_id, user_type="restaurant", reason="owner_email_changed")
+    await log_activity(actor_id=owner_id, actor_name=owner.get("name", "Proprietário"),
+                       action="tenant.owner_email_confirmed", target_type="tenant", target_id=tid,
+                       tenant_id=tid, metadata={})
     return {"ok": True}
+
+
+@api_router.post("/auth/confirm-owner-whatsapp")
+async def confirm_owner_whatsapp(payload: OwnerContactConfirmationIn):
+    doc = await _consume_owner_contact_confirmation(payload.token, "whatsapp")
+    tid, owner_id, phone = doc["tenant_id"], doc["owner_user_id"], doc["proposed_value"]
+    owner = await db.tenant_users.find_one({"_id": ObjectId(owner_id), "tenant_id": tid,
+                                             "deleted_at": None, "status": "active"})
+    tenant = await db.tenants.find_one({"_id": ObjectId(tid), "portal_owner_user_id": owner_id,
+                                        "deleted_at": None})
+    if not owner or not tenant:
+        raise HTTPException(400, "Confirmação inválida ou expirada")
+    duplicate = await db.tenant_users.find_one({
+        "$or": [{"phone_number": phone}, {"whatsapp_number": phone}],
+        "_id": {"$ne": owner["_id"]}, "deleted_at": None,
+    })
+    if duplicate:
+        raise HTTPException(409, "Este WhatsApp não está mais disponível")
+    version = secrets.token_urlsafe(32)
+    changed = await db.tenant_users.update_one(
+        {"_id": owner["_id"], "tenant_id": tid, "status": "active", "deleted_at": None},
+        _version_increment_update("token_version", {"phone_number": phone, "phone_binding_version": version}),
+    )
+    if changed.matched_count != 1:
+        raise HTTPException(400, "Confirmação inválida ou expirada")
+    await db.tenants.update_one({"_id": tenant["_id"], "portal_owner_user_id": owner_id},
+                                {"$set": {"mobile_phone": phone, "phone_user_id": owner_id,
+                                          "updated_at": now_utc().isoformat()}})
+    await revoke_user_sessions(db, user_id=owner_id, user_type="restaurant", reason="owner_whatsapp_changed")
+    await log_activity(actor_id=owner_id, actor_name=owner.get("name", "Proprietário"),
+                       action="tenant.owner_whatsapp_confirmed", target_type="tenant", target_id=tid,
+                       tenant_id=tid, metadata={})
+    first_access_delivery = None
+    if doc.get("first_access"):
+        raw = await _issue_password_reset(owner_id, owner["email"], "restaurant", first_access=True,
+                                          phone_binding_version=version)
+        first_access_delivery = (await _send_whatsapp_reset(phone, raw, "first_access", tenant_id=tid)).value
+    return {"ok": True, "first_access_delivery": first_access_delivery}
+
+
+@api_router.put("/hub/tenants/{tid}/phone")
+async def bind_phone(tid: str, payload: PhoneBindingIn, user: dict = Depends(get_super_admin)):
+    # Compatibility endpoint for existing administrative clients.  It no
+    # longer activates a recovery channel directly and may address only the
+    # explicit portal owner; use the same proof-of-possession flow as the UI.
+    _tenant, owner = await _portal_owner_for_contact_change(tid)
+    if str(owner["_id"]) != payload.user_id:
+        raise HTTPException(404, "Proprietário ativo não encontrado neste restaurante")
+    return await request_owner_whatsapp_change(tid, OwnerWhatsAppChangeIn(phone=payload.phone), user)
 
 
 async def _phone_transaction(callback):
@@ -1376,56 +1582,23 @@ async def patch_tenant(tid: str, payload: TenantPatch, user: dict = Depends(get_
     if "name" in update:
         update["slug"] = _slug(update["name"])
     if "mobile_phone" in update:
-        if user.get("role") != "super_admin":
-            raise HTTPException(403, "Somente super administradores podem alterar o telefone móvel")
-        try:
-            update["mobile_phone"] = normalize_brazilian_mobile(update["mobile_phone"]) if update["mobile_phone"] else ""
-        except ValueError as exc:
-            raise HTTPException(400, str(exc)) from None
+        # A recovery channel cannot be changed through a generic tenant patch:
+        # it must be confirmed by the current portal owner first.
+        raise HTTPException(400, "Use a confirmação do WhatsApp do proprietário")
 
     update["updated_at"] = now_utc().isoformat()
     mutation = {"$set": update}
     if "status" in update:
         mutation = _version_increment_update("access_version", update)
-    if "mobile_phone" in update:
-        event = {"action": "set" if update["mobile_phone"] else "clear",
-                 "actor_id": user["_id"], "at": now_utc().isoformat()}
-        if isinstance(mutation, list):
-            mutation.append({"$set": {"phone_audit": {"$concatArrays": [
-                {"$ifNull": ["$phone_audit", []]}, {"$literal": [event]}]}}})
-        else:
-            mutation["$push"] = {"phone_audit": event}
-
     async def update_documents(session=None):
         options = {"session": session} if session is not None else {}
-        if "mobile_phone" in update:
-            tenant = await db.tenants.find_one({"_id": ObjectId(tid), "deleted_at": None}, **options)
-            if not tenant:
-                raise HTTPException(404, "Cliente não encontrado")
-            owner_id = tenant.get("phone_user_id", tenant.get("whatsapp_user_id"))
-            if owner_id:
-                if not ObjectId.is_valid(owner_id):
-                    raise HTTPException(409, "Vínculo de telefone inválido")
-                changed = await db.tenant_users.update_one(
-                    {"_id": ObjectId(owner_id), "tenant_id": tid, "deleted_at": None},
-                    {"$set": {"phone_number": update["mobile_phone"],
-                              "phone_binding_version": secrets.token_urlsafe(32)},
-                     "$push": {"phone_audit": {"actor_id": user["_id"],
-                                                "at": now_utc().isoformat(), "action": "change"}}},
-                    **options,
-                )
-                if changed.matched_count != 1:
-                    raise HTTPException(409, "Responsável vinculado não está disponível")
         result = await db.tenants.update_one(
             {"_id": ObjectId(tid), "deleted_at": None}, mutation, **options,
         )
         if result.matched_count != 1:
             raise HTTPException(404, "Cliente não encontrado")
 
-    if "mobile_phone" in update:
-        await _phone_transaction(update_documents)
-    else:
-        await update_documents()
+    await update_documents()
     if "status" in update:
         await log_activity(actor_id=user["_id"], actor_name=user.get("name", user["email"]),
                            action="tenant.status_changed", target_type="tenant",
