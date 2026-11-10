@@ -88,6 +88,14 @@ test('gateway rejects unauthenticated requests and does not resend accepted or i
     assert.equal((await gateway.handle(request)).status, 202);
     assert.equal((await gateway.handle(request)).status, 202);
     assert.equal(sends, 1);
+    const confirmationToken = 'c'.repeat(43);
+    const confirmation = { ...request, id: createHash('sha256').update(confirmationToken).digest('hex'),
+      body: { destination: '+5511912345678', purpose: 'contact_confirmation',
+        link: `https://hub.example.test/confirm-owner-whatsapp?token=${confirmationToken}` } };
+    confirmation.rawBody = Buffer.from(JSON.stringify(confirmation.body));
+    confirmation.signature = createHmac('sha256', secret).update(confirmation.timestamp + '.').update(confirmation.rawBody).digest('hex');
+    assert.equal((await gateway.handle(confirmation)).status, 202);
+    assert.equal(sends, 2);
     connection.send = async () => { sends++; throw new Error('test'); };
     const secondToken = 'b'.repeat(43);
     const second = { ...request, id: createHash('sha256').update(secondToken).digest('hex'), body: { ...request.body, link: `https://hub.example.test/reset-password?token=${secondToken}` } };
@@ -95,7 +103,7 @@ test('gateway rejects unauthenticated requests and does not resend accepted or i
     second.signature = createHmac('sha256', secret).update(second.timestamp + '.').update(second.rawBody).digest('hex');
     assert.equal((await gateway.handle(second)).status, 503);
     assert.equal((await gateway.handle(second)).status, 409);
-    assert.equal(sends, 2);
+    assert.equal(sends, 3);
     connection.state = 'disconnected';
     assert.equal((await gateway.handle({ ...request })).status, 503);
     store.close();

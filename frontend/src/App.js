@@ -11,6 +11,7 @@ import PortalLayout from "@/components/PortalLayout";
 import Login from "@/pages/Login";
 import ForgotPassword from "@/pages/ForgotPassword";
 import ResetPassword from "@/pages/ResetPassword";
+import OwnerContactConfirmation from "@/pages/OwnerContactConfirmation";
 import Dashboard from "@/pages/Dashboard";
 import FreshEntry from "@/pages/FreshEntry";
 import Clientes from "@/pages/Clientes";
@@ -35,6 +36,8 @@ export default function App() {
             <Route path="/login" element={<Login />} />
             <Route path="/forgot-password" element={<ForgotPassword />} />
             <Route path="/reset-password" element={<ResetPassword />} />
+            <Route path="/confirm-owner-email" element={<OwnerContactConfirmation channel="email" />} />
+            <Route path="/confirm-owner-whatsapp" element={<OwnerContactConfirmation channel="whatsapp" />} />
             <Route path="/" element={<FreshEntry />} />
             <Route element={<ProtectedRoute><StaffRoute><AppLayout /></StaffRoute></ProtectedRoute>}>
               <Route path="/painel" element={<Dashboard />} />

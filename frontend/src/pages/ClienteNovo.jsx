@@ -42,6 +42,7 @@ export default function ClienteNovo() {
       const invitationMessages = {
         email_sent: { type: "success", message: "Cadastro concluído. O provedor aceitou a solicitação de envio do primeiro acesso; isso não confirma a entrega." },
         email_delivery_failed: { type: "error", message: "Cadastro concluído, mas o e-mail de primeiro acesso não foi enviado. Após corrigir o provedor, use a recuperação de senha para enviar um novo link com segurança." },
+        confirmation_requested: { type: "info", message: "Cadastro concluído. O proprietário precisa confirmar o WhatsApp antes de receber o link de primeiro acesso." },
         accepted: { type: "info", message: "Cadastro concluído. O gateway aceitou a solicitação de envio pelo WhatsApp; isso ainda não confirma a entrega." },
         rejected: { type: "error", message: "Cadastro concluído, mas o gateway rejeitou o envio pelo WhatsApp." },
         network_error: { type: "error", message: "Cadastro concluído, mas não foi possível confirmar a comunicação com o gateway WhatsApp." },
@@ -84,7 +85,7 @@ export default function ClienteNovo() {
           <Field label="Telefone">
             <input className="dh-input" value={form.phone} onChange={set("phone")} data-testid="input-phone" />
           </Field>
-          <Field label="Telefone móvel do responsável" required={form.access_channel === "whatsapp"}>
+          <Field label="WhatsApp do proprietário" required={form.access_channel === "whatsapp"}>
             <input type="tel" className="dh-input" value={form.mobile_phone} required={form.access_channel === "whatsapp"}
                    onChange={(e) => setForm((f) => ({ ...f, mobile_phone: formatBrazilianPhone(e.target.value) }))}
                    data-testid="input-mobile-phone" />

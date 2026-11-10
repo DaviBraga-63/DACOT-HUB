@@ -99,7 +99,7 @@ class _WhatsAppServiceClient:
 class WhatsAppDeliveryProvider(_WhatsAppServiceClient):
     async def send(self, *, number: str, token: str, purpose: str, request_id: str) -> DeliveryResult:
         if (not self._valid_config() or not _https_origin(self.frontend_url)
-                or purpose not in {"first_access", "recovery"}
+                or purpose not in {"first_access", "recovery", "contact_confirmation"}
                 or not re.fullmatch(r"[A-Za-z0-9_-]{16,128}", request_id or "")
                 or not token):
             return DeliveryResult.CONFIGURATION_ERROR
@@ -108,7 +108,8 @@ class WhatsAppDeliveryProvider(_WhatsAppServiceClient):
         except ValueError:
             return DeliveryResult.REJECTED
         try:
-            link = f"{self.frontend_url.rstrip('/')}/reset-password?token={quote(token, safe='')}"
+            page = "confirm-owner-whatsapp" if purpose == "contact_confirmation" else "reset-password"
+            link = f"{self.frontend_url.rstrip('/')}/{page}?token={quote(token, safe='')}"
             response = await self._post_signed("/internal/auth-messages", key=self.service_key,
                                                request_id=request_id,
                                                body={"destination": destination, "purpose": purpose, "link": link})

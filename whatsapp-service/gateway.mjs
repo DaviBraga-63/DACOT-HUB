@@ -136,10 +136,11 @@ export function createGateway({ secret, adminSecret, pairingSecret, switchSecret
       if (!sameSecret(signature, expectedSignature)) return { status: 401 };
       if (!id || !/^[A-Za-z0-9_-]{1,128}$/.test(id) || !body ||
           !/^\+55[1-9][0-9][0-9]{8,9}$/.test(body.destination || '') ||
-          !['first_access', 'recovery'].includes(body.purpose)) return { status: 400 };
+          !['first_access', 'recovery', 'contact_confirmation'].includes(body.purpose)) return { status: 400 };
       let link;
       try { link = new URL(body.link); } catch { return { status: 400 }; }
-      if (link.origin !== origin.origin || link.pathname !== '/reset-password' || link.hash ||
+      const expectedPath = body.purpose === 'contact_confirmation' ? '/confirm-owner-whatsapp' : '/reset-password';
+      if (link.origin !== origin.origin || link.pathname !== expectedPath || link.hash ||
           [...link.searchParams.keys()].length !== 1 || !/^[A-Za-z0-9_-]{32,128}$/.test(link.searchParams.get('token') || ''))
         return { status: 400 };
       if (id !== createHash('sha256').update(link.searchParams.get('token')).digest('hex')) return { status: 400 };
@@ -151,6 +152,8 @@ export function createGateway({ secret, adminSecret, pairingSecret, switchSecret
       if (previous !== 'new') return { status: 409, body: { state: 'indeterminate' } };
       const text = body.purpose === 'first_access'
         ? `Olá! Seu acesso ao DACOT foi criado.\n\nPara definir sua senha e começar a utilizar o sistema, acesse:\n\n${body.link}\n\nEste link é individual, pode ser utilizado uma única vez e possui validade de 30 dias.\n\nSe o prazo terminar, você poderá solicitar um novo link.`
+        : body.purpose === 'contact_confirmation'
+          ? `Olá! Foi solicitada a confirmação deste WhatsApp para recuperação de acesso do proprietário no DACOT.\n\nPara confirmar o número, acesse:\n\n${body.link}\n\nEste link é individual, pode ser utilizado uma única vez e possui validade de 24 horas.\n\nSe você não solicitou esta alteração, ignore esta mensagem.`
         : `Olá! Recebemos uma solicitação de recuperação de senha da sua conta DACOT.\n\nPara definir uma nova senha, acesse:\n\n${body.link}\n\nEste link pode ser utilizado uma única vez e possui validade de 24 horas.\n\nSe você não solicitou a recuperação, ignore esta mensagem.`;
       try {
         await connection.send(body.destination, text);

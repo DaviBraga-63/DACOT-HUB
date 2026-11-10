@@ -4,7 +4,7 @@ import { api, formatApiErrorDetail } from "@/lib/api";
 import { formatBrazilianPhone } from "@/lib/phone";
 import { useAuth } from "@/context/AuthContext";
 import { isReleasedModule } from "@/lib/releasedModules";
-import { ArrowLeft, ExternalLink, Mail, Phone, MapPin, Calendar, Settings2, Trash2, Users as UsersIcon, UserPlus } from "lucide-react";
+import { ArrowLeft, ExternalLink, Mail, Phone, MapPin, Calendar, Settings2, Trash2, Users as UsersIcon, UserPlus, Pencil } from "lucide-react";
 import StatusBadge from "@/components/StatusBadge";
 import { toast } from "sonner";
 import {
@@ -106,19 +106,16 @@ export default function ClienteDetalhes() {
           <div className="dh-card p-6 sm:p-7 lg:col-span-2" data-testid="tenant-info">
             <h2 className="text-base font-semibold text-slate-900 mb-5" style={{fontFamily:"Cabinet Grotesk"}}>Informações</h2>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-5">
-              <InfoRow icon={Mail} label="E-mail" value={tenant.email} />
-              <InfoRow icon={Phone} label="Telefone" value={tenant.phone || "—"} />
-              <InfoRow icon={MapPin} label="Endereço" value={tenant.address || "—"} />
+              <EditableInfoRow icon={Mail} label="E-mail" value={tenant.portal_owner_email || tenant.email}
+                canWrite={user?.role === "super_admin"} reload={load} tenantId={tenant.id} field="owner-email" />
+              <EditableInfoRow icon={Phone} label="Telefone comercial" value={tenant.phone || "—"}
+                canWrite={canWrite} reload={load} tenantId={tenant.id} field="phone" />
+              <EditableInfoRow icon={MapPin} label="Endereço" value={tenant.address || "—"}
+                canWrite={canWrite} reload={load} tenantId={tenant.id} field="address" />
               <InfoRow icon={Calendar} label="Cadastrado em"
                        value={tenant.created_at ? new Date(tenant.created_at).toLocaleString("pt-BR") : "—"} />
             </div>
-            <MobilePhoneContact tenant={tenant} users={users} canWrite={user?.role === "super_admin"} reload={load} />
-            <PortalOwnerAssignment
-              tenant={tenant}
-              users={users}
-              isSuperAdmin={user?.role === "super_admin"}
-              reload={load}
-            />
+            <MobilePhoneContact tenant={tenant} canWrite={user?.role === "super_admin"} reload={load} />
             {tenant.notes && (
               <div className="pt-5 mt-5 border-t border-slate-100">
                 <div className="text-[11px] uppercase tracking-wider font-semibold text-slate-400 mb-1.5">Observações</div>
@@ -155,114 +152,8 @@ export default function ClienteDetalhes() {
   );
 }
 
-function isPortalOwnerAssignmentResponse(data) {
-  return data !== null
-    && typeof data === "object"
-    && !Array.isArray(data)
-    && Object.keys(data).length === 1
-    && data.portal_owner_configured === true;
-}
-
-function PortalOwnerAssignment({ tenant, users, isSuperAdmin, reload }) {
-  const [selectedUserId, setSelectedUserId] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [confirming, setConfirming] = useState(false);
-  const [error, setError] = useState("");
-  const activeUsers = users.filter((item) => item.status === "active");
-  const selectedUser = activeUsers.find((item) => item.id === selectedUserId);
-
-  useEffect(() => {
-    setSelectedUserId("");
-    setError("");
-  }, [tenant.id]);
-
-  if (!isSuperAdmin) return null;
-
-  const assign = async () => {
-    if (!selectedUser) return;
-    setBusy(true);
-    setError("");
-    try {
-      const { data } = await api.put(`/hub/tenants/${tenant.id}/portal-owner`, {
-        user_id: selectedUser.id,
-      });
-      if (!isPortalOwnerAssignmentResponse(data)) {
-        throw new Error("invalid_portal_owner_assignment_response");
-      }
-      await reload();
-      setConfirming(false);
-      toast.success(tenant.portal_owner_configured
-        ? "Proprietário do portal atualizado"
-        : "Proprietário do portal atribuído");
-    } catch {
-      setError("Não foi possível confirmar a atribuição do proprietário.");
-      setConfirming(false);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <section className="pt-5 mt-5 border-t border-slate-100 space-y-3" data-testid="portal-owner-assignment">
-      <div>
-        <h3 className="text-[13px] font-medium text-slate-700">Proprietário do portal</h3>
-        <p className="text-[12px] text-[var(--dh-muted)] mt-1">
-          {tenant.portal_owner_configured
-            ? "Um proprietário do portal está configurado. A substituição revoga apenas esta autorização administrativa."
-            : "Nenhum proprietário do portal está configurado. Funcionários não recebem acesso ao HUB."}
-        </p>
-      </div>
-      <div className="flex flex-wrap gap-2 items-end">
-        <label className="block flex-1 min-w-[220px] text-[13px] text-slate-700">
-          Usuário ativo do restaurante
-          <select
-            className="dh-input mt-1"
-            value={selectedUserId}
-            onChange={(event) => setSelectedUserId(event.target.value)}
-            disabled={busy}
-            data-testid="portal-owner-user-select"
-          >
-            <option value="">Selecione o proprietário confirmado</option>
-            {activeUsers.map((item) => (
-              <option key={item.id} value={item.id}>{item.name} — {item.email}</option>
-            ))}
-          </select>
-        </label>
-        <AlertDialog open={confirming} onOpenChange={(open) => !busy && setConfirming(open)}>
-          <button
-            type="button"
-            className="dh-btn dh-btn-outline"
-            disabled={!selectedUser || busy}
-            onClick={() => setConfirming(true)}
-            data-testid="portal-owner-assign"
-          >
-            {tenant.portal_owner_configured ? "Substituir proprietário" : "Atribuir proprietário"}
-          </button>
-          <AlertDialogContent>
-            <AlertDialogHeader>
-              <AlertDialogTitle>Confirmar proprietário do portal?</AlertDialogTitle>
-              <AlertDialogDescription>
-                {`${selectedUser?.name || "Este usuário"} poderá acessar o portal deste restaurante. Esta ação não altera funções operacionais, módulos ou dados do Pedidos.`}
-              </AlertDialogDescription>
-            </AlertDialogHeader>
-            <AlertDialogFooter>
-              <AlertDialogCancel disabled={busy}>Cancelar</AlertDialogCancel>
-              <button type="button" className="dh-btn dh-btn-primary" onClick={assign} disabled={busy}
-                      data-testid="portal-owner-confirm">
-                {busy ? "Confirmando…" : "Confirmar atribuição"}
-              </button>
-            </AlertDialogFooter>
-          </AlertDialogContent>
-        </AlertDialog>
-      </div>
-      {error && <p role="alert" className="dh-chip dh-chip-error">{error}</p>}
-    </section>
-  );
-}
-
-function MobilePhoneContact({ tenant, users, canWrite, reload }) {
+function MobilePhoneContact({ tenant, canWrite, reload }) {
   const [number, setNumber] = useState(formatBrazilianPhone(tenant.mobile_phone || ""));
-  const [owner, setOwner] = useState(tenant.phone_user_id || "");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
@@ -273,13 +164,11 @@ function MobilePhoneContact({ tenant, users, canWrite, reload }) {
     setBusy(true);
     setError("");
     try {
-      if (!tenant.phone_user_id && owner) {
-        await api.put(`/hub/tenants/${tenant.id}/phone`, { user_id: owner, phone: number });
-      } else {
-        await api.patch(`/hub/tenants/${tenant.id}`, { mobile_phone: number });
-      }
+      const { data } = await api.put(`/hub/tenants/${tenant.id}/owner-whatsapp`, { phone: number });
       await reload();
-      toast.success("Telefone móvel atualizado");
+      toast.success(data?.state === "already_confirmed"
+        ? "WhatsApp já está confirmado"
+        : "O gateway aceitou a solicitação de confirmação do WhatsApp");
     } catch (err) {
       setError(formatApiErrorDetail(err.response?.data?.detail) || "Não foi possível atualizar o telefone móvel.");
     } finally {
@@ -289,21 +178,58 @@ function MobilePhoneContact({ tenant, users, canWrite, reload }) {
 
   return (
     <form onSubmit={save} className="pt-5 mt-5 border-t border-slate-100 space-y-2">
-      <label className="block text-[13px] font-medium text-slate-700" htmlFor="tenant-mobile-phone">Telefone móvel do responsável</label>
-      {!tenant.phone_user_id && canWrite && <label className="block text-[13px]">Vincular ao usuário responsável
-        <select className="dh-input mt-1" value={owner} onChange={(event) => setOwner(event.target.value)}>
-          <option value="">Somente contato</option>
-          {users.filter((item) => item.status === "active").map((item) => <option key={item.id} value={item.id}>{item.name} — {item.email}</option>)}
-        </select>
-      </label>}
+      <label className="block text-[13px] font-medium text-slate-700" htmlFor="tenant-mobile-phone">WhatsApp do proprietário</label>
       <div className="flex flex-wrap gap-2">
         <input id="tenant-mobile-phone" type="tel" className="dh-input flex-1 min-w-0" value={number}
                onChange={(e) => setNumber(formatBrazilianPhone(e.target.value))} disabled={!canWrite || busy} />
         {canWrite && <button type="submit" className="dh-btn dh-btn-ghost" disabled={busy}>{busy ? "Salvando…" : "Salvar"}</button>}
       </div>
-      <p className="text-[12px] text-[var(--dh-muted)]">{tenant.phone_user_id ? "Número vinculado ao responsável e disponível para recuperação por WhatsApp; alterações invalidam links anteriores." : "Sem vínculo com usuário, este número é apenas um contato."}</p>
+      <p className="text-[12px] text-[var(--dh-muted)]">{tenant.phone_user_id ? "O número confirmado é usado para recuperação por WhatsApp. Um novo número só substitui este após confirmação." : "O número só será usado para recuperação depois que o proprietário confirmar o link recebido."}</p>
       {error && <p role="alert" className="dh-chip dh-chip-error">{error}</p>}
     </form>
+  );
+}
+
+function EditableInfoRow({ icon: Icon, label, value, canWrite, reload, tenantId, field }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(value === "—" ? "" : value || "");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => setDraft(value === "—" ? "" : value || ""), [value]);
+
+  const save = async () => {
+    setBusy(true); setError("");
+    try {
+      if (field === "owner-email") {
+        const { data } = await api.put(`/hub/tenants/${tenantId}/owner-email`, { email: draft });
+        toast.success(data?.state === "already_confirmed" ? "E-mail já confirmado" : "O provedor aceitou a solicitação de confirmação por e-mail");
+      } else {
+        await api.patch(`/hub/tenants/${tenantId}`, { [field]: draft });
+        toast.success(`${label} atualizado`);
+      }
+      await reload();
+      setEditing(false);
+    } catch (err) {
+      setError(formatApiErrorDetail(err.response?.data?.detail) || "Não foi possível atualizar este dado.");
+    } finally { setBusy(false); }
+  };
+
+  return (
+    <div className="flex items-start gap-3">
+      <span className="dh-icon-tile-neutral w-8 h-8 shrink-0"><Icon size={14} strokeWidth={1.8} /></span>
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-2">
+          <div className="text-[11px] uppercase tracking-wider font-semibold text-slate-400">{label}</div>
+          {canWrite && !editing && <button type="button" onClick={() => setEditing(true)} className="text-slate-400 hover:text-slate-700" aria-label={`Editar ${label}`}><Pencil size={13} /></button>}
+        </div>
+        {editing ? <div className="mt-1 space-y-2">
+          <input type={field === "owner-email" ? "email" : "text"} value={draft} onChange={(event) => setDraft(event.target.value)} className="dh-input w-full" disabled={busy} />
+          <div className="flex gap-2"><button type="button" className="dh-btn dh-btn-ghost" onClick={() => { setEditing(false); setError(""); }} disabled={busy}>Cancelar</button><button type="button" className="dh-btn dh-btn-primary" onClick={save} disabled={busy || !draft.trim()}>{busy ? "Salvando…" : "Salvar"}</button></div>
+          {error && <p role="alert" className="dh-chip dh-chip-error">{error}</p>}
+        </div> : <div className="text-[14px] text-slate-800 mt-0.5 break-words">{value}</div>}
+      </div>
+    </div>
   );
 }
 
