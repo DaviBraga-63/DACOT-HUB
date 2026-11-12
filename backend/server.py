@@ -139,15 +139,29 @@ HANDOFF_JWT_SECRET = os.environ.get("HANDOFF_JWT_SECRET", "")
 HANDOFF_ISSUER = os.environ.get("HANDOFF_ISSUER", "dacot-hub")
 HANDOFF_VERSION = 1
 HANDOFF_MAX_TTL_SECONDS = 60
-HANDOFF_AUDIENCE = {"orders": "dacot-orders", "kitchen": "dacot-kitchen"}
+HANDOFF_AUDIENCE = {
+    "orders": "dacot-orders",
+    "kitchen": "dacot-kitchen",
+    "inventory": "dacot-estoque",
+}
 ORDERS_ANALYTICS_AUDIENCE = "dacot-orders-analytics"
 ORDERS_ANALYTICS_SCOPE = "analytics.revenue"
 ORDERS_ANALYTICS_SUMMARY_SCOPE = "analytics.summary"
 MODULE_ACCESS_KEYS = {
     "orders": orders_module_key(),
     "kitchen": os.environ.get("KITCHEN_MODULE_KEY", ""),
+    # Independent from Pedidos; optional until inventory is explicitly enabled.
+    "inventory": os.environ.get("INVENTORY_MODULE_KEY", ""),
 }
 VALID_HANDOFF_ROLES = {"admin", "manager", "waiter", "kitchen"}
+MODULE_HANDOFF_ROLES = {
+    "orders": VALID_HANDOFF_ROLES,
+    "inventory": {"admin", "manager"},
+}
+INVENTORY_MODULE_KEY = "inventory"
+INVENTORY_MODULE_ENABLED = os.environ.get("INVENTORY_MODULE_ENABLED", "false").strip().lower() in {
+    "1", "true", "yes", "on",
+}
 HUB_ADMIN_ROLES = {"super_admin", "admin"}
 ORDERS_DIRECT_LOGIN_VERSION = 1
 ORDERS_DIRECT_LOGIN_WINDOW = timedelta(minutes=15)
@@ -1813,6 +1827,8 @@ async def activate_module(tid: str, mkey: str, user: dict = Depends(get_staff_wr
     m = await db.modules.find_one({"key": mkey})
     if not m:
         raise HTTPException(404, "Módulo não encontrado")
+    if mkey == INVENTORY_MODULE_KEY and not INVENTORY_MODULE_ENABLED:
+        raise HTTPException(400, "Estoque & Compras ainda não está liberado para ativação")
     if m.get("status") != "available":
         raise HTTPException(400, "Módulo não está disponível para ativação")
     await db.tenant_modules.update_one(
@@ -2558,6 +2574,8 @@ async def orders_direct_login(payload: OrdersDirectLoginIn, request: Request, re
 @api_router.get("/public/tenants/{tid}/modules/{mkey}/status")
 async def public_module_status(tid: str, mkey: str, request: Request):
     require_module_key(mkey, request)
+    if mkey == INVENTORY_MODULE_KEY and not INVENTORY_MODULE_ENABLED:
+        return {"active": False, "module": mkey}
     if not ObjectId.is_valid(tid):
         raise HTTPException(404, "Recurso não encontrado")
     tenant = await db.tenants.find_one({"_id": ObjectId(tid)})
@@ -2596,7 +2614,9 @@ class ModuleAccessContextIn(BaseModel):
 
 
 async def _current_module_access(tid: str, mkey: str, subject: str, role: str) -> Optional[dict]:
-    if mkey != "orders" or not ObjectId.is_valid(tid) or not subject.startswith("tenant_user:"):
+    if (mkey not in MODULE_HANDOFF_ROLES or
+            (mkey == INVENTORY_MODULE_KEY and not INVENTORY_MODULE_ENABLED) or
+            not ObjectId.is_valid(tid) or not subject.startswith("tenant_user:")):
         return None
     uid = subject.removeprefix("tenant_user:")
     if not ObjectId.is_valid(uid):
@@ -2607,14 +2627,17 @@ async def _current_module_access(tid: str, mkey: str, subject: str, role: str) -
     user = await db.tenant_users.find_one(
         {"_id": ObjectId(uid), "tenant_id": tid, "deleted_at": None}
     )
-    grant = await db.module_user_grants.find_one(
-        {"tenant_id": tid, "user_id": uid, "module_key": ORDERS_MODULE_KEY, "active": True}
-    )
     if (not tenant or not _tenant_operational(tenant) or not module or module.get("status") != "available"
-            or not activation or not user or not grant or user.get("status") != "active"
+            or not activation or not user or user.get("status") != "active"
             or user.get("password_reset_required") or not user.get("password_hash")
-            or user.get("role") not in VALID_HANDOFF_ROLES or user.get("role") != role):
+            or user.get("role") not in MODULE_HANDOFF_ROLES[mkey] or user.get("role") != role):
         return None
+    if mkey == ORDERS_MODULE_KEY:
+        grant = await db.module_user_grants.find_one(
+            {"tenant_id": tid, "user_id": uid, "module_key": mkey, "active": True}
+        )
+        if not grant:
+            return None
     versions = {"user": _security_version(user, "token_version"),
                 "tenant": _security_version(tenant, "access_version"),
                 "module": _security_version(activation, "access_version")}
@@ -2659,7 +2682,10 @@ async def portal_context(user: dict = Depends(get_restaurant_user)):
         # Portal consumers receive only products released, available and
         # activated for their own tenant. Administrative catalog details and
         # launch URLs remain server-side until a handoff is requested.
-        if m["key"] != ORDERS_MODULE_KEY or not active or m.get("status") != "available":
+        if (m["key"] not in MODULE_HANDOFF_ROLES or not active or
+                m.get("status") != "available" or
+                user.get("role") not in MODULE_HANDOFF_ROLES[m["key"]] or
+                (m["key"] == INVENTORY_MODULE_KEY and not INVENTORY_MODULE_ENABLED)):
             continue
         out.append({**_module_out(m), "active": True})
     return {
@@ -2840,8 +2866,10 @@ async def portal_launch_token(mkey: str, user: dict = Depends(get_restaurant_use
                 "module": _security_version(activation, "access_version")}
     if any(value is None for value in versions.values()):
         raise HTTPException(403, "Versão de acesso inválida")
-    if user.get("role") not in VALID_HANDOFF_ROLES:
-        raise HTTPException(403, "Papel operacional inválido")
+    allowed_roles = MODULE_HANDOFF_ROLES.get(mkey)
+    if (not allowed_roles or (mkey == INVENTORY_MODULE_KEY and not INVENTORY_MODULE_ENABLED) or
+            user.get("role") not in allowed_roles):
+        raise HTTPException(403, "Usuário não possui papel autorizado para este módulo")
     if mkey == ORDERS_MODULE_KEY:
         grant = await db.module_user_grants.find_one(
             {"tenant_id": tid, "user_id": user["_id"], "module_key": mkey, "active": True}
@@ -2910,10 +2938,10 @@ DEFAULT_MODULES = [
      "category": "CRM",
      "description": "Cadastro e histórico de clientes, com preferências e programa de fidelidade.",
      "launch_url_template": ""},
-    {"key": "inventory", "name": "Estoque", "status": "in_development", "icon": "boxes",
+    {"key": "inventory", "name": "Estoque & Compras", "status": "in_development", "icon": "boxes",
      "category": "Operacional",
-     "description": "Controle de insumos, movimentações e alertas de reposição.",
-     "launch_url_template": ""},
+     "description": "Estoque, compras, recebimentos e controle de perdas do restaurante.",
+     "launch_url_template": "https://estoque.dacot.com.br"},
     {"key": "finance", "name": "Financeiro", "status": "in_development", "icon": "landmark",
      "category": "Gestão",
      "description": "Fluxo de caixa, contas a pagar/receber e conciliação de vendas.",
@@ -3006,9 +3034,25 @@ async def startup():
                 "active": True, "token_version": 0, "created_at": now_utc().isoformat(),
             })
             logger.info("Seeded staff %s (%s)", seed_email, seed["role"])
-    # Seed modules
+    # Seed/update the canonical inventory catalogue entry. Its global release
+    # gate stays closed unless explicitly enabled; tenant activation remains a
+    # separate, manual admin action and is never bulk-applied.
     for m in DEFAULT_MODULES:
-        await db.modules.update_one({"key": m["key"]}, {"$setOnInsert": m}, upsert=True)
+        if m["key"] == INVENTORY_MODULE_KEY:
+            inventory_catalog = {
+                **m,
+                "status": "available" if INVENTORY_MODULE_ENABLED else "in_development",
+            }
+            await db.modules.update_one(
+                {"key": m["key"]},
+                {"$setOnInsert": {"icon": inventory_catalog["icon"],
+                                  "category": inventory_catalog["category"]},
+                 "$set": {key: inventory_catalog[key] for key in
+                           ("name", "description", "launch_url_template", "status")}},
+                upsert=True,
+            )
+        else:
+            await db.modules.update_one({"key": m["key"]}, {"$setOnInsert": m}, upsert=True)
     await migrate_legacy_orders_launch_urls(db)
 
     # Non-destructive migration: tenant_users become login-capable restaurant users.

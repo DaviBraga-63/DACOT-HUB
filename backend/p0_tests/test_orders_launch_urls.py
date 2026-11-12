@@ -105,6 +105,53 @@ def test_orders_template_uses_public_origin_slug_and_allowlist(monkeypatch):
     assert rejected.value.status_code == 400
 
 
+def test_inventory_origin_is_exact_https_and_configuration_is_opt_in(monkeypatch):
+    policy = load("handoff_policy_inventory", BACKEND / "handoff_policy.py")
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("INVENTORY_MODULE_ENABLED", "true")
+    monkeypatch.setenv(
+        "HANDOFF_ALLOWED_ORIGINS_JSON",
+        '{"orders":["https://pedidos.dacot.com.br"],'
+        '"inventory":["https://estoque.dacot.com.br"]}',
+    )
+    policy.validate_handoff_configuration(
+        "s" * 32, "dacot-hub",
+        {"orders": "dacot-orders", "inventory": "dacot-estoque"}, 1,
+        {"orders": "o" * 32, "inventory": "i" * 32},
+    )
+    assert policy.validate_launch_url(
+        "https://estoque.dacot.com.br", "inventory",
+    ) == "https://estoque.dacot.com.br"
+    with pytest.raises(Exception) as rejected:
+        policy.validate_launch_url("https://evil.example.test", "inventory")
+    assert rejected.value.status_code == 400
+
+
+def test_inventory_configuration_is_not_required_until_enabled(monkeypatch):
+    policy = load("handoff_policy_inventory_optional", BACKEND / "handoff_policy.py")
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.delenv("INVENTORY_MODULE_ENABLED", raising=False)
+    monkeypatch.setenv(
+        "HANDOFF_ALLOWED_ORIGINS_JSON",
+        '{"orders":["https://pedidos.dacot.com.br"]}',
+    )
+    policy.validate_handoff_configuration(
+        "s" * 32, "dacot-hub", {"orders": "dacot-orders"}, 1,
+        {"orders": "o" * 32},
+    )
+
+    monkeypatch.setenv("APP_ENV", "development")
+    monkeypatch.setenv("INVENTORY_MODULE_ENABLED", "true")
+    with pytest.raises(RuntimeError) as rejected:
+        policy.validate_handoff_configuration(
+            "s" * 32, "dacot-hub",
+            {"orders": "dacot-orders", "inventory": "dacot-estoque"}, 1,
+            {"orders": "o" * 32},
+        )
+    assert "INVENTORY_MODULE_KEY" in str(rejected.value)
+    assert "inventory" in str(rejected.value)
+
+
 @pytest.mark.parametrize("configured", [
     '{"orders":["https://pedidos.dacot.com.br"]}',
     '{"orders":["https://pedidos.dacot.com.br/"]}',

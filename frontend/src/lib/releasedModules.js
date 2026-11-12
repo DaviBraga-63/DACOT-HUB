@@ -1,5 +1,5 @@
 /**
- * Temporary frontend rollout rule. The catalog currently has no dedicated
- * "released" field, so only the canonical Pedidos module is customer-visible.
+ * Temporary frontend rollout rule. Inventory is additionally customer-visible
+ * only after the Hub's server-side rollout gate and tenant activation permit it.
  */
-export const isReleasedModule = (module) => module?.key === "orders";
+export const isReleasedModule = (module) => ["orders", "inventory"].includes(module?.key);

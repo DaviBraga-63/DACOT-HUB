@@ -8,7 +8,7 @@ from urllib.parse import urlsplit
 from fastapi import HTTPException
 
 
-_CONFIGURED_HANDOFF_MODULES = frozenset({"orders"})
+_CONFIGURED_HANDOFF_MODULES = frozenset({"orders", "inventory"})
 _HOST_LABEL_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 
 
@@ -61,7 +61,10 @@ def allowed_handoff_origins(module: str) -> frozenset[str]:
         configured = json.loads(os.environ.get("HANDOFF_ALLOWED_ORIGINS_JSON", "{}"))
     except (TypeError, json.JSONDecodeError) as exc:
         raise HandoffOriginConfigurationError() from exc
-    if not isinstance(configured, dict) or set(configured) != _CONFIGURED_HANDOFF_MODULES:
+    # Keep the existing Orders-only production setting valid. Inventory is
+    # optional until its rollout gate is explicitly enabled.
+    if (not isinstance(configured, dict) or "orders" not in configured or
+            not set(configured).issubset(_CONFIGURED_HANDOFF_MODULES)):
         raise HandoffOriginConfigurationError()
 
     raw_origins = configured.get(module)
@@ -95,25 +98,39 @@ def _destination_origin(value: object) -> str:
 def validate_handoff_configuration(secret: str, issuer: str, audiences: dict,
                                    version: int, module_access_keys: dict) -> None:
     """Fail closed at startup when the production handoff is incomplete."""
-    if os.environ.get("APP_ENV", "production").strip().lower() != "production":
+    production = os.environ.get("APP_ENV", "production").strip().lower() == "production"
+    inventory_enabled = os.environ.get("INVENTORY_MODULE_ENABLED", "false").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
+    if not production and not inventory_enabled:
         return
 
     errors = []
-    if not secret or len(secret) < 32:
-        errors.append("HANDOFF_JWT_SECRET deve ter ao menos 32 caracteres")
-    if not issuer.strip():
-        errors.append("HANDOFF_ISSUER é obrigatório")
-    if not audiences.get("orders"):
-        errors.append("audiência do módulo orders é obrigatória")
-    if version != 1:
-        errors.append("HANDOFF_VERSION deve ser 1")
-    if len(module_access_keys.get("orders", "")) < 32:
-        errors.append("MODULE_API_KEY deve ter ao menos 32 caracteres")
+    if production:
+        if not secret or len(secret) < 32:
+            errors.append("HANDOFF_JWT_SECRET deve ter ao menos 32 caracteres")
+        if not issuer.strip():
+            errors.append("HANDOFF_ISSUER é obrigatório")
+        if not audiences.get("orders"):
+            errors.append("audiência do módulo orders é obrigatória")
+        if version != 1:
+            errors.append("HANDOFF_VERSION deve ser 1")
+        if len(module_access_keys.get("orders", "")) < 32:
+            errors.append("MODULE_API_KEY deve ter ao menos 32 caracteres")
+        try:
+            allowed_handoff_origins("orders")
+        except HandoffOriginConfigurationError:
+            errors.append("HANDOFF_ALLOWED_ORIGINS_JSON deve autorizar ao menos uma origem HTTPS exata para orders")
 
-    try:
-        allowed_handoff_origins("orders")
-    except HandoffOriginConfigurationError:
-        errors.append("HANDOFF_ALLOWED_ORIGINS_JSON deve autorizar ao menos uma origem HTTPS exata para orders")
+    if inventory_enabled:
+        if not audiences.get("inventory") or audiences.get("inventory") != "dacot-estoque":
+            errors.append("audiência do módulo inventory deve ser dacot-estoque")
+        if len(module_access_keys.get("inventory", "")) < 32:
+            errors.append("INVENTORY_MODULE_KEY deve ter ao menos 32 caracteres quando inventory estiver habilitado")
+        try:
+            allowed_handoff_origins("inventory")
+        except HandoffOriginConfigurationError:
+            errors.append("HANDOFF_ALLOWED_ORIGINS_JSON deve autorizar uma origem HTTPS exata para inventory quando habilitado")
 
     if errors:
         raise RuntimeError("Configuração de handoff inválida: " + "; ".join(errors))

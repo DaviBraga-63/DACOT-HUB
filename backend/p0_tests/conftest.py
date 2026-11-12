@@ -32,6 +32,7 @@ class Services:
         self.hub = f"http://127.0.0.1:{hp}"
         self.orders = f"http://127.0.0.1:{op}"
         self.key = secrets.token_urlsafe(40)
+        self.inventory_key = secrets.token_urlsafe(40)
         self.secret = secrets.token_urlsafe(40)
         self.password = secrets.token_urlsafe(20)
         self.admin_email = "admin@example.com"
@@ -45,6 +46,7 @@ class Services:
             "HANDOFF_JWT_SECRET": self.secret, "HANDOFF_ISSUER": "dacot-hub",
             "HANDOFF_AUDIENCE": "dacot-orders", "HANDOFF_VERSION": "1", "HANDOFF_MODULE_ID": "orders",
             "HUB_BASE_URL": self.hub, "MODULE_API_KEY": self.key,
+            "INVENTORY_MODULE_KEY": self.inventory_key, "INVENTORY_MODULE_ENABLED": "false",
             "ORDERS_BACKEND_URL": self.orders,
             "ADMIN_EMAIL": self.admin_email, "ADMIN_PASSWORD": self.password,
             "FRONTEND_URL": "https://hub.example.test", "RESEND_API_KEY": "", "EMAIL_FROM_ADDRESS": "",
