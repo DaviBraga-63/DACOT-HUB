@@ -7,6 +7,10 @@ const CANDIDATE_ID = /^[a-f0-9]{32,64}$/;
 const ACTIVE_CANDIDATE_STATES = new Set(['preparing', 'awaiting_pairing', 'connecting', 'ready']);
 const PROMOTED_CANDIDATE_STATE = 'promoted';
 const CANDIDATE_STATES = new Set([...ACTIVE_CANDIDATE_STATES, 'failed', 'cancelled', 'expired']);
+const OUTBOUND_MESSAGE_ID = /^[A-Za-z0-9_-]{1,128}$/;
+const OUTBOUND_RECIPIENT = /^55[1-9][0-9][0-9]{8,9}@s\.whatsapp\.net$/;
+const MAX_OUTBOUND_TTL_MS = 30 * 86400000;
+const OUTBOUND_MESSAGE_LIMIT = 256;
 
 function candidatePrefix(id) {
   if (!CANDIDATE_ID.test(id || '')) throw new Error('Invalid candidate identifier');
@@ -20,7 +24,7 @@ export function openStore(path, key) {
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
   const db = new DatabaseSync(path);
   try { chmodSync(path, 0o600); } catch { /* Windows ACLs are managed externally. */ }
-  db.exec('PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; CREATE TABLE IF NOT EXISTS auth (id TEXT PRIMARY KEY, value BLOB NOT NULL); CREATE TABLE IF NOT EXISTS sends (id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, status TEXT NOT NULL, created_at INTEGER NOT NULL, recipient TEXT NOT NULL); CREATE TABLE IF NOT EXISTS pairing_requests (id TEXT PRIMARY KEY, phone TEXT NOT NULL, status TEXT NOT NULL, created_at INTEGER NOT NULL); CREATE TABLE IF NOT EXISTS service_lease (id TEXT PRIMARY KEY, owner TEXT NOT NULL, expires_at INTEGER NOT NULL); CREATE TABLE IF NOT EXISTS candidate_sessions (id TEXT PRIMARY KEY, status TEXT NOT NULL, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, expected_phone_hash TEXT); CREATE TABLE IF NOT EXISTS switch_requests (id TEXT PRIMARY KEY, created_at INTEGER NOT NULL);');
+  db.exec('PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; CREATE TABLE IF NOT EXISTS auth (id TEXT PRIMARY KEY, value BLOB NOT NULL); CREATE TABLE IF NOT EXISTS sends (id TEXT PRIMARY KEY, fingerprint TEXT NOT NULL, status TEXT NOT NULL, created_at INTEGER NOT NULL, recipient TEXT NOT NULL); CREATE TABLE IF NOT EXISTS outbound_messages (id TEXT PRIMARY KEY, recipient TEXT NOT NULL, session TEXT NOT NULL, message BLOB NOT NULL, expires_at INTEGER NOT NULL, created_at INTEGER NOT NULL); CREATE TABLE IF NOT EXISTS pairing_requests (id TEXT PRIMARY KEY, phone TEXT NOT NULL, status TEXT NOT NULL, created_at INTEGER NOT NULL); CREATE TABLE IF NOT EXISTS service_lease (id TEXT PRIMARY KEY, owner TEXT NOT NULL, expires_at INTEGER NOT NULL); CREATE TABLE IF NOT EXISTS candidate_sessions (id TEXT PRIMARY KEY, status TEXT NOT NULL, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, expected_phone_hash TEXT); CREATE TABLE IF NOT EXISTS switch_requests (id TEXT PRIMARY KEY, created_at INTEGER NOT NULL);');
   // The first candidate implementation did not store an operation binding. This
   // additive migration leaves existing active credentials and candidate rows
   // untouched; old incomplete candidate rows are safely failed on restart.
@@ -28,7 +32,7 @@ export function openStore(path, key) {
     db.exec('ALTER TABLE candidate_sessions ADD COLUMN expected_phone_hash TEXT');
   // Retain longer than the longest link lifetime (30 days), including replay
   // tolerance. Pending/indeterminate records remain protected throughout it.
-  db.exec("CREATE INDEX IF NOT EXISTS sends_created_at ON sends(created_at); CREATE INDEX IF NOT EXISTS sends_recipient_time ON sends(recipient, created_at); CREATE INDEX IF NOT EXISTS pairing_requests_phone_time ON pairing_requests(phone, created_at); CREATE INDEX IF NOT EXISTS candidate_sessions_expiry ON candidate_sessions(expires_at); CREATE INDEX IF NOT EXISTS switch_requests_created_at ON switch_requests(created_at); CREATE UNIQUE INDEX IF NOT EXISTS candidate_sessions_one_active ON candidate_sessions((1)) WHERE status IN ('preparing', 'awaiting_pairing', 'connecting', 'ready');");
+  db.exec("CREATE INDEX IF NOT EXISTS sends_created_at ON sends(created_at); CREATE INDEX IF NOT EXISTS sends_recipient_time ON sends(recipient, created_at); CREATE INDEX IF NOT EXISTS outbound_messages_expiry ON outbound_messages(expires_at); CREATE INDEX IF NOT EXISTS pairing_requests_phone_time ON pairing_requests(phone, created_at); CREATE INDEX IF NOT EXISTS candidate_sessions_expiry ON candidate_sessions(expires_at); CREATE INDEX IF NOT EXISTS switch_requests_created_at ON switch_requests(created_at); CREATE UNIQUE INDEX IF NOT EXISTS candidate_sessions_one_active ON candidate_sessions((1)) WHERE status IN ('preparing', 'awaiting_pairing', 'connecting', 'ready');");
   const seal = (value) => {
     const nonce = randomBytes(12);
     const cipher = createCipheriv('aes-256-gcm', key, nonce);
@@ -42,6 +46,16 @@ export function openStore(path, key) {
     return Buffer.concat([decipher.update(data.subarray(28)), decipher.final()]).toString('utf8');
   };
   const digest = (purpose, value) => createHmac('sha256', key).update(purpose).update('\0').update(value).digest('hex');
+  const outboundKey = messageKey => {
+    const participant = /^(\d+)(?::\d+)?@s\.whatsapp\.net$/.exec(messageKey?.participant || '');
+    if (!messageKey || messageKey.fromMe !== true || !OUTBOUND_RECIPIENT.test(messageKey.remoteJid || '')
+        || !OUTBOUND_MESSAGE_ID.test(messageKey.id || '')
+        || (messageKey.participant != null && (!participant || `${participant[1]}@s.whatsapp.net` !== messageKey.remoteJid))) return null;
+    return {
+      id: digest('outbound-message', `${messageKey.remoteJid}\n${messageKey.id}`),
+      recipient: digest('outbound-recipient', messageKey.remoteJid),
+    };
+  };
   const clearCandidateCredentials = id => db.prepare("DELETE FROM auth WHERE id LIKE ? ESCAPE '\\'").run(`${candidatePrefix(id)}%`).changes;
   const expireCandidates = now => {
     const expired = db.prepare("SELECT id FROM candidate_sessions WHERE status IN ('preparing', 'awaiting_pairing', 'connecting', 'ready') AND expires_at <= ?").all(now);
@@ -191,6 +205,33 @@ export function openStore(path, key) {
       const keyHash = digest('request', id);
       db.prepare('UPDATE sends SET status=? WHERE id=?').run(status, keyHash);
     },
+    rememberOutboundMessage(messageKey, sessionId, serializedMessage, expiresAt, now = Date.now()) {
+      const entry = outboundKey(messageKey);
+      if (!entry || typeof sessionId !== 'string' || sessionId.length < 1 || sessionId.length > 256
+          || typeof serializedMessage !== 'string' || !Number.isSafeInteger(expiresAt)
+          || expiresAt <= now || expiresAt > now + MAX_OUTBOUND_TTL_MS) throw new Error('Invalid outbound message');
+      const session = digest('outbound-session', sessionId);
+      db.exec('BEGIN IMMEDIATE');
+      try {
+        db.prepare('DELETE FROM outbound_messages WHERE expires_at <= ?').run(now);
+        const existing = db.prepare('SELECT 1 FROM outbound_messages WHERE id=?').get(entry.id);
+        if (!existing && db.prepare('SELECT COUNT(*) AS n FROM outbound_messages').get().n >= OUTBOUND_MESSAGE_LIMIT)
+          throw new Error('Outbound retry cache full');
+        // A Baileys message key identifies one immutable outbound message. Never
+        // replace a prior payload if an unexpected duplicate key is observed.
+        if (!existing) db.prepare('INSERT INTO outbound_messages (id, recipient, session, message, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?)')
+          .run(entry.id, entry.recipient, session, seal(serializedMessage), expiresAt, now);
+        db.exec('COMMIT');
+      } catch (error) { db.exec('ROLLBACK'); throw error; }
+    },
+    getOutboundMessage(messageKey, sessionId, now = Date.now()) {
+      const entry = outboundKey(messageKey);
+      if (!entry || typeof sessionId !== 'string' || sessionId.length < 1 || sessionId.length > 256) return null;
+      db.prepare('DELETE FROM outbound_messages WHERE expires_at <= ?').run(now);
+      const row = db.prepare('SELECT message FROM outbound_messages WHERE id=? AND recipient=? AND session=? AND expires_at>?')
+        .get(entry.id, entry.recipient, digest('outbound-session', sessionId), now);
+      return row ? open(row.message) : null;
+    },
     reservePairing(id, phone) {
       const keyHash = digest('pairing-request', id);
       const phoneHash = digest('pairing-phone', phone);
@@ -219,10 +260,11 @@ export function openStore(path, key) {
     },
     cleanup(now = Date.now()) {
       const sendChanges = db.prepare('DELETE FROM sends WHERE created_at < ?').run(now - 35 * 86400000).changes;
+      const outboundChanges = db.prepare('DELETE FROM outbound_messages WHERE expires_at <= ?').run(now).changes;
       const pairingChanges = db.prepare('DELETE FROM pairing_requests WHERE created_at < ?').run(now - 900000).changes;
       const switchChanges = db.prepare('DELETE FROM switch_requests WHERE created_at < ?').run(now - 900000).changes;
       db.exec('BEGIN IMMEDIATE');
-      try { const candidateChanges = expireCandidates(now); db.exec('COMMIT'); return sendChanges + pairingChanges + switchChanges + candidateChanges; }
+      try { const candidateChanges = expireCandidates(now); db.exec('COMMIT'); return sendChanges + outboundChanges + pairingChanges + switchChanges + candidateChanges; }
       catch (error) { db.exec('ROLLBACK'); throw error; }
     },
     recoverCandidatesAfterRestart(now = Date.now()) {
@@ -269,6 +311,8 @@ export function baileysState(store, { BufferJSON, initAuthCreds, proto }) {
     } };
   return {
     state,
+    serialize(value) { return encode(value); },
+    deserialize(value) { return decode(value); },
     saveCreds() { credentialStore.setMany({ creds: encode(state.creds) }); },
     reset() { credentialStore.clearAuth(); state.creds = initAuthCreds(); },
     // Promotion rebinds an already-open candidate socket after the SQLite

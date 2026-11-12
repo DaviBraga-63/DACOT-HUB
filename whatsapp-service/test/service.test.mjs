@@ -38,6 +38,37 @@ test('encrypted auth persists and idempotency survives restart', () => {
   } finally { removeTestDirectory(dir); }
 });
 
+test('encrypted outbound retry cache is recipient and session bound across restart', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dacot-wa-'));
+  const key = randomBytes(32), path = join(dir, 'state.sqlite');
+  const messageKey = { remoteJid: '5511912345678@s.whatsapp.net', id: 'outbound-message-1', fromMe: true };
+  const sessionId = '5511987654321:1@s.whatsapp.net';
+  const serialized = JSON.stringify({ conversation: 'retry-sensitive-message' });
+  try {
+    let store = openStore(path, key);
+    store.rememberOutboundMessage(messageKey, sessionId, serialized, 2000, 1000);
+    assert.equal(store.getOutboundMessage(messageKey, sessionId, 1500), serialized);
+    assert.equal(store.getOutboundMessage({ ...messageKey, participant: '5511912345678:3@s.whatsapp.net' }, sessionId, 1500), serialized);
+    assert.equal(store.getOutboundMessage({ ...messageKey, id: 'unknown' }, sessionId, 1500), null);
+    assert.equal(store.getOutboundMessage({ ...messageKey, remoteJid: '5511988888888@s.whatsapp.net' }, sessionId, 1500), null);
+    assert.equal(store.getOutboundMessage(messageKey, '5511987654321:2@s.whatsapp.net', 1500), null);
+    assert.equal(store.getOutboundMessage({ ...messageKey, fromMe: false }, sessionId, 1500), null);
+    store.close();
+    assert.equal(readFileSync(path).includes(Buffer.from('retry-sensitive-message')), false);
+    store = openStore(path, key);
+    assert.equal(store.getOutboundMessage(messageKey, sessionId, 1500), serialized);
+    assert.equal(store.cleanup(2000), 1);
+    assert.equal(store.getOutboundMessage(messageKey, sessionId, 2000), null);
+    for (let index = 0; index < 256; index++) {
+      store.rememberOutboundMessage({ ...messageKey, id: `bounded-${index}` }, sessionId, serialized, 5000, 3000);
+    }
+    assert.throws(() => store.rememberOutboundMessage({ ...messageKey, id: 'bounded-overflow' }, sessionId, serialized, 5000, 3000),
+      /Outbound retry cache full/);
+    assert.equal(store.cleanup(5000), 256);
+    store.close();
+  } finally { removeTestDirectory(dir); }
+});
+
 test('persistent SQLite lease prevents a second sender and expires safely', () => {
   const dir = mkdtempSync(join(tmpdir(), 'dacot-wa-'));
   const path = join(dir, 'state.sqlite'), key = randomBytes(32);
@@ -232,6 +263,66 @@ test('storage failure stops the connection without reconnecting', () => {
   events.emit('creds.update');
   assert.equal(connection.state, 'error');
   assert.equal(scheduled.length, 0);
+});
+
+test('Baileys retry callback returns only the original cached transaction and does not resend it', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dacot-wa-'));
+  const store = openStore(join(dir, 'state.sqlite'), randomBytes(32));
+  const events = new EventEmitter();
+  const sessionId = '5511987654321:1@s.whatsapp.net';
+  const messageKey = { remoteJid: '5511912345678@s.whatsapp.net', id: 'outbound-message-2', fromMe: true };
+  let socketConfig, sends = 0, connection;
+  const socket = {
+    ev: events, user: { id: sessionId }, end() {},
+    async sendMessage(remoteJid, { text }) {
+      sends++;
+      return { key: { ...messageKey, remoteJid }, message: { conversation: text } };
+    },
+  };
+  try {
+    connection = createConnection({
+      makeSocket: config => { socketConfig = config; return socket; },
+      auth: { state: { creds: { me: { id: sessionId } } }, saveCreds() {}, reset() {} }, logger: {}, loggedOutCode: 401,
+      getMessage: async key => {
+        const serialized = store.getOutboundMessage(key, connection.accountId());
+        return serialized === null ? undefined : JSON.parse(serialized);
+      },
+      retainMessage: async (key, activeSessionId, message, expiresAt) =>
+        store.rememberOutboundMessage(key, activeSessionId, JSON.stringify(message), expiresAt),
+    });
+    events.emit('connection.update', { connection: 'open' });
+    await connection.send('+5511912345678', 'transactional retry body', Date.now() + 60000);
+    assert.equal(sends, 1);
+    assert.equal(socketConfig.maxMsgRetryCount, 3);
+    assert.deepEqual(await socketConfig.getMessage(messageKey), { conversation: 'transactional retry body' });
+    assert.equal(await socketConfig.getMessage({ ...messageKey, remoteJid: '5511988888888@s.whatsapp.net' }), undefined);
+    assert.equal(sends, 1, 'retrieving a retry must not initiate another confirmation request');
+  } finally { connection?.stop(); store.close(); removeTestDirectory(dir); }
+});
+
+test('a retry-cache storage failure leaves the auth-message request indeterminate', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dacot-wa-'));
+  try {
+    const store = openStore(join(dir, 'state.sqlite'), randomBytes(32));
+    const secret = 'x'.repeat(32), adminSecret = 'y'.repeat(32);
+    let sends = 0;
+    const connection = { state: 'open', async send() { sends++; throw new Error('retry cache unavailable'); } };
+    const gateway = createGateway({ secret, adminSecret, frontendOrigin: 'https://hub.example.test', connection, store });
+    const token = 'd'.repeat(43), body = {
+      destination: '+5511912345678', purpose: 'contact_confirmation',
+      link: `https://hub.example.test/confirm-owner-whatsapp?token=${token}`,
+    };
+    const rawBody = Buffer.from(JSON.stringify(body)), timestamp = String(Math.floor(Date.now() / 1000));
+    const request = {
+      method: 'POST', path: '/internal/auth-messages', authorization: `Bearer ${secret}`,
+      id: createHash('sha256').update(token).digest('hex'), body, rawBody, timestamp,
+      signature: createHmac('sha256', secret).update(timestamp + '.').update(rawBody).digest('hex'),
+    };
+    assert.deepEqual(await gateway.handle(request), { status: 503, body: { state: 'indeterminate' } });
+    assert.equal((await gateway.handle(request)).status, 409);
+    assert.equal(sends, 1);
+    store.close();
+  } finally { removeTestDirectory(dir); }
 });
 
 test('retention preserves auth and replay records beyond all valid link lifetimes', () => {

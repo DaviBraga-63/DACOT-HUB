@@ -99,9 +99,18 @@ try {
     const logger = pino({ level: 'silent' });
     createActiveConnection = () => {
       const auth = baileysState(store, { BufferJSON, initAuthCreds, proto });
-      return createConnection({ makeSocket: makeWASocket, auth, logger,
+      let activeConnection;
+      activeConnection = createConnection({ makeSocket: makeWASocket, auth, logger,
         loggedOutCode: DisconnectReason.loggedOut,
+        getMessage: async messageKey => {
+          const sessionId = activeConnection?.accountId();
+          const serialized = sessionId ? store.getOutboundMessage(messageKey, sessionId) : null;
+          return serialized === null ? undefined : auth.deserialize(serialized);
+        },
+        retainMessage: (messageKey, sessionId, message, expiresAt) =>
+          store.rememberOutboundMessage(messageKey, sessionId, auth.serialize(message), expiresAt),
         onStateChange: state => console.info('whatsapp_connection_state=%s', state) });
+      return activeConnection;
     };
     connection = createActiveConnection();
     if ((env.WHATSAPP_ACCOUNT_SWITCH_SERVICE_SECRET || '').length >= 32) {

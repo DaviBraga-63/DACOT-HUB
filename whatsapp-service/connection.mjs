@@ -1,5 +1,6 @@
 export function createConnection({ makeSocket, auth, logger, loggedOutCode, schedule = setTimeout,
-  maxReconnectAttempts = 8, maxReconnectDelayMs = 60000, onStateChange }) {
+  maxReconnectAttempts = 8, maxReconnectDelayMs = 60000, maxMessageRetries = 3,
+  getMessage = async () => undefined, retainMessage = async () => {}, onStateChange }) {
   let socket, stopped = false, reconnectScheduled = false, reconnectAttempts = 0;
   const connection = {
     state: 'connecting', qr: null,
@@ -8,9 +9,13 @@ export function createConnection({ makeSocket, auth, logger, loggedOutCode, sche
       return typeof socket?.user?.id === 'string' ? socket.user.id
         : (typeof auth.state.creds.me?.id === 'string' ? auth.state.creds.me.id : null);
     },
-    async send(number, text) {
+    async send(number, text, expiresAt) {
       if (connection.state !== 'open' || !socket) throw new Error('Not connected');
-      await socket.sendMessage(`${number.slice(1)}@s.whatsapp.net`, { text });
+      const sessionId = connection.accountId();
+      if (!sessionId) throw new Error('Missing active session');
+      const sent = await socket.sendMessage(`${number.slice(1)}@s.whatsapp.net`, { text });
+      if (!sent?.key || !sent.message) throw new Error('Missing outbound message');
+      await retainMessage(sent.key, sessionId, sent.message, expiresAt);
     },
     async requestPairingCode(number) {
       // Pairing codes are valid only while this instance owns an unregistered
@@ -64,7 +69,11 @@ export function createConnection({ makeSocket, auth, logger, loggedOutCode, sche
     setState('connecting');
     let nextSocket;
     try {
-      nextSocket = makeSocket({ auth: auth.state, logger, syncFullHistory: false, markOnlineOnConnect: false });
+      nextSocket = makeSocket({ auth: auth.state, logger, syncFullHistory: false, markOnlineOnConnect: false,
+        maxMsgRetryCount: maxMessageRetries,
+        getMessage: async messageKey => {
+          try { return await getMessage(messageKey); } catch { return undefined; }
+        } });
     } catch {
       setState('disconnected');
       scheduleReconnect();
