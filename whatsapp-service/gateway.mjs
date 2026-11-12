@@ -156,13 +156,14 @@ export function createGateway({ secret, adminSecret, pairingSecret, switchSecret
           ? `Olá! Foi solicitada a confirmação deste WhatsApp para recuperação de acesso do proprietário no DACOT.\n\nPara confirmar o número, acesse:\n\n${body.link}\n\nEste link é individual, pode ser utilizado uma única vez e possui validade de 24 horas.\n\nSe você não solicitou esta alteração, ignore esta mensagem.`
         : `Olá! Recebemos uma solicitação de recuperação de senha da sua conta DACOT.\n\nPara definir uma nova senha, acesse:\n\n${body.link}\n\nEste link pode ser utilizado uma única vez e possui validade de 24 horas.\n\nSe você não solicitou a recuperação, ignore esta mensagem.`;
       try {
-        await connection.send(body.destination, text);
+        const retryCacheExpiresAt = now() + (body.purpose === 'first_access' ? 30 : 1) * 86400000;
+        await connection.send(body.destination, text, retryCacheExpiresAt);
         store.complete(id, 'accepted');
         return { status: 202, body: { state: 'accepted' } };
       } catch {
         // A network error after send may mean the message was accepted remotely.
         // Never automatically repeat an indeterminate request.
-        store.complete(id, 'indeterminate');
+        try { store.complete(id, 'indeterminate'); } catch { /* The caller still must not retry automatically. */ }
         return { status: 503, body: { state: 'indeterminate' } };
       }
     },
