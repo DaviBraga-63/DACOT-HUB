@@ -1,6 +1,6 @@
 export function createConnection({ makeSocket, auth, logger, loggedOutCode, schedule = setTimeout,
   maxReconnectAttempts = 8, maxReconnectDelayMs = 60000, maxMessageRetries = 3,
-  getMessage = async () => undefined, retainMessage = async () => {}, onStateChange }) {
+  getMessage = async () => undefined, retainMessage = async () => {}, onOutboundEvent = () => {}, onStateChange }) {
   let socket, stopped = false, reconnectScheduled = false, reconnectAttempts = 0;
   const connection = {
     state: 'connecting', qr: null,
@@ -16,6 +16,7 @@ export function createConnection({ makeSocket, auth, logger, loggedOutCode, sche
       const sent = await socket.sendMessage(`${number.slice(1)}@s.whatsapp.net`, { text });
       if (!sent?.key || !sent.message) throw new Error('Missing outbound message');
       await retainMessage(sent.key, sessionId, sent.message, expiresAt);
+      emitOutboundEvent('submitted', sent.key);
     },
     async requestPairingCode(number) {
       // Pairing codes are valid only while this instance owns an unregistered
@@ -47,6 +48,11 @@ export function createConnection({ makeSocket, auth, logger, loggedOutCode, sche
     try { onStateChange?.(state); } catch { /* State reporting must not affect the socket. */ }
   }
 
+  function emitOutboundEvent(kind, key, status) {
+    try { onOutboundEvent({ kind, key, status }); }
+    catch { /* Observability must never affect delivery or retry. */ }
+  }
+
   function scheduleReconnect() {
     if (stopped || reconnectScheduled) return;
     if (reconnectAttempts >= maxReconnectAttempts) {
@@ -72,7 +78,15 @@ export function createConnection({ makeSocket, auth, logger, loggedOutCode, sche
       nextSocket = makeSocket({ auth: auth.state, logger, syncFullHistory: false, markOnlineOnConnect: false,
         maxMsgRetryCount: maxMessageRetries,
         getMessage: async messageKey => {
-          try { return await getMessage(messageKey); } catch { return undefined; }
+          emitOutboundEvent('retry_requested', messageKey);
+          try {
+            const message = await getMessage(messageKey);
+            emitOutboundEvent(message ? 'retry_served' : 'retry_unavailable', messageKey);
+            return message;
+          } catch {
+            emitOutboundEvent('retry_failed', messageKey);
+            return undefined;
+          }
         } });
     } catch {
       setState('disconnected');
@@ -89,6 +103,12 @@ export function createConnection({ makeSocket, auth, logger, loggedOutCode, sche
         connection.qr = null;
         socket = null;
         try { nextSocket.end(); } catch { /* The credential-store failure remains the terminal state. */ }
+      }
+    });
+    nextSocket.ev.on('messages.update', updates => {
+      if (stopped || socket !== nextSocket || !Array.isArray(updates)) return;
+      for (const { key, update } of updates) {
+        if (Number.isInteger(update?.status)) emitOutboundEvent('status', key, update.status);
       }
     });
     nextSocket.ev.on('connection.update', ({ connection: status, lastDisconnect, qr }) => {

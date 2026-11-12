@@ -100,6 +100,27 @@ try {
     createActiveConnection = () => {
       const auth = baileysState(store, { BufferJSON, initAuthCreds, proto });
       let activeConnection;
+      const statusNames = new Map([
+        [proto.WebMessageInfo.Status.SERVER_ACK, 'server_ack'],
+        [proto.WebMessageInfo.Status.DELIVERY_ACK, 'delivery_ack'],
+        [proto.WebMessageInfo.Status.READ, 'read'],
+        [proto.WebMessageInfo.Status.PLAYED, 'played'],
+      ]);
+      const observeOutboundEvent = ({ kind, key, status }) => {
+        const sessionId = activeConnection?.accountId();
+        let trace = null;
+        try { trace = sessionId ? store.outboundMessageTrace(key, sessionId) : null; }
+        catch {
+          if (kind.startsWith('retry_')) console.error('whatsapp_retry_observability_storage_failure');
+          return;
+        }
+        if (!trace) {
+          if (kind === 'retry_requested') console.info('whatsapp_retry_requested cache=miss');
+          return;
+        }
+        const event = kind === 'status' ? statusNames.get(status) : kind;
+        if (event) console.info('whatsapp_outbound_event=%s trace=%s', event, trace);
+      };
       activeConnection = createConnection({ makeSocket: makeWASocket, auth, logger,
         loggedOutCode: DisconnectReason.loggedOut,
         getMessage: async messageKey => {
@@ -109,6 +130,7 @@ try {
         },
         retainMessage: (messageKey, sessionId, message, expiresAt) =>
           store.rememberOutboundMessage(messageKey, sessionId, auth.serialize(message), expiresAt),
+        onOutboundEvent: observeOutboundEvent,
         onStateChange: state => console.info('whatsapp_connection_state=%s', state) });
       return activeConnection;
     };

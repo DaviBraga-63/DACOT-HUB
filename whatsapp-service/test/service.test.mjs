@@ -48,6 +48,8 @@ test('encrypted outbound retry cache is recipient and session bound across resta
     let store = openStore(path, key);
     store.rememberOutboundMessage(messageKey, sessionId, serialized, 2000, 1000);
     assert.equal(store.getOutboundMessage(messageKey, sessionId, 1500), serialized);
+    assert.match(store.outboundMessageTrace(messageKey, sessionId, 1500), /^[a-f0-9]{16}$/);
+    assert.equal(store.outboundMessageTrace({ ...messageKey, id: 'unknown' }, sessionId, 1500), null);
     assert.equal(store.getOutboundMessage({ ...messageKey, participant: '5511912345678:3@s.whatsapp.net' }, sessionId, 1500), serialized);
     assert.equal(store.getOutboundMessage({ ...messageKey, id: 'unknown' }, sessionId, 1500), null);
     assert.equal(store.getOutboundMessage({ ...messageKey, remoteJid: '5511988888888@s.whatsapp.net' }, sessionId, 1500), null);
@@ -57,8 +59,10 @@ test('encrypted outbound retry cache is recipient and session bound across resta
     assert.equal(readFileSync(path).includes(Buffer.from('retry-sensitive-message')), false);
     store = openStore(path, key);
     assert.equal(store.getOutboundMessage(messageKey, sessionId, 1500), serialized);
+    assert.match(store.outboundMessageTrace(messageKey, sessionId, 1500), /^[a-f0-9]{16}$/);
     assert.equal(store.cleanup(2000), 1);
     assert.equal(store.getOutboundMessage(messageKey, sessionId, 2000), null);
+    assert.equal(store.outboundMessageTrace(messageKey, sessionId, 2000), null);
     for (let index = 0; index < 256; index++) {
       store.rememberOutboundMessage({ ...messageKey, id: `bounded-${index}` }, sessionId, serialized, 5000, 3000);
     }
@@ -272,6 +276,7 @@ test('Baileys retry callback returns only the original cached transaction and do
   const sessionId = '5511987654321:1@s.whatsapp.net';
   const messageKey = { remoteJid: '5511912345678@s.whatsapp.net', id: 'outbound-message-2', fromMe: true };
   let socketConfig, sends = 0, connection;
+  const outboundEvents = [];
   const socket = {
     ev: events, user: { id: sessionId }, end() {},
     async sendMessage(remoteJid, { text }) {
@@ -289,6 +294,7 @@ test('Baileys retry callback returns only the original cached transaction and do
       },
       retainMessage: async (key, activeSessionId, message, expiresAt) =>
         store.rememberOutboundMessage(key, activeSessionId, JSON.stringify(message), expiresAt),
+      onOutboundEvent: event => outboundEvents.push(event),
     });
     events.emit('connection.update', { connection: 'open' });
     await connection.send('+5511912345678', 'transactional retry body', Date.now() + 60000);
@@ -296,6 +302,11 @@ test('Baileys retry callback returns only the original cached transaction and do
     assert.equal(socketConfig.maxMsgRetryCount, 3);
     assert.deepEqual(await socketConfig.getMessage(messageKey), { conversation: 'transactional retry body' });
     assert.equal(await socketConfig.getMessage({ ...messageKey, remoteJid: '5511988888888@s.whatsapp.net' }), undefined);
+    events.emit('messages.update', [{ key: messageKey, update: { status: 2 } }]);
+    assert.deepEqual(outboundEvents.map(({ kind, status }) => [kind, status]), [
+      ['submitted', undefined], ['retry_requested', undefined], ['retry_served', undefined],
+      ['retry_requested', undefined], ['retry_unavailable', undefined], ['status', 2],
+    ]);
     assert.equal(sends, 1, 'retrieving a retry must not initiate another confirmation request');
   } finally { connection?.stop(); store.close(); removeTestDirectory(dir); }
 });

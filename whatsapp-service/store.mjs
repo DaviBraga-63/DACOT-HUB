@@ -56,6 +56,16 @@ export function openStore(path, key) {
       recipient: digest('outbound-recipient', messageKey.remoteJid),
     };
   };
+  const outboundMessageEntry = (messageKey, sessionId, now = Date.now()) => {
+    const entry = outboundKey(messageKey);
+    if (!entry || typeof sessionId !== 'string' || sessionId.length < 1 || sessionId.length > 256) return null;
+    db.prepare('DELETE FROM outbound_messages WHERE expires_at <= ?').run(now);
+    const row = db.prepare('SELECT message FROM outbound_messages WHERE id=? AND recipient=? AND session=? AND expires_at>?')
+      .get(entry.id, entry.recipient, digest('outbound-session', sessionId), now);
+    // The trace is a truncated, key-derived HMAC. It is stable only inside the
+    // service logs and cannot disclose a recipient, message id or content.
+    return row ? { message: row.message, trace: entry.id.slice(0, 16) } : null;
+  };
   const clearCandidateCredentials = id => db.prepare("DELETE FROM auth WHERE id LIKE ? ESCAPE '\\'").run(`${candidatePrefix(id)}%`).changes;
   const expireCandidates = now => {
     const expired = db.prepare("SELECT id FROM candidate_sessions WHERE status IN ('preparing', 'awaiting_pairing', 'connecting', 'ready') AND expires_at <= ?").all(now);
@@ -225,12 +235,11 @@ export function openStore(path, key) {
       } catch (error) { db.exec('ROLLBACK'); throw error; }
     },
     getOutboundMessage(messageKey, sessionId, now = Date.now()) {
-      const entry = outboundKey(messageKey);
-      if (!entry || typeof sessionId !== 'string' || sessionId.length < 1 || sessionId.length > 256) return null;
-      db.prepare('DELETE FROM outbound_messages WHERE expires_at <= ?').run(now);
-      const row = db.prepare('SELECT message FROM outbound_messages WHERE id=? AND recipient=? AND session=? AND expires_at>?')
-        .get(entry.id, entry.recipient, digest('outbound-session', sessionId), now);
-      return row ? open(row.message) : null;
+      const entry = outboundMessageEntry(messageKey, sessionId, now);
+      return entry ? open(entry.message) : null;
+    },
+    outboundMessageTrace(messageKey, sessionId, now = Date.now()) {
+      return outboundMessageEntry(messageKey, sessionId, now)?.trace || null;
     },
     reservePairing(id, phone) {
       const keyHash = digest('pairing-request', id);
