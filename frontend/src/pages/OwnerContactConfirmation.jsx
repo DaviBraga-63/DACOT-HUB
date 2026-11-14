@@ -1,9 +1,10 @@
 import { useState } from "react";
-import { Link, useSearchParams } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { api, formatApiErrorDetail } from "@/lib/api";
 
 export default function OwnerContactConfirmation({ channel }) {
   const [params] = useSearchParams();
+  const navigate = useNavigate();
   const token = params.get("token") || "";
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(false);
@@ -14,7 +15,13 @@ export default function OwnerContactConfirmation({ channel }) {
     if (!token) { setError("Link de confirmação inválido."); return; }
     setBusy(true); setError("");
     try {
-      await api.post(isEmail ? "/auth/confirm-owner-email" : "/auth/confirm-owner-whatsapp", { token });
+      const { data } = await api.post(isEmail ? "/auth/confirm-owner-email" : "/auth/confirm-owner-whatsapp", { token });
+      if (!isEmail && data?.first_access_required && typeof data?.continuation_token === "string") {
+        // The confirmation credential is consumed. Only the separate short-lived
+        // first-access credential reaches the password page.
+        navigate(`/reset-password?token=${encodeURIComponent(data.continuation_token)}`, { replace: true });
+        return;
+      }
       setDone(true);
     } catch (err) {
       setError(formatApiErrorDetail(err.response?.data?.detail) || "Não foi possível confirmar este canal.");

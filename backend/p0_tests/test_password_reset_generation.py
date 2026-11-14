@@ -325,12 +325,64 @@ def test_confirmed_owner_whatsapp_binds_only_the_portal_owner_and_revokes_sessio
     monkeypatch.setattr(hub, "revoke_user_sessions", revoke)
     monkeypatch.setattr(hub, "log_activity", AsyncMock())
     result = asyncio.run(hub.confirm_owner_whatsapp(hub.OwnerContactConfirmationIn(token="x" * 32)))
-    assert result == {"ok": True, "first_access_delivery": None}
+    assert result == {"ok": True, "first_access_required": False, "continuation_token": None}
     mutation = users.update_one.await_args.args[1][0]["$set"]
     assert mutation["phone_number"]["$literal"] == "+5511912345678"
     assert "phone_binding_version" in mutation
     assert tenants.update_one.await_args.args[1]["$set"]["phone_user_id"] == str(uid)
     revoke.assert_awaited_once_with(hub.db, user_id=str(uid), user_type="restaurant", reason="owner_whatsapp_changed")
+
+
+def test_owner_whatsapp_confirmation_issues_short_continuation_only_when_first_access_is_pending(hub, monkeypatch):
+    tid, uid = str(ObjectId()), ObjectId()
+    owner = {"_id": uid, "tenant_id": tid, "email": "owner@example.com", "name": "Owner",
+             "status": "active", "password_reset_required": True}
+    tenant = {"_id": ObjectId(tid), "portal_owner_user_id": str(uid)}
+    users = SimpleNamespace(find_one=AsyncMock(side_effect=[owner, None]),
+                            update_one=AsyncMock(return_value=SimpleNamespace(matched_count=1)))
+    monkeypatch.setattr(hub, "db", SimpleNamespace(tenant_users=users,
+                        tenants=SimpleNamespace(find_one=AsyncMock(return_value=tenant), update_one=AsyncMock())))
+    monkeypatch.setattr(hub, "_consume_owner_contact_confirmation", AsyncMock(return_value={
+        "tenant_id": tid, "owner_user_id": str(uid), "proposed_value": "+5511912345678",
+    }))
+    issue = AsyncMock(return_value="continuation-token")
+    monkeypatch.setattr(hub, "_issue_password_reset", issue)
+    monkeypatch.setattr(hub, "revoke_user_sessions", AsyncMock())
+    monkeypatch.setattr(hub, "log_activity", AsyncMock())
+    result = asyncio.run(hub.confirm_owner_whatsapp(hub.OwnerContactConfirmationIn(token="x" * 32)))
+    assert result == {"ok": True, "first_access_required": True,
+                      "continuation_token": "continuation-token"}
+    assert issue.await_args.kwargs["first_access"] is True
+    assert issue.await_args.kwargs["expires_in"] == timedelta(hours=24)
+
+
+def test_owner_transfer_completion_moves_pointer_only_when_current_owner_is_unchanged(hub, monkeypatch):
+    tid, old_id, new_id, transfer_id = str(ObjectId()), str(ObjectId()), ObjectId(), ObjectId()
+    transfer = {"_id": transfer_id, "tenant_id": tid, "previous_owner_user_id": old_id,
+                "new_owner_user_id": str(new_id), "state": "pending", "whatsapp_confirmed_at": object()}
+    tenants = SimpleNamespace(update_one=AsyncMock(return_value=SimpleNamespace(matched_count=0)))
+    monkeypatch.setattr(hub, "db", SimpleNamespace(
+        owner_transfers=SimpleNamespace(find_one=AsyncMock(return_value=transfer), update_one=AsyncMock()),
+        tenants=tenants, tenant_users=SimpleNamespace(update_one=AsyncMock()),
+        activity_log=SimpleNamespace(insert_one=AsyncMock()),
+    ))
+    revoke = AsyncMock()
+    monkeypatch.setattr(hub, "revoke_user_sessions", revoke)
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(hub._complete_pending_owner_transfer(
+            transfer_id=str(transfer_id), new_owner={"_id": new_id, "name": "Novo", "phone_number": "+5511912345678"},
+        ))
+    assert exc.value.status_code == 409
+    assert tenants.update_one.await_args.args[0]["portal_owner_user_id"] == old_id
+    revoke.assert_not_awaited()
+
+
+def test_owner_transfer_routes_are_super_admin_only(hub):
+    for path in ("/api/hub/tenants/{tid}/owner-name", "/api/hub/tenants/{tid}/owner-transfer",
+                 "/api/hub/tenants/{tid}/owner-first-access-invite",
+                 "/api/hub/tenants/{tid}/owner-transfer/{transfer_id}"):
+        route = next(route for route in hub.app.routes if route.path == path)
+        assert any(dep.call is hub.get_super_admin for dep in route.dependant.dependencies)
 
 
 def test_forgot_whatsapp_only_sends_to_bound_user_and_response_is_generic(hub, monkeypatch):
