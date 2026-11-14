@@ -11,6 +11,7 @@ import {
   AlertDialog, AlertDialogCancel, AlertDialogContent, AlertDialogDescription,
   AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 
 const TABS = [
   { key: "overview", label: "Visão geral" },
@@ -125,7 +126,7 @@ export default function ClienteDetalhes() {
             <div className="grid grid-cols-3 gap-4 pt-5 mt-5 border-t border-slate-100">
               <MetricSmall label="Módulos ativos" value={tenant.active_modules} />
               <MetricSmall label="Usuários" value={tenant.users_count} />
-              <MetricSmall label="Responsável" value={tenant.owner_name} textual />
+              <EditableOwnerMetric tenant={tenant} canWrite={user?.role === "super_admin"} reload={load} />
             </div>
           </div>
           <div className="dh-card p-6 sm:p-7" data-testid="tenant-activity">
@@ -156,6 +157,8 @@ function MobilePhoneContact({ tenant, canWrite, reload }) {
   const [number, setNumber] = useState(formatBrazilianPhone(tenant.mobile_phone || ""));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [transferOpen, setTransferOpen] = useState(false);
+  const [transfer, setTransfer] = useState({ name: "", email: "", phone: "" });
 
   useEffect(() => setNumber(formatBrazilianPhone(tenant.mobile_phone || "")), [tenant.mobile_phone]);
 
@@ -183,11 +186,64 @@ function MobilePhoneContact({ tenant, canWrite, reload }) {
         <input id="tenant-mobile-phone" type="tel" className="dh-input flex-1 min-w-0" value={number}
                onChange={(e) => setNumber(formatBrazilianPhone(e.target.value))} disabled={!canWrite || busy} />
         {canWrite && <button type="submit" className="dh-btn dh-btn-ghost" disabled={busy}>{busy ? "Salvando…" : "Salvar"}</button>}
+        {canWrite && <button type="button" className="dh-btn dh-btn-outline" disabled={busy}
+                             onClick={() => setTransferOpen(true)}>Transferir responsável</button>}
       </div>
       <p className="text-[12px] text-[var(--dh-muted)]">{tenant.phone_user_id ? "O número confirmado é usado para recuperação por WhatsApp. Um novo número só substitui este após confirmação." : "O número só será usado para recuperação depois que o proprietário confirmar o link recebido."}</p>
+      {canWrite && tenant.portal_owner_first_access_pending && tenant.phone_user_id && (
+        <button type="button" className="text-[12px] font-medium text-[var(--dh-accent)] hover:underline" disabled={busy}
+          onClick={async () => { setBusy(true); setError(""); try { await api.post(`/hub/tenants/${tenant.id}/owner-first-access-invite`); toast.success("Novo convite de primeiro acesso enviado"); } catch (err) { setError(formatApiErrorDetail(err.response?.data?.detail) || "Não foi possível enviar o convite."); } finally { setBusy(false); } }}>
+          Reenviar convite de primeiro acesso
+        </button>
+      )}
       {error && <p role="alert" className="dh-chip dh-chip-error">{error}</p>}
+      <Dialog open={transferOpen} onOpenChange={(open) => !busy && setTransferOpen(open)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Transferir responsabilidade</DialogTitle>
+            <DialogDescription>O responsável atual mantém o acesso até que o novo responsável confirme o WhatsApp e conclua o primeiro acesso.</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3">
+            <input className="dh-input w-full" placeholder="Nome do novo responsável" value={transfer.name}
+              onChange={(e) => setTransfer((v) => ({ ...v, name: e.target.value }))} disabled={busy} />
+            <input className="dh-input w-full" type="email" placeholder="E-mail" value={transfer.email}
+              onChange={(e) => setTransfer((v) => ({ ...v, email: e.target.value }))} disabled={busy} />
+            <input className="dh-input w-full" type="tel" placeholder="WhatsApp" value={transfer.phone}
+              onChange={(e) => setTransfer((v) => ({ ...v, phone: formatBrazilianPhone(e.target.value) }))} disabled={busy} />
+          </div>
+          <DialogFooter>
+            <button type="button" className="dh-btn dh-btn-ghost" onClick={() => setTransferOpen(false)} disabled={busy}>Cancelar</button>
+            <button type="button" className="dh-btn dh-btn-primary" disabled={busy || !transfer.name.trim() || !transfer.email || !transfer.phone}
+              onClick={async () => {
+                setBusy(true); setError("");
+                try {
+                  await api.post(`/hub/tenants/${tenant.id}/owner-transfer`, transfer);
+                  toast.success("Convite de transferência enviado para confirmação");
+                  setTransferOpen(false); setTransfer({ name: "", email: "", phone: "" }); await reload();
+                } catch (err) { setError(formatApiErrorDetail(err.response?.data?.detail) || "Não foi possível iniciar a transferência."); }
+                finally { setBusy(false); }
+              }}>{busy ? "Enviando…" : "Enviar convite"}</button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </form>
   );
+}
+
+function EditableOwnerMetric({ tenant, canWrite, reload }) {
+  const [editing, setEditing] = useState(false);
+  const [name, setName] = useState(tenant.owner_name || "");
+  const [busy, setBusy] = useState(false);
+  useEffect(() => setName(tenant.owner_name || ""), [tenant.owner_name]);
+  return <div>
+    <div className="flex items-center gap-2 text-[11px] uppercase tracking-wider font-semibold text-slate-400">Responsável
+      {canWrite && !editing && <button type="button" onClick={() => setEditing(true)} aria-label="Editar responsável" className="text-slate-400 hover:text-slate-700"><Pencil size={13} /></button>}
+    </div>
+    {editing ? <div className="mt-1 flex gap-2"><input className="dh-input min-w-0" value={name} disabled={busy} onChange={(e) => setName(e.target.value)} />
+      <button type="button" className="dh-btn dh-btn-primary" disabled={busy || !name.trim()} onClick={async () => { setBusy(true); try { await api.patch(`/hub/tenants/${tenant.id}/owner-name`, { name }); toast.success("Nome do responsável atualizado"); setEditing(false); await reload(); } catch (err) { toast.error(formatApiErrorDetail(err.response?.data?.detail) || "Não foi possível atualizar o responsável."); } finally { setBusy(false); } }}>Salvar</button>
+      <button type="button" className="dh-btn dh-btn-ghost" disabled={busy} onClick={() => { setName(tenant.owner_name || ""); setEditing(false); }}>Cancelar</button></div>
+      : <div className="text-[14px] font-semibold text-slate-800 mt-1">{tenant.owner_name || "—"}</div>}
+  </div>;
 }
 
 function EditableInfoRow({ icon: Icon, label, value, canWrite, reload, tenantId, field }) {
