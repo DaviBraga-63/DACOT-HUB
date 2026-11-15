@@ -157,6 +157,43 @@ class WhatsAppPairingProvider(_WhatsAppServiceClient):
 
 
 class WhatsAppStatusProvider(_WhatsAppServiceClient):
+    async def get_diagnostics(self, *, request_id: str, trace: str | None = None) -> dict | None:
+        if (not self._valid_config() or not re.fullmatch(r"[A-Za-z0-9_-]{16,128}", request_id or "")
+                or (trace is not None and not re.fullmatch(r"[a-f0-9]{16}", trace))):
+            return None
+        path = "/internal/outbound-diagnostics" + (f"?trace={trace}" if trace else "")
+        timestamp = str(int(time.time()))
+        signed = f"GET\n{path}\n{timestamp}\n{request_id}".encode()
+        signature = hmac.new(self.service_key.encode(), signed, hashlib.sha256).hexdigest()
+        try:
+            async with self.client_factory(**self._client_options(timeout=3.0)) as client:
+                response = await client.get(f"{self.service_url}{path}", headers={
+                    "Authorization": f"Bearer {self.service_key}", "Idempotency-Key": request_id,
+                    "X-DACOT-Timestamp": timestamp, "X-DACOT-Signature": signature,
+                })
+            data = response.json()
+            if response.status_code != 200 or not isinstance(data, dict) or not isinstance(data.get("events"), list):
+                return None
+            events = data["events"]
+            if len(events) > (64 if trace else 30):
+                return None
+            for event in events:
+                if (not isinstance(event, dict) or set(event) != ({"trace", "event", "jid_kind", "created_at"} if trace else {"trace", "created_at"})
+                        or not isinstance(event["trace"], str) or not re.fullmatch(r"[a-f0-9]{16}", event["trace"])
+                        or type(event["created_at"]) is not int):
+                    return None
+                if trace and (event["trace"] != trace or event["event"] not in {
+                    "submitted", "server_ack", "delivery_ack", "read", "played", "error",
+                    "retry_requested", "retry_served", "retry_unavailable", "retry_failed",
+                } or event["jid_kind"] not in {"pn", "lid", "unknown"}):
+                    return None
+            conclusion = data.get("conclusion")
+            if conclusion not in {"insufficient_evidence", "inspect_events"}:
+                return None
+            return {"events": events, "conclusion": conclusion}
+        except (httpx.HTTPError, ValueError, OSError, json.JSONDecodeError):
+            return None
+
     async def get_status(self, *, request_id: str) -> IntegrationStatusResult:
         if (not self._valid_config()
                 or not re.fullmatch(r"[A-Za-z0-9_-]{16,128}", request_id or "")):

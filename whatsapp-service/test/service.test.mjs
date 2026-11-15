@@ -9,6 +9,52 @@ import { openStore } from '../store.mjs';
 import { connectedBrazilianAccountPhone, createGateway } from '../gateway.mjs';
 import { createConnection } from '../connection.mjs';
 
+test('sanitized diagnostics persist, expire, remain bounded and distinguish message traces', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dacot-wa-'));
+  const key = randomBytes(32), path = join(dir, 'state.sqlite');
+  try {
+    let store = openStore(path, key);
+    const first = 'a'.repeat(16), second = 'b'.repeat(16);
+    assert.equal(store.recordOutboundDiagnostic(first, 'submitted', 'pn', 1000), true);
+    assert.equal(store.recordOutboundDiagnostic(first, 'error', 'pn', 1001), true);
+    assert.equal(store.recordOutboundDiagnostic(second, 'delivery_ack', 'lid', 1002), true);
+    assert.equal(store.recordOutboundDiagnostic(first, 'arbitrary', 'pn', 1003), false);
+    assert.equal(store.outboundDiagnosticTrace({ id: 'same-id', fromMe: true, remoteJid: 'a@s.whatsapp.net' }, 'session'),
+      store.outboundDiagnosticTrace({ id: 'same-id', fromMe: true, remoteJid: 'b@lid' }, 'session'));
+    store.close();
+    assert.equal(readFileSync(path).includes(Buffer.from('5511912345678')), false);
+    store = openStore(path, key);
+    assert.deepEqual(store.recentOutboundDiagnostics(first, 1003).map(row => row.event), ['error', 'submitted']);
+    assert.deepEqual(store.recentOutboundDiagnostics(second, 1003).map(row => row.event), ['delivery_ack']);
+    for (let index = 0; index < 520; index++) store.recordOutboundDiagnostic(second, 'read', 'pn', 2000 + index);
+    assert.equal(store.recentOutboundDiagnostics(null, 2600).length, 1);
+    assert.deepEqual(store.recentOutboundDiagnostics(first, 86400000 + 1003), []);
+    store.close();
+  } finally { removeTestDirectory(dir); }
+});
+
+test('signed diagnostic lookup rejects unauthorized and replayed requests', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dacot-wa-'));
+  try {
+    const store = openStore(join(dir, 'state.sqlite'), randomBytes(32));
+    const secret = 'x'.repeat(32), trace = 'a'.repeat(16);
+    store.recordOutboundDiagnostic(trace, 'submitted', 'pn');
+    const gateway = createGateway({ secret, adminSecret: 'y'.repeat(32),
+      frontendOrigin: 'https://hub.example.test', connection: { state: 'open' }, store });
+    const path = `/internal/outbound-diagnostics?trace=${trace}`;
+    const id = 'diagnostic-request-id-1234', timestamp = String(Math.floor(Date.now() / 1000));
+    const signature = createHmac('sha256', secret).update(`GET\n${path}\n${timestamp}\n${id}`).digest('hex');
+    const request = { method: 'GET', path, id, timestamp, signature, rawBody: Buffer.alloc(0), authorization: `Bearer ${secret}` };
+    assert.equal((await gateway.handle({ ...request, authorization: 'Bearer invalid' })).status, 401);
+    assert.equal((await gateway.handle({ ...request, signature: '0'.repeat(64) })).status, 401);
+    const result = await gateway.handle(request);
+    assert.equal(result.status, 200);
+    assert.deepEqual(result.body.events.map(row => row.event), ['submitted']);
+    assert.equal((await gateway.handle(request)).status, 409);
+    store.close();
+  } finally { removeTestDirectory(dir); }
+});
+
 function removeTestDirectory(dir) {
   const root = resolve(tmpdir()) + sep;
   const target = resolve(dir);

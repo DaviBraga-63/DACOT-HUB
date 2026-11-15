@@ -11,6 +11,10 @@ const OUTBOUND_MESSAGE_ID = /^[A-Za-z0-9_-]{1,128}$/;
 const OUTBOUND_RECIPIENT = /^55[1-9][0-9][0-9]{8,9}@s\.whatsapp\.net$/;
 const MAX_OUTBOUND_TTL_MS = 30 * 86400000;
 const OUTBOUND_MESSAGE_LIMIT = 256;
+const DIAGNOSTIC_TTL_MS = 24 * 3600000;
+const DIAGNOSTIC_LIMIT = 512;
+const DIAGNOSTIC_EVENTS = new Set(['submitted', 'server_ack', 'delivery_ack', 'read', 'played', 'error',
+  'retry_requested', 'retry_served', 'retry_unavailable', 'retry_failed']);
 
 function candidatePrefix(id) {
   if (!CANDIDATE_ID.test(id || '')) throw new Error('Invalid candidate identifier');
@@ -33,6 +37,7 @@ export function openStore(path, key) {
   // Retain longer than the longest link lifetime (30 days), including replay
   // tolerance. Pending/indeterminate records remain protected throughout it.
   db.exec("CREATE INDEX IF NOT EXISTS sends_created_at ON sends(created_at); CREATE INDEX IF NOT EXISTS sends_recipient_time ON sends(recipient, created_at); CREATE INDEX IF NOT EXISTS outbound_messages_expiry ON outbound_messages(expires_at); CREATE INDEX IF NOT EXISTS pairing_requests_phone_time ON pairing_requests(phone, created_at); CREATE INDEX IF NOT EXISTS candidate_sessions_expiry ON candidate_sessions(expires_at); CREATE INDEX IF NOT EXISTS switch_requests_created_at ON switch_requests(created_at); CREATE UNIQUE INDEX IF NOT EXISTS candidate_sessions_one_active ON candidate_sessions((1)) WHERE status IN ('preparing', 'awaiting_pairing', 'connecting', 'ready');");
+  db.exec('CREATE TABLE IF NOT EXISTS outbound_diagnostics (seq INTEGER PRIMARY KEY AUTOINCREMENT, trace TEXT NOT NULL, event TEXT NOT NULL, jid_kind TEXT NOT NULL, created_at INTEGER NOT NULL); CREATE INDEX IF NOT EXISTS outbound_diagnostics_time ON outbound_diagnostics(created_at); CREATE INDEX IF NOT EXISTS outbound_diagnostics_trace ON outbound_diagnostics(trace, created_at);');
   const seal = (value) => {
     const nonce = randomBytes(12);
     const cipher = createCipheriv('aes-256-gcm', key, nonce);
@@ -241,6 +246,33 @@ export function openStore(path, key) {
     outboundMessageTrace(messageKey, sessionId, now = Date.now()) {
       return outboundMessageEntry(messageKey, sessionId, now)?.trace || null;
     },
+    outboundDiagnosticTrace(messageKey, sessionId) {
+      if (!OUTBOUND_MESSAGE_ID.test(messageKey?.id || '') || messageKey?.fromMe !== true
+          || typeof sessionId !== 'string' || sessionId.length < 1 || sessionId.length > 256) return null;
+      return digest('outbound-diagnostic', `${sessionId}\n${messageKey.id}`).slice(0, 16);
+    },
+    recordOutboundDiagnostic(trace, event, jidKind, now = Date.now()) {
+      if (!/^[a-f0-9]{16}$/.test(trace || '') || !DIAGNOSTIC_EVENTS.has(event)
+          || !['pn', 'lid', 'unknown'].includes(jidKind) || !Number.isSafeInteger(now)) return false;
+      db.exec('BEGIN IMMEDIATE');
+      try {
+        db.prepare('DELETE FROM outbound_diagnostics WHERE created_at <= ?').run(now - DIAGNOSTIC_TTL_MS);
+        db.prepare('INSERT INTO outbound_diagnostics (trace, event, jid_kind, created_at) VALUES (?, ?, ?, ?)')
+          .run(trace, event, jidKind, now);
+        db.prepare('DELETE FROM outbound_diagnostics WHERE seq IN (SELECT seq FROM outbound_diagnostics ORDER BY seq DESC LIMIT -1 OFFSET ?)')
+          .run(DIAGNOSTIC_LIMIT);
+        db.exec('COMMIT');
+        return true;
+      } catch { db.exec('ROLLBACK'); return false; }
+    },
+    recentOutboundDiagnostics(trace = null, now = Date.now()) {
+      if (trace !== null && !/^[a-f0-9]{16}$/.test(trace)) return [];
+      const cutoff = now - DIAGNOSTIC_TTL_MS;
+      const rows = trace
+        ? db.prepare('SELECT trace, event, jid_kind, created_at FROM outbound_diagnostics WHERE trace=? AND created_at>? ORDER BY seq DESC LIMIT 64').all(trace, cutoff)
+        : db.prepare('SELECT trace, MAX(created_at) AS created_at FROM outbound_diagnostics WHERE created_at>? GROUP BY trace ORDER BY created_at DESC LIMIT 30').all(cutoff);
+      return rows;
+    },
     reservePairing(id, phone) {
       const keyHash = digest('pairing-request', id);
       const phoneHash = digest('pairing-phone', phone);
@@ -270,10 +302,11 @@ export function openStore(path, key) {
     cleanup(now = Date.now()) {
       const sendChanges = db.prepare('DELETE FROM sends WHERE created_at < ?').run(now - 35 * 86400000).changes;
       const outboundChanges = db.prepare('DELETE FROM outbound_messages WHERE expires_at <= ?').run(now).changes;
+      const diagnosticChanges = db.prepare('DELETE FROM outbound_diagnostics WHERE created_at <= ?').run(now - DIAGNOSTIC_TTL_MS).changes;
       const pairingChanges = db.prepare('DELETE FROM pairing_requests WHERE created_at < ?').run(now - 900000).changes;
       const switchChanges = db.prepare('DELETE FROM switch_requests WHERE created_at < ?').run(now - 900000).changes;
       db.exec('BEGIN IMMEDIATE');
-      try { const candidateChanges = expireCandidates(now); db.exec('COMMIT'); return sendChanges + outboundChanges + pairingChanges + switchChanges + candidateChanges; }
+      try { const candidateChanges = expireCandidates(now); db.exec('COMMIT'); return sendChanges + outboundChanges + diagnosticChanges + pairingChanges + switchChanges + candidateChanges; }
       catch (error) { db.exec('ROLLBACK'); throw error; }
     },
     recoverCandidatesAfterRestart(now = Date.now()) {
