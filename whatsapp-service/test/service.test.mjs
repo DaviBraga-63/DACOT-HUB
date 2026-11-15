@@ -19,8 +19,15 @@ test('sanitized diagnostics persist, expire, remain bounded and distinguish mess
     assert.equal(store.recordOutboundDiagnostic(first, 'error', 'pn', 1001), true);
     assert.equal(store.recordOutboundDiagnostic(second, 'delivery_ack', 'lid', 1002), true);
     assert.equal(store.recordOutboundDiagnostic(first, 'arbitrary', 'pn', 1003), false);
-    assert.equal(store.outboundDiagnosticTrace({ id: 'same-id', fromMe: true, remoteJid: 'a@s.whatsapp.net' }, 'session'),
-      store.outboundDiagnosticTrace({ id: 'same-id', fromMe: true, remoteJid: 'b@lid' }, 'session'));
+    const diagnosticId = 'same-id', sessionId = 'session';
+    const expectedTrace = createHmac('sha256', key).update('outbound-diagnostic').update('\0')
+      .update(`${sessionId}\n${diagnosticId}`).digest('hex').slice(0, 16);
+    assert.equal(store.outboundDiagnosticTrace({ id: diagnosticId, fromMe: true, remoteJid: 'a@s.whatsapp.net' }, sessionId), expectedTrace);
+    // Baileys 6.7.24 emits direct receipt updates with fromMe=false and can
+    // normalize the recipient from PN to LID. Both must retain the trace.
+    assert.equal(store.outboundDiagnosticTrace({ id: diagnosticId, fromMe: false, remoteJid: 'b@lid' }, sessionId), expectedTrace);
+    assert.notEqual(store.outboundDiagnosticTrace({ id: diagnosticId, fromMe: false }, 'other-session'), expectedTrace);
+    assert.notEqual(store.outboundDiagnosticTrace({ id: 'different-id', fromMe: false }, sessionId), expectedTrace);
     store.close();
     assert.equal(readFileSync(path).includes(Buffer.from('5511912345678')), false);
     store = openStore(path, key);
@@ -348,7 +355,8 @@ test('Baileys retry callback returns only the original cached transaction and do
     assert.equal(socketConfig.maxMsgRetryCount, 3);
     assert.deepEqual(await socketConfig.getMessage(messageKey), { conversation: 'transactional retry body' });
     assert.equal(await socketConfig.getMessage({ ...messageKey, remoteJid: '5511988888888@s.whatsapp.net' }), undefined);
-    events.emit('messages.update', [{ key: messageKey, update: { status: 2 } }]);
+    // Direct receipt keys in Baileys 6.7.24 can be marked fromMe=false.
+    events.emit('messages.update', [{ key: { ...messageKey, fromMe: false, remoteJid: '5511912345678@lid' }, update: { status: 2 } }]);
     assert.deepEqual(outboundEvents.map(({ kind, status }) => [kind, status]), [
       ['submitted', undefined], ['retry_requested', undefined], ['retry_served', undefined],
       ['retry_requested', undefined], ['retry_unavailable', undefined], ['status', 2],

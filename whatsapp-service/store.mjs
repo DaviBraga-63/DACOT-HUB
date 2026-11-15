@@ -247,7 +247,10 @@ export function openStore(path, key) {
       return outboundMessageEntry(messageKey, sessionId, now)?.trace || null;
     },
     outboundDiagnosticTrace(messageKey, sessionId) {
-      if (!OUTBOUND_MESSAGE_ID.test(messageKey?.id || '') || messageKey?.fromMe !== true
+      // Baileys emits direct-message receipt keys with fromMe=false when the
+      // receipt carries a recipient. The outbound id remains the stable,
+      // non-reversible correlation value across PN and LID forms.
+      if (!OUTBOUND_MESSAGE_ID.test(messageKey?.id || '')
           || typeof sessionId !== 'string' || sessionId.length < 1 || sessionId.length > 256) return null;
       return digest('outbound-diagnostic', `${sessionId}\n${messageKey.id}`).slice(0, 16);
     },
