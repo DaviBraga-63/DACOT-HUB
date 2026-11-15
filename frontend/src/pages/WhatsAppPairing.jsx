@@ -56,6 +56,13 @@ export default function WhatsAppPairing() {
   const [switchCode, setSwitchCode] = useState("");
   const [switchError, setSwitchError] = useState("");
   const [switchBusy, setSwitchBusy] = useState(false);
+  const [diagnosticItems, setDiagnosticItems] = useState([]);
+  const [diagnosticEvents, setDiagnosticEvents] = useState([]);
+  const [diagnosticBusy, setDiagnosticBusy] = useState(false);
+  const [diagnosticError, setDiagnosticError] = useState(false);
+  const [diagnosticQueried, setDiagnosticQueried] = useState(false);
+  const [diagnosticSelected, setDiagnosticSelected] = useState(false);
+  const diagnosticBusyRef = useRef(false);
   const statusRequestGate = useRef(null);
   if (!statusRequestGate.current) statusRequestGate.current = createLatestRequestGate();
 
@@ -83,6 +90,21 @@ export default function WhatsAppPairing() {
   }, [loadStatus, user?.role]);
 
   if (user?.role !== "super_admin") return <Navigate to="/painel" replace />;
+
+  async function loadDiagnostics(trace = null) {
+    if (diagnosticBusyRef.current) return;
+    diagnosticBusyRef.current = true;
+    setDiagnosticBusy(true); setDiagnosticError(false); setDiagnosticQueried(false);
+    try {
+      const { data } = await api.get("/hub/whatsapp/outbound-diagnostics", trace ? { params: { trace } } : undefined);
+      if (!Array.isArray(data?.events)) throw new Error("Invalid diagnostics");
+      if (trace) { setDiagnosticSelected(true); setDiagnosticEvents(data.events.filter(item => item.trace === trace
+        && ["submitted", "server_ack", "delivery_ack", "read", "played", "error", "retry_requested", "retry_served", "retry_unavailable", "retry_failed"].includes(item.event))); }
+      else { setDiagnosticSelected(false); setDiagnosticItems(data.events.filter(item => /^[a-f0-9]{16}$/.test(item?.trace || ""))); setDiagnosticEvents([]); }
+      setDiagnosticQueried(true);
+    } catch { setDiagnosticError(true); }
+    finally { diagnosticBusyRef.current = false; setDiagnosticBusy(false); }
+  }
 
   const connection = connectionDetails(status);
   const pairingEnabled = status?.pairing_self_service_enabled === true;
@@ -326,6 +348,26 @@ export default function WhatsAppPairing() {
           </article>
         </div>
       </div>
+      <article className="dh-card p-6" style={{ borderRadius: 0 }}>
+        <h2 className="text-xl font-semibold text-[var(--dh-text)]">Diagnóstico de entrega</h2>
+        <p className="mt-2 text-sm text-[var(--dh-muted)]">Eventos sanitizados das últimas 24 horas. A ausência de recibo não comprova falha.</p>
+        <button type="button" className="dh-btn dh-btn-outline mt-4" disabled={diagnosticBusy}
+                onClick={() => void loadDiagnostics()}>Consultar mensagens recentes</button>
+        {diagnosticError && <p role="alert" className="mt-3 text-sm text-[var(--dh-muted)]">Diagnóstico indisponível.</p>}
+        {diagnosticQueried && ((!diagnosticSelected && diagnosticItems.length === 0) || (diagnosticSelected && diagnosticEvents.length === 0)) &&
+          <p className="mt-3 text-sm text-[var(--dh-muted)]">Sem eventos suficientes para concluir entrega ou falha.</p>}
+        <div className="mt-4 flex flex-wrap gap-2">
+          {diagnosticItems.map(item => <button type="button" key={item.trace} className="dh-btn dh-btn-outline"
+            disabled={diagnosticBusy} onClick={() => void loadDiagnostics(item.trace)}>
+            {item.trace} · {new Date(item.created_at).toLocaleString("pt-BR")}
+          </button>)}
+        </div>
+        {diagnosticEvents.length > 0 && <ol className="mt-4 space-y-1 text-sm text-[var(--dh-text)]">
+          {diagnosticEvents.map((item, index) => <li key={`${item.created_at}-${index}`}>
+            {new Date(item.created_at).toLocaleString("pt-BR")} · {item.event} · {item.jid_kind}
+          </li>)}
+        </ol>}
+      </article>
     </section>
   );
 }

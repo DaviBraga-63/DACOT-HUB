@@ -53,6 +53,7 @@ export function createGateway({ secret, adminSecret, pairingSecret, switchSecret
       const administrative = ['/internal/status', '/internal/pairing', '/internal/pairing/reset'].includes(path);
       const pairing = path === '/internal/pairing/code';
       const integrationStatus = path === '/internal/integration-status';
+      const diagnosticMatch = /^\/internal\/outbound-diagnostics(?:\?trace=([a-f0-9]{16}))?$/.exec(path || '');
       const switchMatch = /^\/internal\/account-switch\/([a-f0-9]{32,64})\/(prepare|status|code|promote|cancel)$/.exec(path || '');
       if (switchMatch) {
         if (!validSwitchSignature({ method, path, id, rawBody, timestamp, signature, authorization })) return { status: 401 };
@@ -87,14 +88,23 @@ export function createGateway({ secret, adminSecret, pairingSecret, switchSecret
       const expected = administrative ? adminSecret : (pairing ? pairingSecret : secret);
       if (!authorization?.startsWith('Bearer ') || !sameSecret(authorization.slice(7), expected)) return { status: 401 };
       if (method === 'GET' && path === '/internal/status') return { status: 200, body: { state: connection.state } };
-      if (integrationStatus) {
+      if (integrationStatus || diagnosticMatch) {
         if (method !== 'GET' || !/^[A-Za-z0-9_-]{16,128}$/.test(id || '') || !/^[a-f0-9]{64}$/.test(signature || '')
             || !Buffer.isBuffer(rawBody) || rawBody.length !== 0 || !/^\d{10}$/.test(timestamp || '')
             || Math.abs(Math.floor(now() / 1000) - Number(timestamp)) > 120) return { status: 400 };
-        const signed = `GET\n/internal/integration-status\n${timestamp}\n${id}`;
+        const signed = `GET\n${path}\n${timestamp}\n${id}`;
         const expectedSignature = createHmac('sha256', secret).update(signed).digest('hex');
         if (!sameSecret(signature, expectedSignature)) return { status: 401 };
         if (!reserveStatusRequest(id, Number(timestamp))) return { status: 409 };
+        if (diagnosticMatch) {
+          try {
+            const events = store.recentOutboundDiagnostics(diagnosticMatch[1] || null);
+            return { status: 200, body: { events,
+              conclusion: !diagnosticMatch[1] || !events.some(item =>
+                ['delivery_ack', 'read', 'played', 'error'].includes(item.event))
+                ? 'insufficient_evidence' : 'inspect_events' } };
+          } catch { return { status: 503 }; }
+        }
         return { status: 200, body: {
           connection_state: connection.state,
           pairing_self_service_enabled: pairingEnabled,

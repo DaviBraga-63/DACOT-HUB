@@ -105,21 +105,29 @@ try {
         [proto.WebMessageInfo.Status.DELIVERY_ACK, 'delivery_ack'],
         [proto.WebMessageInfo.Status.READ, 'read'],
         [proto.WebMessageInfo.Status.PLAYED, 'played'],
+        [proto.WebMessageInfo.Status.ERROR, 'error'],
       ]);
       const observeOutboundEvent = ({ kind, key, status }) => {
         const sessionId = activeConnection?.accountId();
         let trace = null;
-        try { trace = sessionId ? store.outboundMessageTrace(key, sessionId) : null; }
+        try { trace = sessionId ? store.outboundDiagnosticTrace(key, sessionId) : null; }
         catch {
           if (kind.startsWith('retry_')) console.error('whatsapp_retry_observability_storage_failure');
           return;
         }
+        const jidKind = key?.remoteJid?.endsWith('@s.whatsapp.net') ? 'pn'
+          : key?.remoteJid?.endsWith('@lid') ? 'lid' : 'unknown';
         if (!trace) {
-          if (kind === 'retry_requested') console.info('whatsapp_retry_requested cache=miss');
+          if (kind === 'retry_requested') console.info('whatsapp_retry_requested trace=unavailable jid_kind=%s', jidKind);
           return;
         }
         const event = kind === 'status' ? statusNames.get(status) : kind;
-        if (event) console.info('whatsapp_outbound_event=%s trace=%s', event, trace);
+        if (event) {
+          try {
+            if (!store.recordOutboundDiagnostic(trace, event, jidKind)) console.error('whatsapp_diagnostic_storage_failure');
+          } catch { console.error('whatsapp_diagnostic_storage_failure'); }
+          console.info('whatsapp_outbound_event=%s trace=%s jid_kind=%s', event, trace, jidKind);
+        }
       };
       activeConnection = createConnection({ makeSocket: makeWASocket, auth, logger,
         loggedOutCode: DisconnectReason.loggedOut,

@@ -53,6 +53,26 @@ def delivery(client, **overrides):
     )
 
 
+def test_diagnostics_query_is_signed_and_rejects_unexpected_payload():
+    trace = "a" * 16
+    client = FakeClient(response=httpx.Response(200, json={
+        "events": [{"trace": trace, "event": "error", "jid_kind": "pn", "created_at": 123}],
+        "conclusion": "inspect_events",
+    }))
+    provider = WhatsAppStatusProvider(service_url="https://whatsapp.example.test", service_key="k" * 40,
+                                      client_factory=fake_factory(client))
+    result = asyncio.run(provider.get_diagnostics(request_id="diagnostic-request-1234", trace=trace))
+    assert result["events"][0]["event"] == "error"
+    _, url, headers, _ = client.calls[0]
+    path = f"/internal/outbound-diagnostics?trace={trace}"
+    assert url.endswith(path)
+    signed = f"GET\n{path}\n{headers['X-DACOT-Timestamp']}\ndiagnostic-request-1234".encode()
+    assert hmac.compare_digest(headers["X-DACOT-Signature"], hmac.new(b"k" * 40, signed, hashlib.sha256).hexdigest())
+    client.response = httpx.Response(200, json={"events": [{"trace": trace, "event": "error",
+        "jid_kind": "pn", "created_at": 123, "secret": "unexpected"}], "conclusion": "inspect_events"})
+    assert asyncio.run(provider.get_diagnostics(request_id="diagnostic-request-5678", trace=trace)) is None
+
+
 def test_delivery_uses_hmac_timestamp_idempotency_and_neutral_phone():
     client = FakeClient()
     token = "A" * 43
