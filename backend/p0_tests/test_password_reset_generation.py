@@ -42,10 +42,12 @@ def test_expiration_and_generation_for_new_tokens(hub, monkeypatch):
     first_doc = tokens.insert_one.call_args.args[0]
     assert timedelta(days=29, hours=23) < first_doc["expires_at"] - before <= timedelta(days=30, seconds=2)
     assert first_doc["token_hash"] == hashlib.sha256(first.encode()).hexdigest()
+    assert first_doc["first_access"] is True
     assert first not in str(first_doc)
     asyncio.run(hub._issue_password_reset(uid, "owner@example.test", "restaurant"))
     recovery_doc = tokens.insert_one.call_args.args[0]
     assert timedelta(hours=23) < recovery_doc["expires_at"] - before <= timedelta(days=1, seconds=2)
+    assert recovery_doc["first_access"] is False
     assert first_doc["generation"] != recovery_doc["generation"]
     assert users.update_one.call_args.args[1]["$set"]["password_reset_generation"] == recovery_doc["generation"]
 
@@ -130,6 +132,21 @@ def test_expired_or_already_used_token_is_rejected(hub, monkeypatch):
     assert exc.value.status_code == 400
     assert tokens.find_one_and_update.call_args.args[0]["used"] is False
     assert "$gt" in tokens.find_one_and_update.call_args.args[0]["expires_at"]
+
+
+def test_reset_context_uses_only_the_persisted_first_access_state(hub, monkeypatch):
+    tokens = SimpleNamespace(find_one=AsyncMock(return_value={"first_access": True}))
+    monkeypatch.setattr(hub, "db", SimpleNamespace(password_reset_tokens=tokens))
+    result = asyncio.run(hub.reset_password_context(hub.ResetPasswordContextIn(token="synthetic")))
+    assert result == {"first_access": True}
+    query = tokens.find_one.await_args.args[0]
+    assert query["token_hash"] == hashlib.sha256(b"synthetic").hexdigest()
+    assert query["used"] is False and "$gt" in query["expires_at"]
+
+    tokens.find_one.return_value = None
+    with pytest.raises(HTTPException) as exc:
+        asyncio.run(hub.reset_password_context(hub.ResetPasswordContextIn(token="expired")))
+    assert exc.value.status_code == 400
 
 
 def test_replacement_invalidates_previous_link_and_new_link_is_single_use(hub, monkeypatch):
