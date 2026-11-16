@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { Eye, EyeOff } from "lucide-react";
 import { api, formatApiErrorDetail } from "@/lib/api";
@@ -9,8 +9,22 @@ export default function ResetPassword() {
   const nav = useNavigate();
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
+  const [firstAccess, setFirstAccess] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState(null);
+
+  useEffect(() => {
+    let current = true;
+    if (!token) return undefined;
+    api.post("/auth/reset-password/context", { token })
+      .then(({ data }) => {
+        if (current) setFirstAccess(data?.first_access === true);
+      })
+      .catch(() => {
+        if (current) setFirstAccess(false);
+      });
+    return () => { current = false; };
+  }, [token]);
 
   const submit = async (e) => {
     e.preventDefault();
@@ -56,7 +70,7 @@ export default function ResetPassword() {
           </div>
           {err && <div className="dh-chip dh-chip-error">{err}</div>}
           <button type="submit" className="dh-btn dh-btn-primary w-full py-3 font-semibold" disabled={busy} data-testid="reset-submit">
-            {busy ? "Salvando…" : "Redefinir senha"}
+            {busy ? "Salvando…" : (firstAccess ? "Criar senha" : "Redefinir senha")}
           </button>
           <Link to="/login" className="block text-center text-[12px] uppercase tracking-widest font-bold text-slate-500 hover:text-slate-700 transition-colors">
             Voltar ao login

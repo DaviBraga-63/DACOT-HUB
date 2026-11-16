@@ -175,7 +175,7 @@ api_router = APIRouter(prefix="/api")
 async def protect_reset_response(request: Request, call_next):
     response = await call_next(request)
     if (request.url.path in {"/reset-password", "/confirm-owner-email", "/confirm-owner-whatsapp",
-                             "/api/auth/reset-password", "/api/auth/confirm-owner-email",
+                             "/api/auth/reset-password", "/api/auth/reset-password/context", "/api/auth/confirm-owner-email",
                              "/api/auth/confirm-owner-whatsapp", "/api/hub/whatsapp/pairing-code"}
             or request.url.path.startswith("/api/hub/whatsapp/account-switch")):
         response.headers["Referrer-Policy"] = "no-referrer"
@@ -492,6 +492,10 @@ class ResetIn(BaseModel):
     password: str = Field(min_length=6)
 
 
+class ResetPasswordContextIn(BaseModel):
+    token: str
+
+
 async def _issue_password_reset(user_id: str, email: str, user_type: str, *, first_access: bool = False,
                                 phone_binding_version: Optional[str] = None,
                                 expires_in: Optional[timedelta] = None,
@@ -522,6 +526,7 @@ async def _issue_password_reset(user_id: str, email: str, user_type: str, *, fir
         # shorter than a normal first-access invite.  It is still consumed only
         # when the password is changed, so reopening its URL is safe until then.
         "owner_transfer_id": owner_transfer_id,
+        "first_access": first_access,
         "used": False, "expires_at": now_utc() + (expires_in or timedelta(days=30 if first_access else 1)),
         "created_at": now_utc(),
     })
@@ -1092,6 +1097,19 @@ async def forgot(payload: ForgotIn, background_tasks: BackgroundTasks, request: 
         raw = await _issue_password_reset(str(user["_id"]), email, ut)
         background_tasks.add_task(send_password_reset_email, user["email"], raw)
     return GENERIC_RESET_RESPONSE
+
+
+@api_router.post("/auth/reset-password/context")
+async def reset_password_context(payload: ResetPasswordContextIn):
+    """Return only the presentation state for a valid, unconsumed reset credential."""
+    h = hashlib.sha256(payload.token.encode()).hexdigest()
+    doc = await db.password_reset_tokens.find_one(
+        {"token_hash": h, "used": False, "expires_at": {"$gt": now_utc()}},
+        {"first_access": 1},
+    )
+    if not doc:
+        raise HTTPException(400, "Token inválido ou expirado")
+    return {"first_access": bool(doc.get("first_access", False))}
 
 
 @api_router.post("/auth/reset-password")
