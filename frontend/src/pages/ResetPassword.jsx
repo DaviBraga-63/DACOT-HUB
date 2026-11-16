@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
+import { Eye, EyeOff } from "lucide-react";
 import { api, formatApiErrorDetail } from "@/lib/api";
 
 export default function ResetPassword() {
@@ -7,6 +8,7 @@ export default function ResetPassword() {
   const token = params.get("token") || "";
   const nav = useNavigate();
   const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState(null);
 
@@ -30,16 +32,27 @@ export default function ResetPassword() {
         <form onSubmit={submit} className="space-y-5">
           <div>
             <label className="block text-[13px] font-semibold text-slate-700 mb-2">Senha</label>
-            <input 
-              type="password" 
-              minLength={6} 
-              required 
-              value={password} 
-              onChange={(e) => setPassword(e.target.value)}
-              className="dh-input" 
-              placeholder="Mínimo 6 caracteres" 
-              data-testid="reset-password" 
-            />
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => setShowPassword((visible) => !visible)}
+                className="absolute inset-y-0 right-0 flex w-10 items-center justify-center text-[var(--dh-muted)] transition-colors hover:text-[var(--dh-accent)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--dh-accent)] focus-visible:ring-inset"
+                aria-label={showPassword ? "Ocultar senha" : "Mostrar senha"}
+                data-testid="toggle-reset-password-visibility"
+              >
+                {showPassword ? <Eye size={18} aria-hidden="true" /> : <EyeOff size={18} aria-hidden="true" />}
+              </button>
+              <input
+                type={showPassword ? "text" : "password"}
+                minLength={6}
+                required
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                className="dh-input pr-10"
+                placeholder="Mínimo 6 caracteres"
+                data-testid="reset-password"
+              />
+            </div>
           </div>
           {err && <div className="dh-chip dh-chip-error">{err}</div>}
           <button type="submit" className="dh-btn dh-btn-primary w-full py-3 font-semibold" disabled={busy} data-testid="reset-submit">
