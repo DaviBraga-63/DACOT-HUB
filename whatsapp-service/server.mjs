@@ -31,6 +31,7 @@ const proxyConnection = {
   get state() { return connection.state; }, get qr() { return connection.qr; },
   send(...args) { return connection.send(...args); }, accountId() { return connection.accountId(); }, resetPairing() { return connection.resetPairing(); },
   requestPairingCode(...args) { return connection.requestPairingCode(...args); },
+  inspectOwnDevices(...args) { return connection.inspectOwnDevices?.(...args) || Promise.resolve({ state: 'unavailable' }); },
 };
 const gateway = createGateway({ secret: env.WHATSAPP_SERVICE_SECRET, adminSecret: env.WHATSAPP_ADMIN_SECRET,
   pairingSecret: env.WHATSAPP_PAIRING_SERVICE_SECRET,

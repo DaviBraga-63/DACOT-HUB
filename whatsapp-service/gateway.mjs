@@ -54,6 +54,7 @@ export function createGateway({ secret, adminSecret, pairingSecret, switchSecret
       const pairing = path === '/internal/pairing/code';
       const integrationStatus = path === '/internal/integration-status';
       const diagnosticMatch = /^\/internal\/outbound-diagnostics(?:\?trace=([a-f0-9]{16}))?$/.exec(path || '');
+      const ownDeviceDiagnostic = path === '/internal/own-device-sync-diagnostics';
       const switchMatch = /^\/internal\/account-switch\/([a-f0-9]{32,64})\/(prepare|status|code|promote|cancel)$/.exec(path || '');
       if (switchMatch) {
         if (!validSwitchSignature({ method, path, id, rawBody, timestamp, signature, authorization })) return { status: 401 };
@@ -88,7 +89,7 @@ export function createGateway({ secret, adminSecret, pairingSecret, switchSecret
       const expected = administrative ? adminSecret : (pairing ? pairingSecret : secret);
       if (!authorization?.startsWith('Bearer ') || !sameSecret(authorization.slice(7), expected)) return { status: 401 };
       if (method === 'GET' && path === '/internal/status') return { status: 200, body: { state: connection.state } };
-      if (integrationStatus || diagnosticMatch) {
+      if (integrationStatus || diagnosticMatch || ownDeviceDiagnostic) {
         if (method !== 'GET' || !/^[A-Za-z0-9_-]{16,128}$/.test(id || '') || !/^[a-f0-9]{64}$/.test(signature || '')
             || !Buffer.isBuffer(rawBody) || rawBody.length !== 0 || !/^\d{10}$/.test(timestamp || '')
             || Math.abs(Math.floor(now() / 1000) - Number(timestamp)) > 120) return { status: 400 };
@@ -104,6 +105,14 @@ export function createGateway({ secret, adminSecret, pairingSecret, switchSecret
                 ['delivery_ack', 'read', 'played', 'error'].includes(item.event))
                 ? 'insufficient_evidence' : 'inspect_events' } };
           } catch { return { status: 503 }; }
+        }
+        if (ownDeviceDiagnostic) {
+          try {
+            const result = await connection.inspectOwnDevices?.();
+            return result?.state === 'collected'
+              ? { status: 200, body: result }
+              : { status: 503, body: { state: 'unavailable' } };
+          } catch { return { status: 503, body: { state: 'unavailable' } }; }
         }
         return { status: 200, body: {
           connection_state: connection.state,

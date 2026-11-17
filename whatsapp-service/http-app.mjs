@@ -5,6 +5,7 @@ import { readFileSync } from 'node:fs';
 const adminPaths = new Set(['/internal/status', '/internal/pairing', '/internal/pairing/reset']);
 const serviceStatusPath = '/internal/integration-status';
 const diagnosticPath = /^\/internal\/outbound-diagnostics(?:\?trace=[a-f0-9]{16})?$/;
+const ownDeviceDiagnosticPath = '/internal/own-device-sync-diagnostics';
 const accountSwitchPath = /^\/internal\/account-switch\/[a-f0-9]{32,64}\/(prepare|status|code|promote|cancel)$/;
 
 export function createListener({ gateway, administrative = false, tls, now = Date.now }) {
@@ -24,7 +25,7 @@ export function createListener({ gateway, administrative = false, tls, now = Dat
       if (!adminPaths.has(req.url)) return reply(404);
       if ((req.url === '/internal/pairing/reset' ? 'POST' : 'GET') !== req.method) return reply(405);
     } else {
-      const isStatusRequest = (req.url === serviceStatusPath || diagnosticPath.test(req.url || '')) && req.method === 'GET';
+      const isStatusRequest = (req.url === serviceStatusPath || req.url === ownDeviceDiagnosticPath || diagnosticPath.test(req.url || '')) && req.method === 'GET';
       const isServicePost = ['/internal/auth-messages', '/internal/pairing/code'].includes(req.url) && req.method === 'POST';
       const isSwitchRequest = accountSwitchPath.test(req.url || '')
         && ((req.url.endsWith('/status') && req.method === 'GET') || (!req.url.endsWith('/status') && req.method === 'POST'));

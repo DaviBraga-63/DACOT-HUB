@@ -365,6 +365,60 @@ test('Baileys retry callback returns only the original cached transaction and do
   } finally { connection?.stop(); store.close(); removeTestDirectory(dir); }
 });
 
+test('own-device inspection is aggregate-only, refreshes once, and never sends a message', async () => {
+  const events = new EventEmitter(), calls = [];
+  const sessionId = '5511987654321:2@s.whatsapp.net';
+  let sends = 0, saves = 0;
+  const socket = {
+    ev: events, user: { id: sessionId }, end() {},
+    async sendMessage() { sends++; },
+    async getUSyncDevices(jids, useCache, ignoreZeroDevices) {
+      calls.push([jids, useCache, ignoreZeroDevices]);
+      return useCache
+        ? [{ jid: '5511987654321:3@s.whatsapp.net' }, { jid: 'opaque@lid' }]
+        : [{ jid: '5511987654321:3@s.whatsapp.net' }, { jid: 'opaque@lid' }, { jid: 'other@invalid' }];
+    },
+  };
+  const connection = createConnection({ makeSocket: () => socket,
+    auth: { state: { creds: { me: { id: sessionId } } }, saveCreds() { saves++; }, reset() {} }, logger: {}, loggedOutCode: 401 });
+  events.emit('connection.update', { connection: 'open' });
+  const result = await connection.inspectOwnDevices();
+  assert.deepEqual(result, {
+    state: 'collected', base_own_copy_for_pn_direct: true,
+    cache_probe: { total: 2, pn: 1, lid: 1, unknown: 0 },
+    refreshed_probe: { total: 3, pn: 1, lid: 1, unknown: 1 },
+    aggregate_changed: true, identity_difference: 'not_collected',
+  });
+  assert.deepEqual(calls, [[[sessionId], true, true], [[sessionId], false, true]]);
+  assert.deepEqual(await connection.inspectOwnDevices(), result, 'only one pair of USync reads is allowed per socket');
+  assert.equal(sends, 0);
+  assert.equal(saves, 0);
+  connection.stop();
+});
+
+test('own-device inspection endpoint requires the existing signed internal contract', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dacot-wa-'));
+  try {
+    const store = openStore(join(dir, 'state.sqlite'), randomBytes(32));
+    const secret = 'x'.repeat(32), path = '/internal/own-device-sync-diagnostics';
+    let calls = 0;
+    const gateway = createGateway({ secret, adminSecret: 'y'.repeat(32), frontendOrigin: 'https://hub.example.test',
+      connection: { state: 'open', async inspectOwnDevices() { calls++; return { state: 'collected', base_own_copy_for_pn_direct: true,
+        cache_probe: { total: 1, pn: 1, lid: 0, unknown: 0 }, refreshed_probe: { total: 1, pn: 1, lid: 0, unknown: 0 },
+        aggregate_changed: false, identity_difference: 'not_collected' }; } }, store });
+    const id = 'own-device-diagnostic-request', timestamp = String(Math.floor(Date.now() / 1000));
+    const signature = createHmac('sha256', secret).update(`GET\n${path}\n${timestamp}\n${id}`).digest('hex');
+    const request = { method: 'GET', path, id, timestamp, signature, rawBody: Buffer.alloc(0), authorization: `Bearer ${secret}` };
+    assert.equal((await gateway.handle({ ...request, authorization: 'Bearer invalid' })).status, 401);
+    assert.deepEqual(await gateway.handle(request), { status: 200, body: { state: 'collected', base_own_copy_for_pn_direct: true,
+      cache_probe: { total: 1, pn: 1, lid: 0, unknown: 0 }, refreshed_probe: { total: 1, pn: 1, lid: 0, unknown: 0 },
+      aggregate_changed: false, identity_difference: 'not_collected' } });
+    assert.equal(calls, 1);
+    assert.equal((await gateway.handle(request)).status, 409);
+    store.close();
+  } finally { removeTestDirectory(dir); }
+});
+
 test('a retry-cache storage failure leaves the auth-message request indeterminate', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'dacot-wa-'));
   try {
