@@ -46,10 +46,14 @@ test('public listener health contains no private state and all administrative ro
       headers: { Authorization: 'Bearer synthetic', 'Idempotency-Key': 'integration-status-request' },
     })).status, 401);
     assert.equal(calls, 1);
+    assert.equal((await fetch(`${base}/internal/own-device-sync-diagnostics`, {
+      headers: { Authorization: 'Bearer synthetic', 'Idempotency-Key': 'own-device-sync-request' },
+    })).status, 401);
+    assert.equal(calls, 2);
     assert.equal((await fetch(`${base}/internal/auth-messages`, { method: 'POST', body: '{}' })).status, 401);
-    assert.equal(calls, 2);
+    assert.equal(calls, 3);
     assert.equal((await fetch(`${base}/internal/auth-messages`, { method: 'POST', body: 'x'.repeat(4097) })).status, 413);
-    assert.equal(calls, 2);
+    assert.equal(calls, 3);
   });
 });
 
@@ -106,6 +110,14 @@ test('real entrypoint starts in maintenance without importing Baileys or touchin
       method: 'POST', body, headers: { Authorization: `Bearer ${secret}`, 'X-DACOT-Timestamp': timestamp,
         'X-DACOT-Signature': signed, 'Idempotency-Key': createHash('sha256').update(token).digest('hex') } });
     assert.equal(unavailable.status, 503);
+    const id = 'own-device-maintenance-request', diagnosticPath = '/internal/own-device-sync-diagnostics';
+    const diagnosticSignature = createHmac('sha256', secret).update(`GET\n${diagnosticPath}\n${timestamp}\n${id}`).digest('hex');
+    const diagnostic = await fetch(`http://127.0.0.1:${port}${diagnosticPath}`, { headers: {
+      Authorization: `Bearer ${secret}`, 'X-DACOT-Timestamp': timestamp,
+      'X-DACOT-Signature': diagnosticSignature, 'Idempotency-Key': id,
+    } });
+    assert.deepEqual(await diagnostic.json(), { state: 'unavailable' });
+    assert.equal(diagnostic.status, 503);
     assert.equal((await fetch(`http://127.0.0.1:${port}/internal/pairing`, { headers: { Authorization: `Bearer ${adminSecret}` } })).status, 404);
     assert.equal(errors.includes(secret) || errors.includes(adminSecret) || errors.includes(pairingSecret), false);
   } finally {

@@ -73,6 +73,27 @@ def test_diagnostics_query_is_signed_and_rejects_unexpected_payload():
     assert asyncio.run(provider.get_diagnostics(request_id="diagnostic-request-5678", trace=trace)) is None
 
 
+def test_own_device_sync_diagnostics_are_signed_and_aggregate_only():
+    payload = {
+        "state": "collected", "base_own_copy_for_pn_direct": True,
+        "cache_probe": {"total": 2, "pn": 2, "lid": 0, "unknown": 0},
+        "refreshed_probe": {"total": 3, "pn": 2, "lid": 1, "unknown": 0},
+        "aggregate_changed": True, "identity_difference": "not_collected",
+    }
+    client = FakeClient(response=httpx.Response(200, json=payload))
+    provider = WhatsAppStatusProvider(service_url="https://whatsapp.example.test", service_key="k" * 40,
+                                      client_factory=fake_factory(client))
+    result = asyncio.run(provider.get_own_device_sync_diagnostics(request_id="own-device-diagnostic-1234"))
+    assert result == payload
+    _, url, headers, _ = client.calls[0]
+    path = "/internal/own-device-sync-diagnostics"
+    assert url.endswith(path)
+    signed = f"GET\n{path}\n{headers['X-DACOT-Timestamp']}\nown-device-diagnostic-1234".encode()
+    assert hmac.compare_digest(headers["X-DACOT-Signature"], hmac.new(b"k" * 40, signed, hashlib.sha256).hexdigest())
+    client.response = httpx.Response(200, json={**payload, "device": "unexpected"})
+    assert asyncio.run(provider.get_own_device_sync_diagnostics(request_id="own-device-diagnostic-5678")) is None
+
+
 def test_delivery_uses_hmac_timestamp_idempotency_and_neutral_phone():
     client = FakeClient()
     token = "A" * 43

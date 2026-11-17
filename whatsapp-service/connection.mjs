@@ -1,7 +1,7 @@
 export function createConnection({ makeSocket, auth, logger, loggedOutCode, schedule = setTimeout,
   maxReconnectAttempts = 8, maxReconnectDelayMs = 60000, maxMessageRetries = 3,
   getMessage = async () => undefined, retainMessage = async () => {}, onOutboundEvent = () => {}, onStateChange }) {
-  let socket, stopped = false, reconnectScheduled = false, reconnectAttempts = 0;
+  let socket, stopped = false, reconnectScheduled = false, reconnectAttempts = 0, ownDeviceInspection = null;
   const connection = {
     state: 'connecting', qr: null,
     accountId() {
@@ -23,6 +23,48 @@ export function createConnection({ makeSocket, auth, logger, loggedOutCode, sche
       // connection.  Never expose the socket or QR outside this narrow method.
       if (!socket || !['connecting', 'pairing'].includes(connection.state)) throw new Error('Pairing unavailable');
       return socket.requestPairingCode(number);
+    },
+    async inspectOwnDevices() {
+      // Baileys exposes this helper on the active socket. It performs only a
+      // USync device-directory read; it does not call relayMessage,
+      // assertSessions, or touch the Signal key store. The forced second read
+      // deliberately refreshes the in-memory device cache, so run it at most
+      // once per socket and expose aggregates only.
+      if (ownDeviceInspection) return ownDeviceInspection;
+      if (connection.state !== 'open' || !socket || typeof socket.getUSyncDevices !== 'function')
+        return { state: 'unavailable' };
+      const sessionId = connection.accountId();
+      if (!sessionId) return { state: 'unavailable' };
+      ownDeviceInspection = (async () => {
+        try {
+          const cachedDevices = await socket.getUSyncDevices([sessionId], true, true);
+          const refreshedDevices = await socket.getUSyncDevices([sessionId], false, true);
+          const summarize = devices => {
+            const summary = { total: 0, pn: 0, lid: 0, unknown: 0 };
+            for (const device of Array.isArray(devices) ? devices : []) {
+              summary.total += 1;
+              if (typeof device?.jid === 'string' && device.jid.endsWith('@s.whatsapp.net')) summary.pn += 1;
+              else if (typeof device?.jid === 'string' && device.jid.endsWith('@lid')) summary.lid += 1;
+              else summary.unknown += 1;
+            }
+            return summary;
+          };
+          const cacheProbe = summarize(cachedDevices), refreshedProbe = summarize(refreshedDevices);
+          return {
+            state: 'collected',
+            // For a PN direct message Baileys separately constructs the bare
+            // own-account DSM copy before adding USync-discovered companions.
+            base_own_copy_for_pn_direct: true,
+            cache_probe: cacheProbe,
+            refreshed_probe: refreshedProbe,
+            aggregate_changed: Object.keys(cacheProbe).some(key => cacheProbe[key] !== refreshedProbe[key]),
+            identity_difference: 'not_collected',
+          };
+        } catch {
+          return { state: 'unavailable' };
+        }
+      })();
+      return ownDeviceInspection;
     },
     resetPairing() {
       if (connection.state !== 'logged_out' || stopped) return false;
@@ -94,6 +136,8 @@ export function createConnection({ makeSocket, auth, logger, loggedOutCode, sche
       return;
     }
     socket = nextSocket;
+    // A replacement socket owns a different in-memory Baileys device cache.
+    ownDeviceInspection = null;
     nextSocket.ev.on('creds.update', () => {
       if (stopped || socket !== nextSocket) return;
       try { auth.saveCreds(); }

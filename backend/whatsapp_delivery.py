@@ -157,6 +157,45 @@ class WhatsAppPairingProvider(_WhatsAppServiceClient):
 
 
 class WhatsAppStatusProvider(_WhatsAppServiceClient):
+    async def get_own_device_sync_diagnostics(self, *, request_id: str) -> dict | None:
+        """Fetch one aggregate-only USync comparison through the signed channel."""
+        if not self._valid_config() or not re.fullmatch(r"[A-Za-z0-9_-]{16,128}", request_id or ""):
+            return None
+        path = "/internal/own-device-sync-diagnostics"
+        timestamp = str(int(time.time()))
+        signed = f"GET\n{path}\n{timestamp}\n{request_id}".encode()
+        signature = hmac.new(self.service_key.encode(), signed, hashlib.sha256).hexdigest()
+        try:
+            async with self.client_factory(**self._client_options(timeout=8.0)) as client:
+                response = await client.get(f"{self.service_url}{path}", headers={
+                    "Authorization": f"Bearer {self.service_key}", "Idempotency-Key": request_id,
+                    "X-DACOT-Timestamp": timestamp, "X-DACOT-Signature": signature,
+                })
+            data = response.json()
+            if response.status_code != 200 or not isinstance(data, dict):
+                return None
+            expected = {"state", "base_own_copy_for_pn_direct", "cache_probe", "refreshed_probe",
+                        "aggregate_changed", "identity_difference"}
+            if set(data) != expected or data.get("state") != "collected" or data.get("base_own_copy_for_pn_direct") is not True:
+                return None
+            if data.get("aggregate_changed") not in {True, False} or data.get("identity_difference") != "not_collected":
+                return None
+            probes = []
+            for name in ("cache_probe", "refreshed_probe"):
+                probe = data.get(name)
+                if not isinstance(probe, dict) or set(probe) != {"total", "pn", "lid", "unknown"}:
+                    return None
+                if any(type(probe[key]) is not int or not 0 <= probe[key] <= 64 for key in probe):
+                    return None
+                if probe["total"] != probe["pn"] + probe["lid"] + probe["unknown"]:
+                    return None
+                probes.append({key: probe[key] for key in ("total", "pn", "lid", "unknown")})
+            return {"state": "collected", "base_own_copy_for_pn_direct": True,
+                    "cache_probe": probes[0], "refreshed_probe": probes[1],
+                    "aggregate_changed": data["aggregate_changed"], "identity_difference": "not_collected"}
+        except (httpx.HTTPError, ValueError, OSError, json.JSONDecodeError):
+            return None
+
     async def get_diagnostics(self, *, request_id: str, trace: str | None = None) -> dict | None:
         if (not self._valid_config() or not re.fullmatch(r"[A-Za-z0-9_-]{16,128}", request_id or "")
                 or (trace is not None and not re.fullmatch(r"[a-f0-9]{16}", trace))):

@@ -725,6 +725,22 @@ async def whatsapp_outbound_diagnostics(response: Response, trace: Optional[str]
     return result
 
 
+@api_router.get("/hub/whatsapp/own-device-sync-diagnostics")
+async def whatsapp_own_device_sync_diagnostics(response: Response, _user: dict = Depends(get_super_admin)):
+    provider = WhatsAppStatusProvider(
+        service_url=os.environ.get("WHATSAPP_SERVICE_URL", ""),
+        service_key=os.environ.get("WHATSAPP_SERVICE_SECRET", ""),
+        ca_file=os.environ.get("WHATSAPP_SERVICE_CA_FILE") or None,
+        service_transport=os.environ.get("WHATSAPP_SERVICE_TRANSPORT", "https"),
+    )
+    result = await provider.get_own_device_sync_diagnostics(request_id=secrets.token_urlsafe(24))
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    if result is None:
+        raise HTTPException(503, "Diagnóstico indisponível")
+    return result
+
+
 @api_router.post("/hub/whatsapp/pairing-code")
 async def request_whatsapp_pairing_code(payload: WhatsAppPairingCodeIn, response: Response,
                                         user: dict = Depends(get_super_admin)):
