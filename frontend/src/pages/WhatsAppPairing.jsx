@@ -63,6 +63,11 @@ export default function WhatsAppPairing() {
   const [diagnosticQueried, setDiagnosticQueried] = useState(false);
   const [diagnosticSelected, setDiagnosticSelected] = useState(false);
   const diagnosticBusyRef = useRef(false);
+  const [ownDeviceConfirmed, setOwnDeviceConfirmed] = useState(false);
+  const [ownDeviceBusy, setOwnDeviceBusy] = useState(false);
+  const [ownDeviceAttempted, setOwnDeviceAttempted] = useState(false);
+  const [ownDeviceResult, setOwnDeviceResult] = useState(null);
+  const [ownDeviceError, setOwnDeviceError] = useState("");
   const statusRequestGate = useRef(null);
   if (!statusRequestGate.current) statusRequestGate.current = createLatestRequestGate();
 
@@ -104,6 +109,26 @@ export default function WhatsAppPairing() {
       setDiagnosticQueried(true);
     } catch { setDiagnosticError(true); }
     finally { diagnosticBusyRef.current = false; setDiagnosticBusy(false); }
+  }
+
+  async function collectOwnDeviceDiagnostics() {
+    if (!ownDeviceConfirmed || ownDeviceBusy || ownDeviceAttempted) return;
+    // One deliberate action per loaded administrative page. The gateway applies
+    // the stricter one-per-active-socket limit before it performs USync.
+    setOwnDeviceAttempted(true);
+    setOwnDeviceBusy(true);
+    setOwnDeviceError("");
+    try {
+      const { data } = await api.get("/hub/whatsapp/own-device-sync-diagnostics");
+      const isProbe = (probe) => probe && ["total", "pn", "lid", "unknown"].every((key) =>
+        Number.isInteger(probe[key]) && probe[key] >= 0 && probe[key] <= 64);
+      if (data?.state !== "collected" || data?.base_own_copy_for_pn_direct !== true
+          || typeof data.aggregate_changed !== "boolean" || !isProbe(data.cache_probe)
+          || !isProbe(data.refreshed_probe)) throw new Error("Invalid own-device diagnostics");
+      setOwnDeviceResult(data);
+    } catch {
+      setOwnDeviceError("Não foi possível concluir o diagnóstico nesta sessão.");
+    } finally { setOwnDeviceBusy(false); }
   }
 
   const connection = connectionDetails(status);
@@ -367,6 +392,31 @@ export default function WhatsAppPairing() {
             {new Date(item.created_at).toLocaleString("pt-BR")} · {item.event} · {item.jid_kind}
           </li>)}
         </ol>}
+      </article>
+      <article className="dh-card p-6" style={{ borderRadius: 0 }} data-testid="own-device-sync-diagnostics">
+        <h2 className="text-xl font-semibold text-[var(--dh-text)]">Diagnóstico de sincronização</h2>
+        <p className="mt-2 max-w-3xl text-sm text-[var(--dh-muted)]">
+          Compara, uma única vez, as contagens agregadas de dispositivos próprios no cache e em uma consulta USync renovada.
+          Não envia mensagens, não reconecta a sessão e não coleta identificadores de dispositivos.
+        </p>
+        {!ownDeviceAttempted && <div className="mt-4 space-y-4">
+          <label className="flex items-start gap-3 text-sm text-[var(--dh-muted)]">
+            <input type="checkbox" checked={ownDeviceConfirmed} onChange={(event) => setOwnDeviceConfirmed(event.target.checked)} />
+            <span>Confirmo a execução desta coleta única de diagnóstico na sessão WhatsApp ativa.</span>
+          </label>
+          <button type="button" className="dh-btn dh-btn-outline" disabled={!ownDeviceConfirmed || ownDeviceBusy}
+                  onClick={() => void collectOwnDeviceDiagnostics()} data-testid="own-device-sync-diagnostics-run">
+            {ownDeviceBusy ? "Diagnosticando…" : "Diagnosticar sincronização"}
+          </button>
+        </div>}
+        {ownDeviceError && <p role="alert" className="mt-3 text-sm text-[var(--dh-muted)]">{ownDeviceError}</p>}
+        {ownDeviceResult && <div className="mt-4 space-y-2 text-sm text-[var(--dh-text)]" aria-live="polite">
+          <p>Cópia própria base: presente.</p>
+          <p>Cache: {ownDeviceResult.cache_probe.total} dispositivos · PN {ownDeviceResult.cache_probe.pn} · LID {ownDeviceResult.cache_probe.lid} · não classificados {ownDeviceResult.cache_probe.unknown}.</p>
+          <p>Consulta renovada: {ownDeviceResult.refreshed_probe.total} dispositivos · PN {ownDeviceResult.refreshed_probe.pn} · LID {ownDeviceResult.refreshed_probe.lid} · não classificados {ownDeviceResult.refreshed_probe.unknown}.</p>
+          <p>{ownDeviceResult.aggregate_changed ? "As contagens agregadas mudaram após a renovação do cache." : "As contagens agregadas não mudaram após a renovação do cache."}</p>
+          <p className="text-[var(--dh-muted)]">A coleta não identifica dispositivos individuais; portanto, não confirma nem descarta isoladamente o iPhone.</p>
+        </div>}
       </article>
     </section>
   );
