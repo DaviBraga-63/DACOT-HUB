@@ -28,6 +28,14 @@ def _login_with_identifier(service, identifier, password):
     )
 
 
+def _unique_test_phone(service):
+    """Return a valid Brazilian mobile number unused by this disposable DB."""
+    while True:
+        phone = f"+55119{secrets.randbelow(100_000_000):08d}"
+        if not service.db.tenant_users.find_one({"phone_number": phone}):
+            return phone
+
+
 def test_staff_onboarding_always_creates_and_links_the_initial_portal_owner(services):
     service = services
     tag = secrets.token_hex(5)
@@ -102,7 +110,7 @@ def test_onboarding_requires_only_the_contact_selected_for_first_access(services
 def test_confirmed_whatsapp_only_owner_can_login_and_recover_without_email(services):
     service = services
     tag = secrets.token_hex(5)
-    phone = "+5511912345678"
+    phone = _unique_test_phone(service)
     created = service.call("POST", "/hub/tenants/onboard", json={
         "name": f"WhatsApp {tag}", "owner_name": "Responsável WhatsApp",
         "email": "", "mobile_phone": phone, "access_channel": "whatsapp",
@@ -129,7 +137,7 @@ def test_confirmed_whatsapp_only_owner_can_login_and_recover_without_email(servi
         "token": continuation, "password": service.password,
     }, timeout=10)
     assert reset.status_code == 200, reset.text
-    login = _login_with_identifier(service, "(11) 91234-5678", service.password)
+    login = _login_with_identifier(service, phone, service.password)
     assert login.status_code == 200, login.text
 
     recovery = requests.post(service.hub + "/api/auth/forgot-password", json={
