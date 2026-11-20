@@ -21,7 +21,7 @@ def test_staff_onboarding_always_creates_and_links_the_initial_portal_owner(serv
     tag = secrets.token_hex(5)
     email = f"manager-{tag}@example.com"
     with_access = service.call("POST", "/hub/tenants/onboard", json=_onboard_payload(
-        tag, access_name="Gerente inicial", access_email=email,
+        tag, owner_name="Gerente inicial", email=email,
     ))
     assert with_access.status_code == 200, with_access.text
     body = with_access.json()
@@ -32,6 +32,7 @@ def test_staff_onboarding_always_creates_and_links_the_initial_portal_owner(serv
 
     manager = service.db.tenant_users.find_one({"tenant_id": body["id"], "email": email})
     assert manager and manager["role"] == "manager"
+    assert manager["name"] == "Gerente inicial"
     assert manager["user_type"] == "restaurant"
     assert manager["password_reset_required"] is True
     tenant = service.db.tenants.find_one({"_id": ObjectId(body["id"])})
@@ -47,6 +48,40 @@ def test_staff_onboarding_always_creates_and_links_the_initial_portal_owner(serv
     assert service.db.module_user_grants.count_documents({"tenant_id": body["id"]}) == 0
 
 
+def test_onboarding_uses_responsible_and_email_as_the_only_owner_identity(services):
+    """Deprecated duplicate access keys cannot create a second owner identity."""
+    service = services
+    tag = secrets.token_hex(5)
+    response = service.call("POST", "/hub/tenants/onboard", json=_onboard_payload(
+        tag,
+        owner_name="Responsável oficial",
+        email=f"official-{tag}@example.com",
+        # Older clients may still send these fields, but they must never alter
+        # the portal identity selected by the simplified form.
+        access_name="Nome alternativo",
+        access_email=f"alternate-{tag}@example.com",
+        phone="", address="", notes="",
+    ))
+    assert response.status_code == 200, response.text
+    body = response.json()
+    owners = list(service.db.tenant_users.find({"tenant_id": body["id"]}))
+    assert len(owners) == 1
+    assert owners[0]["name"] == "Responsável oficial"
+    assert owners[0]["email"] == f"official-{tag}@example.com"
+    assert body["phone"] == body["mobile_phone"] == body["address"] == body["notes"] == ""
+
+
+def test_legacy_index_release_keeps_email_required_for_whatsapp_invites(services):
+    service = services
+    before = service.db.tenants.count_documents({})
+    response = service.call("POST", "/hub/tenants/onboard", json={
+        "name": "Sem e-mail", "owner_name": "Responsável", "email": "",
+        "mobile_phone": "+5511912345678", "access_channel": "whatsapp",
+    })
+    assert response.status_code == 422
+    assert service.db.tenants.count_documents({}) == before
+
+
 def test_email_delivery_failure_keeps_one_recoverable_owner_without_reporting_success(services):
     service = services
     tag = secrets.token_hex(5)
@@ -55,7 +90,7 @@ def test_email_delivery_failure_keeps_one_recoverable_owner_without_reporting_su
     service.env["DACOT_LOCAL_INTEGRATION"] = "0"
     try:
         service.restart_hub()
-        response = service.call("POST", "/hub/tenants/onboard", json=_onboard_payload(tag, access_email=email))
+        response = service.call("POST", "/hub/tenants/onboard", json=_onboard_payload(tag, email=email))
         assert response.status_code == 200, response.text
         body = response.json()
         assert body["invitation"] == "email_delivery_failed"
@@ -65,7 +100,7 @@ def test_email_delivery_failure_keeps_one_recoverable_owner_without_reporting_su
         assert owner["password_reset_required"] is True
         assert service.db.password_reset_tokens.count_documents({"user_id": str(owner["_id"]), "used": False}) == 1
         duplicate = service.call("POST", "/hub/tenants/onboard", json=_onboard_payload(
-            secrets.token_hex(5), access_email=email,
+            secrets.token_hex(5), email=email,
         ))
         assert duplicate.status_code == 409
     finally:
@@ -104,7 +139,7 @@ def test_onboarding_is_staff_write_only_and_duplicate_access_leaves_no_partial_t
     existing_email = service.db.tenant_users.find_one({"_id": ObjectId(existing["uid"])} )["email"]
     before = service.db.tenants.count_documents({})
     duplicate = service.call("POST", "/hub/tenants/onboard", json=_onboard_payload(
-        secrets.token_hex(5), access_email=existing_email,
+        secrets.token_hex(5), email=existing_email,
     ))
     assert duplicate.status_code == 409
     assert service.db.tenants.count_documents({}) == before

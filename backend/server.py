@@ -1198,8 +1198,6 @@ class TenantOnboardingIn(TenantIn):
     # Retaining this field as Literal[True] gives legacy administrative callers
     # a clear validation error instead of silently recreating ownerless tenants.
     create_hub_access: Literal[True] = True
-    access_name: Optional[str] = Field(default=None, min_length=1, max_length=120)
-    access_email: Optional[EmailStr] = None
     access_channel: str = "email"
 
 class TenantPatch(BaseModel):
@@ -1344,8 +1342,11 @@ async def _create_tenant_with_owner(payload: TenantOnboardingIn, background_task
         raise HTTPException(400, "Telefone móvel do responsável é obrigatório para envio por WhatsApp")
     if doc["mobile_phone"]:
         doc["phone_audit"] = [{"action": "set", "actor_id": user["_id"], "at": now_utc().isoformat()}]
-    access_name = (payload.access_name or payload.owner_name).strip()
-    access_email = (payload.access_email or payload.email).lower()
+    # The commercial responsible and e-mail are the one authoritative portal
+    # owner identity at onboarding.  Do not accept alternate access details:
+    # that would create two competing identities for one new restaurant.
+    access_name = payload.owner_name.strip()
+    access_email = payload.email.lower()
     if not access_name:
         raise HTTPException(400, "Nome do responsável é obrigatório")
     if await _email_in_use(access_email):
