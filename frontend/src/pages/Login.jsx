@@ -6,7 +6,7 @@ import LoginParticles from "@/components/LoginParticles";
 
 export default function Login() {
   const { login, error, setError } = useAuth();
-  const [email, setEmail] = useState("");
+  const [identifier, setIdentifier] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -15,7 +15,7 @@ export default function Login() {
   const submit = async (e) => {
     e.preventDefault();
     setBusy(true); setError(null);
-    const data = await login(email.trim(), password);
+    const data = await login(identifier.trim(), password);
     setBusy(false);
     if (data) navigate(data.user_type === "restaurant" ? "/portal" : "/painel", { replace: true });
   };
@@ -37,12 +37,12 @@ export default function Login() {
 
           <form onSubmit={submit} className="space-y-5" data-testid="login-form">
             <div>
-              <label className="block text-[13px] font-semibold text-slate-200 mb-2">E-mail</label>
+              <label className="block text-[13px] font-semibold text-slate-200 mb-2">E-mail ou WhatsApp</label>
               <input
-                type="email" required
-                value={email} onChange={(e) => setEmail(e.target.value)}
-                className="dh-input dh-login-input" style={{ borderRadius: 4 }} placeholder="voce@dacot.com"
-                data-testid="login-email"
+                type="text" required
+                value={identifier} onChange={(e) => setIdentifier(e.target.value)}
+                className="dh-input dh-login-input" style={{ borderRadius: 4 }} placeholder="voce@dacot.com ou (11) 91234-5678"
+                data-testid="login-identifier"
               />
             </div>
             <div>
