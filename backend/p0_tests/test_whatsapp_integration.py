@@ -24,6 +24,8 @@ def test_onboarding_whatsapp_keeps_recovery_unbound_until_phone_confirmation(ser
     tenant = services.db.tenants.find_one({"_id": ObjectId(tid)})
     user = services.db.tenant_users.find_one({"tenant_id": tid, "email": email})
     assert tenant["mobile_phone"] == "+5511912345678"
+    assert user["name"] == "Responsável"
+    assert user["email"] == email
     assert tenant.get("phone_user_id") is None
     assert not user.get("phone_number") and not user.get("phone_binding_version")
     confirmation = services.db.owner_contact_confirmations.find_one({"tenant_id": tid, "owner_user_id": str(user["_id"])})

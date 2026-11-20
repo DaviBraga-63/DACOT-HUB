@@ -19,7 +19,7 @@ export default function ClienteNovo() {
   const [form, setForm] = useState({
     name: "", owner_name: "", email: "", phone: "", mobile_phone: "",
     status: "trial", address: "", notes: "",
-    access_name: "", access_email: "", access_channel: "email",
+    access_channel: "email",
   });
   const [err, setErr] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -31,14 +31,7 @@ export default function ClienteNovo() {
     e.preventDefault();
     setBusy(true); setErr(null);
     try {
-      const payload = {
-        ...form,
-        // Empty optional fields are omitted so the backend can deliberately
-        // fall back to the restaurant owner contact.
-        access_name: form.access_name.trim() || undefined,
-        access_email: form.access_email.trim() || undefined,
-      };
-      const { data } = await api.post("/hub/tenants/onboard", payload);
+      const { data } = await api.post("/hub/tenants/onboard", form);
       const invitationMessages = {
         email_sent: { type: "success", message: "Cadastro concluído. O provedor aceitou a solicitação de envio do primeiro acesso; isso não confirma a entrega." },
         email_delivery_failed: { type: "error", message: "Cadastro concluído, mas o e-mail de primeiro acesso não foi enviado. Após corrigir o provedor, use a recuperação de senha para enviar um novo link com segurança." },
@@ -79,7 +72,7 @@ export default function ClienteNovo() {
           <Field label="Responsável" required>
             <input required className="dh-input" value={form.owner_name} onChange={set("owner_name")} data-testid="input-owner" />
           </Field>
-          <Field label="E-mail" required>
+          <Field label="E-mail do proprietário" required>
             <input type="email" required className="dh-input" value={form.email} onChange={set("email")} data-testid="input-email" />
           </Field>
           <Field label="Telefone">
@@ -106,17 +99,7 @@ export default function ClienteNovo() {
         <section className="pt-6 border-t border-[var(--dh-border-soft)] space-y-4" data-testid="hub-access-section">
           <div>
             <div className="text-[12px] uppercase tracking-widest font-bold text-[var(--dh-muted)]">Proprietário do portal</div>
-            <p className="text-[13px] text-[var(--dh-muted)] mt-1">Todo restaurante precisa de um proprietário vinculado. O primeiro acesso é enviado sem expor senha temporária.</p>
-          </div>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6 dh-fade-in">
-            <Field label="Nome de acesso" required>
-              <input required className="dh-input" value={form.access_name || form.owner_name}
-                     onChange={set("access_name")} data-testid="input-access-name" />
-            </Field>
-            <Field label="E-mail de acesso" required>
-              <input type="email" required className="dh-input" value={form.access_email || form.email}
-                     onChange={set("access_email")} data-testid="input-access-email" />
-            </Field>
+            <p className="text-[13px] text-[var(--dh-muted)] mt-1">O responsável e o e-mail acima serão usados para criar o proprietário do portal. O primeiro acesso é enviado sem expor senha temporária.</p>
           </div>
           <Field label="Enviar primeiro acesso por">
             <select className="dh-input" value={form.access_channel} onChange={set("access_channel")}>
