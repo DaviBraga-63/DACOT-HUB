@@ -47,3 +47,21 @@ Os registros sanitizados foram preservados localmente antes do reinício. O gate
 O gateway aceitou os dois pedidos. Até a leitura dos registros, nenhuma das duas referências tinha ACK ou retry associado. A preparação da cópia base, por si só, não comprova que o iPhone abriu a mensagem.
 
 O Baileys 6.7.24 deduplica os JIDs brutos antes de consultar o cache de dispositivos por usuário. Num autoenvio, o JID com sufixo do aparelho vinculado e o JID base podem ser distintos nessa etapa e atingir a mesma entrada do cache. Isso é compatível com os totais de 4 e 7, mas o diagnóstico em execução contava candidatos, sem medir repetições. O novo campo `own_distinct` registra apenas a quantidade de endereços distintos passados à preparação das cópias próprias. Nenhum endereço é registrado. A instrumentação preserva a lista original, o envio e o retry.
+
+### Comparação com contagem de endereços distintos
+
+O operador confirmou que, na rodada das 19h10, o convite mostrou “Aguardando mensagem” no iPhone e apareceu normalmente no Web. A recuperação apareceu nos dois. Nenhuma duplicata foi observada. As duas referências continuaram sem ACK ou retry registrado antes do reinício seguinte. A ausência de ACK ocorreu tanto com a falha quanto com a exibição normal.
+
+Com a sessão preservada, o gateway foi reiniciado para ativar `own_distinct`. Em 25/11/2026, a ordem do par de envios à própria conta foi invertida, seguida de um convite à outra conta autorizada.
+
+| Hora de Brasília | Envio | Candidatos PN | Endereços distintos | Cópia base |
+| --- | --- | ---: | ---: | --- |
+| 19:34:52 | Recuperação à própria conta | 4 | 4 | Presente |
+| 19:34:54 | Convite à própria conta | 7 | 4 | Presente |
+| 19:35:19 | Convite à conta externa | 4 | 4 | Presente |
+
+Os três envios foram aceitos e tiveram `submitted:pn`. A duplicação de três candidatos no segundo autoenvio ficou comprovada e ocorreu com o tipo de mensagem oposto ao da rodada anterior. O dado descreve endereços, sem identificar aparelhos físicos nem comprovar quais cópias chegaram ou foram decifradas. A hipótese de falha no cache de retry continua sem uma chamada correlacionada aos envios com falha visual. O comportamento de envio permaneceu intacto.
+
+As duas finalidades geram texto com link e usam o mesmo caminho de envio e preparação de `deviceSentMessage`. O Baileys cifra para cada endereço, com a fila Signal serializada por endereço. A repetição de um candidato, isoladamente, não comprova corrida de escrita. A Meta descreve sessões cifradas por dispositivo, enquanto a Apple e o Android documentam possíveis atrasos de processamento em segundo plano. Esses mecanismos permitem compreender o sintoma, mas os registros do gateway não mostram o processamento da cópia pelo WhatsApp no iPhone. Os relatos oficiais revisados não comprovaram bloqueio seletivo nem uma atualização do Baileys que resolva este caso. [Arquitetura multidispositivo da Meta](https://engineering.fb.com/2021/07/14/security/whatsapp-multi-device/) · [Notificações de fundo da Apple](https://developer.apple.com/documentation/usernotifications/pushing-background-updates-to-your-app) · [Android Doze](https://developer.android.com/training/monitoring-device-state/doze-standby) · [Baileys #1767](https://github.com/WhiskeySockets/Baileys/issues/1767)
+
+A recuperação externa exige que essa conta confirme o WhatsApp pelo fluxo normal. Os 37 testes do gateway e os 52 P0 focados passaram. Os três casos que antes retornaram 503 passaram com o checkout local de Pedidos que fornece `/api/internal/hub/provision/direct/v1`. O checkout anterior não continha essa rota e falhava na preparação dos testes.
