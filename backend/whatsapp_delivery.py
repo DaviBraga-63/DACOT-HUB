@@ -57,6 +57,19 @@ def _https_origin(value: str) -> bool:
         return False
 
 
+def whatsapp_invitation_origin(frontend_url: str) -> str:
+    """Keep development QR tests on the localhost invitation proxy."""
+    if os.environ.get("APP_ENV", "production").strip().lower() != "development":
+        return frontend_url
+    local_origin = os.environ.get("WHATSAPP_LOCAL_INVITE_ORIGIN")
+    if not local_origin:
+        return frontend_url
+    match = re.fullmatch(r"https://localhost:([1-9][0-9]{0,4})/?", local_origin)
+    if not match or int(match[1]) > 65535:
+        raise RuntimeError("WHATSAPP_LOCAL_INVITE_ORIGIN deve ser https://localhost:<porta>")
+    return local_origin.rstrip("/")
+
+
 def _service_origin(value: str, transport: str) -> bool:
     if _https_origin(value):
         return True

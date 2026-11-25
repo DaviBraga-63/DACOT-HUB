@@ -24,7 +24,7 @@ from orders_user_grants import ORDERS_MODULE_KEY, bootstrap_orders_user_grants
 from phone_numbers import normalize_brazilian_mobile, normalize_brazilian_phone
 from whatsapp_delivery import (
     DeliveryResult, WhatsAppDeliveryProvider, WhatsAppPairingProvider, WhatsAppStatusProvider,
-    WhatsAppAccountSwitchProvider,
+    WhatsAppAccountSwitchProvider, whatsapp_invitation_origin,
 )
 from email_delivery import (
     send_orders_first_access_email as _send_orders_first_access_email,
@@ -56,19 +56,21 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(level
 logger = logging.getLogger("dacot-hub")
 
 
-class _ResetAccessLogFilter(logging.Filter):
+class _ContactTokenAccessLogFilter(logging.Filter):
     def filter(self, record):
         # Uvicorn access records carry the request target as the third argument.
         if isinstance(record.args, tuple) and len(record.args) >= 3:
             args = list(record.args)
             target = args[2]
-            if isinstance(target, str) and target.split("?", 1)[0] == "/reset-password":
-                args[2] = "/reset-password"
-                record.args = tuple(args)
+            if isinstance(target, str):
+                path = target.split("?", 1)[0]
+                if path in {"/reset-password", "/confirm-owner-whatsapp", "/confirm-owner-email"}:
+                    args[2] = path
+                    record.args = tuple(args)
         return True
 
 
-logging.getLogger("uvicorn.access").addFilter(_ResetAccessLogFilter())
+logging.getLogger("uvicorn.access").addFilter(_ContactTokenAccessLogFilter())
 
 MONGO_URL = os.environ["MONGO_URL"]
 DB_NAME = os.environ["DB_NAME"]
@@ -126,6 +128,7 @@ def _cors_allowed_origins(frontend_origins: tuple[str, ...]) -> tuple[str, ...]:
 FRONTEND_URL = _normalize_frontend_origin(
     os.environ.get("FRONTEND_URL", LOCAL_FRONTEND_ORIGIN), allow_localhost=True
 )
+WHATSAPP_INVITATION_ORIGIN = whatsapp_invitation_origin(FRONTEND_URL)
 FRONTEND_ALLOWED_ORIGINS = _frontend_allowed_origins(
     FRONTEND_URL, os.environ.get("FRONTEND_ALLOWED_ORIGINS", "")
 )
@@ -620,7 +623,7 @@ async def _send_whatsapp_reset(number: str, token: str, purpose: str, *, tenant_
     provider = WhatsAppDeliveryProvider(
         service_url=os.environ.get("WHATSAPP_SERVICE_URL", ""),
         service_key=os.environ.get("WHATSAPP_SERVICE_SECRET", ""),
-        frontend_url=FRONTEND_URL,
+        frontend_url=WHATSAPP_INVITATION_ORIGIN,
         ca_file=os.environ.get("WHATSAPP_SERVICE_CA_FILE") or None,
         service_transport=os.environ.get("WHATSAPP_SERVICE_TRANSPORT", "https"),
     )
