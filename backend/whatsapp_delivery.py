@@ -5,6 +5,7 @@ from enum import Enum
 import hashlib
 import hmac
 import json
+import os
 import re
 import time
 from urllib.parse import quote, urlsplit
@@ -59,6 +60,15 @@ def _https_origin(value: str) -> bool:
 def _service_origin(value: str, transport: str) -> bool:
     if _https_origin(value):
         return True
+    if (os.environ.get("APP_ENV", "production").strip().lower() == "development"
+            and transport == "local-loopback-http"):
+        try:
+            parsed = urlsplit(value)
+            return (parsed.scheme == "http" and parsed.hostname in {"127.0.0.1", "localhost", "::1"}
+                    and parsed.port is not None and not parsed.username and not parsed.password
+                    and parsed.path in ("", "/") and not parsed.query and not parsed.fragment)
+        except ValueError:
+            return False
     return transport == "speedtrail-private-http" and value.rstrip("/") == "http://dacot-whatsapp:3002"
 
 
