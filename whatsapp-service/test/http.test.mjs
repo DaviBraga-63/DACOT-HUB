@@ -5,7 +5,7 @@ import { spawn } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { join, resolve, sep } from 'node:path';
 import { tmpdir } from 'node:os';
-import { randomBytes, createHash, createHmac } from 'node:crypto';
+import { randomBytes, randomUUID, createHash, createHmac } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { createListener, transportConfiguration } from '../http-app.mjs';
 import { openStore } from '../store.mjs';
@@ -98,6 +98,7 @@ test('real entrypoint starts in maintenance without importing Baileys or touchin
   const secret = randomBytes(32).toString('hex'), adminSecret = randomBytes(32).toString('hex'), pairingSecret = randomBytes(32).toString('hex');
   const env = Object.fromEntries(Object.entries(process.env).filter(([k]) => ['PATH', 'SYSTEMROOT', 'WINDIR', 'TEMP', 'TMP'].includes(k.toUpperCase())));
   Object.assign(env, { WHATSAPP_TRANSPORT: 'proxy-http', WHATSAPP_ENABLED: 'false', HOST: '127.0.0.1',
+    APP_ENV: 'development', WHATSAPP_LOCAL_SHUTDOWN: 'true',
     PORT: String(port), WHATSAPP_ADMIN_PORT: String(adminPort), WHATSAPP_DB_PATH: join(dir, 'test.sqlite'),
     WHATSAPP_STORAGE_KEY: randomBytes(32).toString('base64'), WHATSAPP_SERVICE_SECRET: secret,
     WHATSAPP_ADMIN_SECRET: adminSecret, WHATSAPP_PAIRING_SERVICE_SECRET: pairingSecret,
@@ -138,10 +139,19 @@ test('real entrypoint starts in maintenance without importing Baileys or touchin
     assert.equal(diagnostic.status, 503);
     assert.equal((await fetch(`http://127.0.0.1:${port}/internal/pairing`, { headers: { Authorization: `Bearer ${adminSecret}` } })).status, 404);
     assert.equal(errors.includes(secret) || errors.includes(adminSecret) || errors.includes(pairingSecret), false);
+    const exited = once(child, 'exit');
+    assert.equal((await fetch(`http://127.0.0.1:${adminPort}/internal/local-shutdown`, {
+      method: 'POST', headers: { Authorization: `Bearer ${adminSecret}` },
+    })).status, 202);
+    const [exitCode] = await exited;
+    assert.equal(exitCode, 0);
   } finally {
-    const exited = once(child, 'exit'); child.kill(); await exited;
+    if (child.exitCode === null) { const exited = once(child, 'exit'); child.kill(); await exited; }
     const after = openStore(env.WHATSAPP_DB_PATH, Buffer.from(env.WHATSAPP_STORAGE_KEY, 'base64'));
     assert.equal(after.get('creds'), 'synthetic-session-preserved-in-maintenance');
+    const restartId = randomUUID();
+    assert.equal(after.acquireServiceLease(restartId, Date.now(), 60000), true);
+    after.releaseServiceLease(restartId);
     assert.equal(after.candidate(candidateId).status, 'failed');
     assert.equal(after.candidateAuth(candidateId).get('creds'), null);
     after.close();
