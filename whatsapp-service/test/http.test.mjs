@@ -70,6 +70,24 @@ test('administrative listener enforces methods and bounded rate limiting without
   });
 });
 
+test('local shutdown is opt-in, loopback administrative and requires authorization', async () => {
+  let stopped = 0;
+  const gateway = { handle: async ({ authorization }) => ({ status: authorization === 'Bearer synthetic-admin' ? 200 : 401 }) };
+  await serve({ gateway, administrative: true }, async base => {
+    assert.equal((await fetch(`${base}/internal/local-shutdown`, { method: 'POST' })).status, 404);
+  });
+  await serve({ gateway, administrative: true, localShutdown: () => { stopped++; } }, async base => {
+    assert.equal((await fetch(`${base}/internal/local-shutdown`, { method: 'POST' })).status, 401);
+    assert.equal(stopped, 0);
+    assert.equal((await fetch(`${base}/internal/local-shutdown`, { method: 'POST', headers: { Authorization: 'Bearer synthetic-admin' } })).status, 202);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(stopped, 1);
+  });
+  await serve({ gateway, localShutdown: () => { stopped++; } }, async base => {
+    assert.equal((await fetch(`${base}/internal/local-shutdown`, { method: 'POST', headers: { Authorization: 'Bearer synthetic-admin' } })).status, 404);
+  });
+});
+
 test('real entrypoint starts in maintenance without importing Baileys or touching an existing session', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'dacot-wa-start-'));
   const publicProbe = createListener({ gateway: {} }), adminProbe = createListener({ gateway: {} });

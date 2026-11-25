@@ -49,7 +49,9 @@ if (!store.acquireServiceLease(serviceInstanceId, Date.now(), SERVICE_LEASE_MS))
 store.recoverCandidatesAfterRestart();
 const server = createListener({ gateway, tls: config.tls });
 // Administration is loopback-only, reachable through an authorized shell/SSH tunnel.
-const admin = createListener({ gateway, administrative: true });
+const localShutdownEnabled = env.APP_ENV === 'development' && env.WHATSAPP_LOCAL_SHUTDOWN === 'true';
+const admin = createListener({ gateway, administrative: true,
+  localShutdown: localShutdownEnabled ? () => { void shutdown(); } : undefined });
 let stopping = false;
 let leaseHeartbeat;
 let cleanup;
@@ -58,8 +60,6 @@ async function shutdown(code = 0) {
   stopping = true;
   clearInterval(cleanup);
   clearInterval(leaseHeartbeat);
-  candidateManager?.shutdown();
-  connection.stop();
   const deadline = setTimeout(() => process.exit(1), 10000);
   deadline.unref();
   await Promise.all([server, admin].map(listener => new Promise(resolve => {
@@ -69,6 +69,8 @@ async function shutdown(code = 0) {
       listener.closeIdleConnections();
     } catch { resolve(); }
   })));
+  candidateManager?.shutdown();
+  connection.stop();
   store.releaseServiceLease(serviceInstanceId);
   store.close();
   process.exit(code);
