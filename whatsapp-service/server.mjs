@@ -110,8 +110,8 @@ try {
         [proto.WebMessageInfo.Status.PLAYED, 'played'],
         [proto.WebMessageInfo.Status.ERROR, 'error'],
       ]);
-      const observeOutboundEvent = ({ kind, key, status }) => {
-        const sessionId = activeConnection?.accountId();
+      const observeOutboundEvent = ({ kind, key, status, details }) => {
+        const sessionId = details?.sessionId ?? activeConnection?.accountId();
         let trace = null;
         try { trace = sessionId ? store.outboundDiagnosticTrace(key, sessionId) : null; }
         catch {
@@ -130,6 +130,15 @@ try {
             if (!store.recordOutboundDiagnostic(trace, event, jidKind)) console.error('whatsapp_diagnostic_storage_failure');
           } catch { console.error('whatsapp_diagnostic_storage_failure'); }
           console.info('whatsapp_outbound_event=%s trace=%s jid_kind=%s', event, trace, jidKind);
+          if (event === 'submitted') {
+            const { purpose, destinationScope, copies } = details || {};
+            console.info('whatsapp_submission trace=%s purpose=%s destination_scope=%s own_candidates=%s own_pn=%s own_lid=%s own_unknown=%s own_base=%s',
+              trace, purpose ?? 'unknown', destinationScope ?? 'unknown', copies?.total ?? 'unknown',
+              copies?.pn ?? 'unknown', copies?.lid ?? 'unknown', copies?.unknown ?? 'unknown', copies?.base ?? 'unknown');
+          }
+          if (event === 'retry_requested') {
+            console.info('whatsapp_retry_scope trace=%s requester_scope=%s', trace, details?.retryScope ?? 'unknown');
+          }
         }
       };
       activeConnection = createConnection({ makeSocket: makeWASocket, auth, logger,

@@ -1,7 +1,30 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
+
+function addressParts(jid) {
+  if (typeof jid !== 'string') return null;
+  const match = /^(\d+)(?:_\d+)?(?::(\d+))?@(s\.whatsapp\.net|lid)$/.exec(jid);
+  return match && { account: match[1], device: Number(match[2] || 0), kind: match[3] === 'lid' ? 'lid' : 'pn' };
+}
+
+function sameAccount(left, right) {
+  return Boolean(left && right && left.kind === right.kind && left.account === right.account);
+}
+
+function summarizeCopyCandidates(jids) {
+  const summary = { total: jids.length, pn: 0, lid: 0, unknown: 0, base: false };
+  for (const jid of jids) {
+    const address = addressParts(jid);
+    summary[address?.kind ?? 'unknown'] += 1;
+    if (address?.device === 0) summary.base = true;
+  }
+  return summary;
+}
+
 export function createConnection({ makeSocket, auth, logger, loggedOutCode, schedule = setTimeout,
   maxReconnectAttempts = 8, maxReconnectDelayMs = 60000, maxMessageRetries = 3,
   getMessage = async () => undefined, retainMessage = async () => {}, onOutboundEvent = () => {}, onStateChange }) {
   let socket, stopped = false, reconnectScheduled = false, reconnectAttempts = 0, ownDeviceInspection = null;
+  const outgoing = new AsyncLocalStorage();
   const connection = {
     state: 'connecting', qr: null,
     accountId() {
@@ -9,14 +32,21 @@ export function createConnection({ makeSocket, auth, logger, loggedOutCode, sche
       return typeof socket?.user?.id === 'string' ? socket.user.id
         : (typeof auth.state.creds.me?.id === 'string' ? auth.state.creds.me.id : null);
     },
-    async send(number, text, expiresAt) {
+    async send(number, text, expiresAt, purpose) {
       if (connection.state !== 'open' || !socket) throw new Error('Not connected');
       const sessionId = connection.accountId();
       if (!sessionId) throw new Error('Missing active session');
-      const sent = await socket.sendMessage(`${number.slice(1)}@s.whatsapp.net`, { text });
+      const destination = `${number.slice(1)}@s.whatsapp.net`;
+      const observation = { copies: null };
+      const sent = await outgoing.run(observation, () => socket.sendMessage(destination, { text }));
       if (!sent?.key || !sent.message) throw new Error('Missing outbound message');
       await retainMessage(sent.key, sessionId, sent.message, expiresAt);
-      emitOutboundEvent('submitted', sent.key);
+      const sender = addressParts(sessionId);
+      const destinationScope = sameAccount(addressParts(destination), sender) ? 'own_account'
+        : sender?.kind === 'pn' ? 'other_account' : 'unknown';
+      emitOutboundEvent('submitted', sent.key, undefined, {
+        sessionId, purpose, destinationScope, copies: observation.copies,
+      });
     },
     async requestPairingCode(number) {
       // Pairing codes are valid only while this instance owns an unregistered
@@ -90,9 +120,19 @@ export function createConnection({ makeSocket, auth, logger, loggedOutCode, sche
     try { onStateChange?.(state); } catch { /* State reporting must not affect the socket. */ }
   }
 
-  function emitOutboundEvent(kind, key, status) {
-    try { onOutboundEvent({ kind, key, status }); }
+  function emitOutboundEvent(kind, key, status, details) {
+    try { onOutboundEvent({ kind, key, status, details }); }
     catch { /* Observability must never affect delivery or retry. */ }
+  }
+
+  function retryScope(key, socketUser) {
+    const participant = addressParts(key?.participant);
+    const own = [socketUser?.id, socketUser?.lid, auth.state.creds.me?.id, auth.state.creds.me?.lid]
+      .map(addressParts);
+    if (own.some(account => sameAccount(participant, account))) return 'own_account';
+    if (own.some(account => account && account.kind === participant?.kind)
+        && sameAccount(participant, addressParts(key?.remoteJid))) return 'destination';
+    return 'unknown';
   }
 
   function scheduleReconnect() {
@@ -119,14 +159,28 @@ export function createConnection({ makeSocket, auth, logger, loggedOutCode, sche
     try {
       nextSocket = makeSocket({ auth: auth.state, logger, syncFullHistory: false, markOnlineOnConnect: false,
         maxMsgRetryCount: maxMessageRetries,
+        // Baileys calls this before encrypting each set of participants. Observe
+        // targeted copies only and return exactly the original message.
+        patchMessageBeforeSending: (message, jids) => {
+          try {
+            const observation = outgoing.getStore();
+            if (observation && message?.deviceSentMessage && Array.isArray(jids)) {
+              observation.copies = summarizeCopyCandidates(jids);
+            }
+          } catch { /* Diagnostics must not affect encryption. */ }
+          return message;
+        },
         getMessage: async messageKey => {
-          emitOutboundEvent('retry_requested', messageKey);
+          let scope = 'unknown';
+          try { scope = retryScope(messageKey, nextSocket?.user); } catch { /* Optional diagnostic. */ }
+          const details = { retryScope: scope };
+          emitOutboundEvent('retry_requested', messageKey, undefined, details);
           try {
             const message = await getMessage(messageKey);
-            emitOutboundEvent(message ? 'retry_served' : 'retry_unavailable', messageKey);
+            emitOutboundEvent(message ? 'retry_served' : 'retry_unavailable', messageKey, undefined, details);
             return message;
           } catch {
-            emitOutboundEvent('retry_failed', messageKey);
+            emitOutboundEvent('retry_failed', messageKey, undefined, details);
             return undefined;
           }
         } });

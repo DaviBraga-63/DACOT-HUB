@@ -176,7 +176,7 @@ export function createGateway({ secret, adminSecret, pairingSecret, switchSecret
         : `Olá! Recebemos uma solicitação de recuperação de senha da sua conta DACOT.\n\nPara definir uma nova senha, acesse:\n\n${body.link}\n\nEste link pode ser utilizado uma única vez e possui validade de 24 horas.\n\nSe você não solicitou a recuperação, ignore esta mensagem.`;
       try {
         const retryCacheExpiresAt = now() + (body.purpose === 'first_access' ? 30 : 1) * 86400000;
-        await connection.send(body.destination, text, retryCacheExpiresAt);
+        await connection.send(body.destination, text, retryCacheExpiresAt, body.purpose);
         store.complete(id, 'accepted');
         return { status: 202, body: { state: 'accepted' } };
       } catch {
