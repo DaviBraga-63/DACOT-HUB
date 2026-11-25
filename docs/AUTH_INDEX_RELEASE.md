@@ -34,3 +34,16 @@ Os dois pedidos de confirmação foram localizados no registro de idempotência.
 O gateway registra em `whatsapp_submission` o propósito, se o destino é a própria conta quando identificável, a quantidade de cópias próprias preparadas por classe PN/LID e a presença do candidato base. `whatsapp_retry_scope` classifica, quando possível, a conta do participante que pediu a recuperação. As duas linhas usam a referência HMAC da mensagem já usada nos eventos de entrega. A lista de candidatos é observada antes da criptografia e não identifica um aparelho físico nem confirma que ele conseguiu abrir a mensagem.
 
 A causa da falha intermitente permanece indeterminada. No próximo envio autorizado após ativar o diagnóstico, registre horário, destino próprio ou externo, recebimento e exibição no WhatsApp Web e no iPhone. Compare esses resultados com os eventos da mesma referência.
+
+### Diagnóstico ativado em 25/11/2026
+
+Os registros sanitizados foram preservados localmente antes do reinício. O gateway reconectou com o mesmo SQLite e a mesma sessão. O operador também relatou que os envios manuais pelo WhatsApp Web oficial apareceram no iPhone com o aplicativo aberto e fechado.
+
+| Hora de Brasília | Envio local | Evento e cópias próprias observadas |
+| --- | --- | --- |
+| 19:10:55 | Primeiro acesso à própria conta de teste | `submitted:pn`, 4 candidatos PN, candidato base presente. |
+| 19:10:57 | Recuperação à própria conta de teste | `submitted:pn`, 7 candidatos PN, candidato base presente. |
+
+O gateway aceitou os dois pedidos. Até a leitura dos registros, nenhuma das duas referências tinha ACK ou retry associado. A preparação da cópia base, por si só, não comprova que o iPhone abriu a mensagem.
+
+O Baileys 6.7.24 deduplica os JIDs brutos antes de consultar o cache de dispositivos por usuário. Num autoenvio, o JID com sufixo do aparelho vinculado e o JID base podem ser distintos nessa etapa e atingir a mesma entrada do cache. Isso é compatível com os totais de 4 e 7, mas o diagnóstico em execução contava candidatos, sem medir repetições. O novo campo `own_distinct` registra apenas a quantidade de endereços distintos passados à preparação das cópias próprias. Nenhum endereço é registrado. A instrumentação preserva a lista original, o envio e o retry.

@@ -11,7 +11,7 @@ function sameAccount(left, right) {
 }
 
 function summarizeCopyCandidates(jids) {
-  const summary = { total: jids.length, pn: 0, lid: 0, unknown: 0, base: false };
+  const summary = { total: jids.length, distinct: new Set(jids).size, pn: 0, lid: 0, unknown: 0, base: false };
   for (const jid of jids) {
     const address = addressParts(jid);
     summary[address?.kind ?? 'unknown'] += 1;

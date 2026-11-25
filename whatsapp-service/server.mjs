@@ -132,9 +132,10 @@ try {
           console.info('whatsapp_outbound_event=%s trace=%s jid_kind=%s', event, trace, jidKind);
           if (event === 'submitted') {
             const { purpose, destinationScope, copies } = details || {};
-            console.info('whatsapp_submission trace=%s purpose=%s destination_scope=%s own_candidates=%s own_pn=%s own_lid=%s own_unknown=%s own_base=%s',
+            console.info('whatsapp_submission trace=%s purpose=%s destination_scope=%s own_candidates=%s own_distinct=%s own_pn=%s own_lid=%s own_unknown=%s own_base=%s',
               trace, purpose ?? 'unknown', destinationScope ?? 'unknown', copies?.total ?? 'unknown',
-              copies?.pn ?? 'unknown', copies?.lid ?? 'unknown', copies?.unknown ?? 'unknown', copies?.base ?? 'unknown');
+              copies?.distinct ?? 'unknown', copies?.pn ?? 'unknown', copies?.lid ?? 'unknown',
+              copies?.unknown ?? 'unknown', copies?.base ?? 'unknown');
           }
           if (event === 'retry_requested') {
             console.info('whatsapp_retry_scope trace=%s requester_scope=%s', trace, details?.retryScope ?? 'unknown');

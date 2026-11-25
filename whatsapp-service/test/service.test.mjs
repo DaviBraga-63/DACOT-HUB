@@ -388,7 +388,7 @@ test('own-copy observations preserve the Baileys payload and stay with their ove
       await new Promise(resolve => submissions.set(remoteJid, resolve));
       const message = { conversation: text };
       const copy = { deviceSentMessage: { destinationJid: remoteJid, message } };
-      const candidates = remoteJid === ownBase ? [ownBase] : [ownBase, ownDevice, '123456789:2@lid', 'unrecognized'];
+      const candidates = remoteJid === ownBase ? [ownBase, ownDevice, ownDevice] : [ownBase, ownDevice, '123456789:2@lid', 'unrecognized'];
       assert.equal(socketConfig.patchMessageBeforeSending(copy, candidates), copy);
       assert.equal(socketConfig.patchMessageBeforeSending(message, [remoteJid]), message);
       return { key: { id: remoteJid === ownBase ? 'self-message' : 'other-message', remoteJid }, message };
@@ -408,8 +408,8 @@ test('own-copy observations preserve the Baileys payload and stay with their ove
     submissions.get(ownBase)();
     await self;
     assert.deepEqual(observed.map(([id, { purpose, destinationScope, copies }]) => [id, purpose, destinationScope, copies]), [
-      ['other-message', 'recovery', 'other_account', { total: 4, pn: 2, lid: 1, unknown: 1, base: true }],
-      ['self-message', 'contact_confirmation', 'own_account', { total: 1, pn: 1, lid: 0, unknown: 0, base: true }],
+      ['other-message', 'recovery', 'other_account', { total: 4, distinct: 4, pn: 2, lid: 1, unknown: 1, base: true }],
+      ['self-message', 'contact_confirmation', 'own_account', { total: 3, distinct: 2, pn: 3, lid: 0, unknown: 0, base: true }],
     ]);
   } finally { connection.stop(); }
 });
