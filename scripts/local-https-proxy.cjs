@@ -6,7 +6,7 @@ const path = require('node:path');
 const state = path.join(__dirname, '..', '.local-dev', 'tls');
 const allowedGet = new Set(['/reset-password', '/confirm-owner-whatsapp', '/confirm-owner-email', '/favicon.ico', '/manifest.json']);
 const allowedApi = new Set(['/api/auth/reset-password/context', '/api/auth/reset-password', '/api/auth/confirm-owner-whatsapp', '/api/auth/confirm-owner-email']);
-const server = https.createServer({ key: fs.readFileSync(path.join(state, 'localhost.key')), cert: fs.readFileSync(path.join(state, 'localhost.crt')) }, (req, res) => {
+const server = https.createServer({ key: fs.readFileSync(path.join(state, 'server-dev.key')), cert: fs.readFileSync(path.join(state, 'server-dev.crt')) }, (req, res) => {
   let url;
   try { url = new URL(req.url, 'https://localhost:8443'); } catch { res.writeHead(400).end(); return; }
   const staticAsset = url.pathname.startsWith('/static/') && req.method === 'GET';
@@ -19,5 +19,5 @@ const server = https.createServer({ key: fs.readFileSync(path.join(state, 'local
   upstream.on('error', () => { if (!res.headersSent) res.writeHead(503); res.end(); });
   req.pipe(upstream);
 });
-server.listen(8443, '127.0.0.1');
+server.listen(Number(process.env.LOCAL_HTTPS_PORT || 8443), '127.0.0.1');
 for (const signal of ['SIGINT', 'SIGTERM']) process.on(signal, () => server.close());
