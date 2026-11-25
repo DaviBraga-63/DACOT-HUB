@@ -72,8 +72,8 @@ export default function ClienteNovo() {
           <Field label="Responsável" required>
             <input required className="dh-input" value={form.owner_name} onChange={set("owner_name")} data-testid="input-owner" />
           </Field>
-          <Field label="E-mail do proprietário" required>
-            <input type="email" required className="dh-input" value={form.email} onChange={set("email")} data-testid="input-email" />
+          <Field label="E-mail do proprietário" required={form.access_channel === "email"}>
+            <input type="email" required={form.access_channel === "email"} className="dh-input" value={form.email} onChange={set("email")} data-testid="input-email" />
           </Field>
           <Field label="Telefone">
             <input className="dh-input" value={form.phone} onChange={set("phone")} data-testid="input-phone" />
@@ -99,7 +99,7 @@ export default function ClienteNovo() {
         <section className="pt-6 border-t border-[var(--dh-border-soft)] space-y-4" data-testid="hub-access-section">
           <div>
             <div className="text-[12px] uppercase tracking-widest font-bold text-[var(--dh-muted)]">Proprietário do portal</div>
-            <p className="text-[13px] text-[var(--dh-muted)] mt-1">O responsável e o e-mail acima serão usados para criar o proprietário do portal. O primeiro acesso é enviado sem expor senha temporária.</p>
+            <p className="text-[13px] text-[var(--dh-muted)] mt-1">O responsável e o contato escolhido acima serão usados para criar o proprietário do portal. O primeiro acesso é enviado sem expor senha temporária.</p>
           </div>
           <Field label="Enviar primeiro acesso por">
             <select className="dh-input" value={form.access_channel} onChange={set("access_channel")}>

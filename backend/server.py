@@ -24,7 +24,7 @@ from orders_user_grants import ORDERS_MODULE_KEY, bootstrap_orders_user_grants
 from phone_numbers import normalize_brazilian_mobile, normalize_brazilian_phone
 from whatsapp_delivery import (
     DeliveryResult, WhatsAppDeliveryProvider, WhatsAppPairingProvider, WhatsAppStatusProvider,
-    WhatsAppAccountSwitchProvider,
+    WhatsAppAccountSwitchProvider, whatsapp_invitation_origin,
 )
 from email_delivery import (
     send_orders_first_access_email as _send_orders_first_access_email,
@@ -36,6 +36,7 @@ from auth_sessions import (
     find_session, new_browser_binding, refresh_session, revoke_session,
     revoke_user_sessions, valid_tab_session_id,
 )
+from auth_index_contract import identifier_index_errors
 
 import bcrypt
 import jwt
@@ -48,26 +49,28 @@ from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 from pymongo import ReturnDocument
 from pymongo.errors import DuplicateKeyError, PyMongoError
-from pydantic import BaseModel, Field, EmailStr, BeforeValidator, ConfigDict
+from pydantic import BaseModel, Field, EmailStr, BeforeValidator, ConfigDict, field_validator, model_validator
 
 # ─── Setup ─────────────────────────────────────────────────────────────────────
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("dacot-hub")
 
 
-class _ResetAccessLogFilter(logging.Filter):
+class _ContactTokenAccessLogFilter(logging.Filter):
     def filter(self, record):
         # Uvicorn access records carry the request target as the third argument.
         if isinstance(record.args, tuple) and len(record.args) >= 3:
             args = list(record.args)
             target = args[2]
-            if isinstance(target, str) and target.split("?", 1)[0] == "/reset-password":
-                args[2] = "/reset-password"
-                record.args = tuple(args)
+            if isinstance(target, str):
+                path = target.split("?", 1)[0]
+                if path in {"/reset-password", "/confirm-owner-whatsapp", "/confirm-owner-email"}:
+                    args[2] = path
+                    record.args = tuple(args)
         return True
 
 
-logging.getLogger("uvicorn.access").addFilter(_ResetAccessLogFilter())
+logging.getLogger("uvicorn.access").addFilter(_ContactTokenAccessLogFilter())
 
 MONGO_URL = os.environ["MONGO_URL"]
 DB_NAME = os.environ["DB_NAME"]
@@ -125,6 +128,7 @@ def _cors_allowed_origins(frontend_origins: tuple[str, ...]) -> tuple[str, ...]:
 FRONTEND_URL = _normalize_frontend_origin(
     os.environ.get("FRONTEND_URL", LOCAL_FRONTEND_ORIGIN), allow_localhost=True
 )
+WHATSAPP_INVITATION_ORIGIN = whatsapp_invitation_origin(FRONTEND_URL)
 FRONTEND_ALLOWED_ORIGINS = _frontend_allowed_origins(
     FRONTEND_URL, os.environ.get("FRONTEND_ALLOWED_ORIGINS", "")
 )
@@ -249,6 +253,8 @@ async def _email_in_use(email: str, *, exclude_collection: Optional[str] = None,
     existing in both. Login resolves hub_users first, so such a collision
     would silently shadow the tenant_user, making it permanently unreachable.
     Called from every create/edit path in both collections."""
+    if not email:
+        return False
     hub_query: dict = {"email": email}
     tenant_query: dict = {"email": email}
     if exclude_collection == "hub_users" and exclude_id is not None:
@@ -454,9 +460,34 @@ async def send_owner_email_confirmation(to_email: str, token: str) -> bool:
 
 
 # ─── Auth Models ───────────────────────────────────────────────────────────────
+def _canonical_contact_identifier(value: str) -> tuple[str, str]:
+    """Normalize a login/recovery contact without accepting an unconfirmed phone.
+
+    E-mail remains the only identifier for DACOT staff.  Restaurant owners may
+    also use a Brazilian mobile number, but authorization below still requires
+    its confirmed binding to that same owner.
+    """
+    candidate = (value or "").strip()
+    if "@" in candidate:
+        return "email", candidate.lower()
+    try:
+        return "phone", normalize_brazilian_mobile(candidate)
+    except ValueError:
+        return "invalid", ""
+
+
 class LoginIn(BaseModel):
-    email: EmailStr
+    # `email` remains accepted for existing clients. New clients use the
+    # neutral identifier field, which can also be a confirmed WhatsApp mobile.
+    email: Optional[EmailStr] = None
+    identifier: Optional[str] = Field(default=None, min_length=3, max_length=320)
     password: str
+
+    @model_validator(mode="after")
+    def require_exactly_one_identifier(self):
+        if bool(self.email) == bool(self.identifier):
+            raise ValueError("Informe um e-mail ou WhatsApp")
+        return self
 
 
 class OrdersDirectLoginIn(BaseModel):
@@ -468,8 +499,15 @@ class OrdersDirectLoginIn(BaseModel):
 
 
 class ForgotIn(BaseModel):
-    email: EmailStr
+    email: Optional[EmailStr] = None
+    identifier: Optional[str] = Field(default=None, min_length=3, max_length=320)
     channel: str = "email"
+
+    @model_validator(mode="after")
+    def require_exactly_one_identifier(self):
+        if bool(self.email) == bool(self.identifier):
+            raise ValueError("Informe um e-mail ou WhatsApp")
+        return self
 
 
 class WhatsAppPairingCodeIn(BaseModel):
@@ -496,7 +534,7 @@ class ResetPasswordContextIn(BaseModel):
     token: str
 
 
-async def _issue_password_reset(user_id: str, email: str, user_type: str, *, first_access: bool = False,
+async def _issue_password_reset(user_id: str, email: Optional[str], user_type: str, *, first_access: bool = False,
                                 phone_binding_version: Optional[str] = None,
                                 expires_in: Optional[timedelta] = None,
                                 owner_transfer_id: Optional[str] = None) -> str:
@@ -519,7 +557,10 @@ async def _issue_password_reset(user_id: str, email: str, user_type: str, *, fir
         raise HTTPException(400, "Não foi possível preparar a redefinição")
     await db.password_reset_tokens.insert_one({
         "token_hash": hashlib.sha256(raw.encode()).hexdigest(),
-        "user_id": user_id, "email": email, "user_type": user_type,
+        # Kept as the legacy field name for existing tokens. It is blank only
+        # for a WhatsApp-only owner, whose token is bound to the confirmed
+        # mobile version below rather than to an invented e-mail address.
+        "user_id": user_id, "email": email or "", "user_type": user_type,
         "generation": generation,
         "phone_binding_version": phone_binding_version,
         # A continuation after proof of WhatsApp possession is deliberately
@@ -582,7 +623,7 @@ async def _send_whatsapp_reset(number: str, token: str, purpose: str, *, tenant_
     provider = WhatsAppDeliveryProvider(
         service_url=os.environ.get("WHATSAPP_SERVICE_URL", ""),
         service_key=os.environ.get("WHATSAPP_SERVICE_SECRET", ""),
-        frontend_url=FRONTEND_URL,
+        frontend_url=WHATSAPP_INVITATION_ORIGIN,
         ca_file=os.environ.get("WHATSAPP_SERVICE_CA_FILE") or None,
         service_transport=os.environ.get("WHATSAPP_SERVICE_TRANSPORT", "https"),
     )
@@ -918,14 +959,18 @@ def _client_ip(request: Request) -> str:
 
 @api_router.post("/auth/login")
 async def login(payload: LoginIn, request: Request, response: Response):
-    email = payload.email.lower()
+    supplied_identifier = payload.identifier or str(payload.email)
+    identifier_kind, identifier = _canonical_contact_identifier(supplied_identifier)
     ip = _client_ip(request)
-    # Single login for both populations: staff first, then restaurant users.
-    user = await db.hub_users.find_one({"email": email})
-    ut = "staff"
+    # Staff keep their e-mail-only login. Restaurant portal owners can use an
+    # e-mail or a confirmed WhatsApp mobile bound to their identity.
+    user = await db.hub_users.find_one({"email": identifier}) if identifier_kind == "email" else None
+    ut = "staff" if user else "restaurant"
     if not user:
-        user = await db.tenant_users.find_one({"email": email})
-        ut = "restaurant"
+        restaurant_query = {"email": identifier} if identifier_kind == "email" else {
+            "$or": [{"phone_number": identifier}, {"whatsapp_number": identifier}]
+        }
+        user = await db.tenant_users.find_one(restaurant_query) if identifier_kind != "invalid" else None
     valid = bool(user) and bool(user.get("password_hash")) and verify_password(payload.password, user["password_hash"])
     if valid and _security_version(user, "token_version") is None:
         valid = False
@@ -946,10 +991,15 @@ async def login(payload: LoginIn, request: Request, response: Response):
             valid = False
         elif str(tenant.get("portal_owner_user_id") or "") != str(user["_id"]):
             valid = False
+        elif identifier_kind == "phone" and (str(tenant.get("phone_user_id") or tenant.get("whatsapp_user_id") or "")
+                                               != str(user["_id"])):
+            # A value typed in the registration form is never a login factor.
+            # It becomes one only after the holder completes confirmation.
+            valid = False
     if not valid:
-        await _check_lockout(ip, email)
-        await _record_attempt(ip, email, False)
-        raise HTTPException(401, "E-mail ou senha inválidos")
+        await _check_lockout(ip, identifier or supplied_identifier)
+        await _record_attempt(ip, identifier or supplied_identifier, False)
+        raise HTTPException(401, "Contato ou senha inválidos")
     coll = db.hub_users if ut == "staff" else db.tenant_users
     await coll.update_one({"_id": user["_id"]}, {"$set": {"last_login_at": now_utc().isoformat()}})
     uid = str(user["_id"])
@@ -969,11 +1019,11 @@ async def login(payload: LoginIn, request: Request, response: Response):
     )
     # Existing browser JWTs are deliberately not a fallback after migration.
     _expire_legacy_auth_cookies(response)
-    await log_activity(actor_id=uid, actor_name=user.get("name", email),
+    await log_activity(actor_id=uid, actor_name=user.get("name", identifier),
                        action="hub_user.login" if ut == "staff" else "restaurant_user.login",
                        target_type=ut, target_id=uid,
                        tenant_id=user.get("tenant_id") if ut == "restaurant" else None)
-    out = {"id": uid, "email": email, "name": user.get("name"),
+    out = {"id": uid, "email": user.get("email") or user.get("phone_number") or "", "name": user.get("name"),
            "role": user.get("role", "admin" if ut == "staff" else "waiter"),
            "user_type": ut}
     if ut == "restaurant":
@@ -1021,7 +1071,7 @@ async def refresh(request: Request, response: Response):
     return {"ok": True}
 
 
-GENERIC_RESET_RESPONSE = {"message": "Se este e-mail estiver cadastrado, um link de redefinição foi enviado."}
+GENERIC_RESET_RESPONSE = {"message": "Se a conta estiver cadastrada, um link de redefinição foi enviado."}
 
 
 def _recovery_client_ip(request: Request) -> str:
@@ -1046,7 +1096,7 @@ def _recovery_client_ip(request: Request) -> str:
         return "unknown"
 
 
-async def _allow_recovery_request(email: str, ip: str) -> bool:
+async def _allow_recovery_request(identifier: str, ip: str) -> bool:
     """Shared, atomic counters and a sliding account cooldown; fail closed."""
     now = now_utc()
     bucket = int(now.timestamp()) // 900
@@ -1059,7 +1109,7 @@ async def _allow_recovery_request(email: str, ip: str) -> bool:
             )
             if doc["count"] > limit:
                 return False
-        key = hashlib.sha256(f"account:{email}".encode()).hexdigest()
+        key = hashlib.sha256(f"account:{identifier}".encode()).hexdigest()
         try:
             await db.password_reset_cooldowns.update_one(
                 {"_id": key, "$or": [{"last_allowed": {"$lte": now - timedelta(minutes=15)}},
@@ -1078,15 +1128,18 @@ async def _allow_recovery_request(email: str, ip: str) -> bool:
 async def forgot(payload: ForgotIn, background_tasks: BackgroundTasks, request: Request):
     if payload.channel not in {"email", "whatsapp"}:
         raise HTTPException(400, "Canal inválido")
-    email = payload.email.lower()
-    if not await _allow_recovery_request(email, _recovery_client_ip(request)):
+    supplied_identifier = payload.identifier or str(payload.email)
+    identifier_kind, identifier = _canonical_contact_identifier(supplied_identifier)
+    if not identifier or not await _allow_recovery_request(identifier or supplied_identifier, _recovery_client_ip(request)):
         return GENERIC_RESET_RESPONSE
-    user = await db.hub_users.find_one({"email": email})
-    ut = "staff"
+    user = await db.hub_users.find_one({"email": identifier}) if identifier_kind == "email" else None
+    ut = "staff" if user else "restaurant"
     tenant = None
     if not user:
-        user = await db.tenant_users.find_one({"email": email})
-        ut = "restaurant"
+        query = {"email": identifier} if identifier_kind == "email" else {
+            "$or": [{"phone_number": identifier}, {"whatsapp_number": identifier}]
+        }
+        user = await db.tenant_users.find_one(query)
     if not user or user.get("deleted_at"):
         return GENERIC_RESET_RESPONSE
     if ut == "restaurant":
@@ -1101,16 +1154,19 @@ async def forgot(payload: ForgotIn, background_tasks: BackgroundTasks, request: 
         phone_binding_version = user.get("phone_binding_version") or user.get("whatsapp_binding_version")
         if (ut != "restaurant" or user.get("status", "active") != "active"
                 or phone_user_id != str(user["_id"])
-                or not phone_number or not phone_binding_version):
+                or not phone_number or not phone_binding_version
+                or (identifier_kind == "phone" and phone_number != identifier)):
             return GENERIC_RESET_RESPONSE
         try:
-            raw = await _issue_password_reset(str(user["_id"]), email, ut,
+            raw = await _issue_password_reset(str(user["_id"]), user.get("email"), ut,
                                               phone_binding_version=phone_binding_version)
         except HTTPException:
             return GENERIC_RESET_RESPONSE
         background_tasks.add_task(_send_whatsapp_reset, phone_number, raw, "recovery", tenant_id=user["tenant_id"])
     else:
-        raw = await _issue_password_reset(str(user["_id"]), email, ut)
+        if not user.get("email"):
+            return GENERIC_RESET_RESPONSE
+        raw = await _issue_password_reset(str(user["_id"]), user["email"], ut)
         background_tasks.add_task(send_password_reset_email, user["email"], raw)
     return GENERIC_RESET_RESPONSE
 
@@ -1137,7 +1193,7 @@ async def reset(payload: ResetIn):
     )
     if not doc:
         raise HTTPException(400, "Token inválido ou expirado")
-    email = doc["email"]
+    email = doc.get("email", "")
     user_type = doc.get("user_type")
     coll = db.tenant_users if user_type == "restaurant" else db.hub_users
     if user_type == "restaurant":
@@ -1176,7 +1232,8 @@ async def reset(payload: ResetIn):
     await revoke_user_sessions(
         db, user_id=doc["user_id"], user_type=doc.get("user_type", "staff"), reason="password_reset"
     )
-    await db.login_attempts.delete_many({"email": email})
+    if email:
+        await db.login_attempts.delete_many({"email": email})
     return {"ok": True}
 
 
@@ -1184,13 +1241,18 @@ async def reset(payload: ResetIn):
 class TenantIn(BaseModel):
     name: str
     owner_name: str
-    email: EmailStr
+    email: Optional[EmailStr] = None
     phone: Optional[str] = ""
     mobile_phone: Optional[str] = ""
     whatsapp_phone: Optional[str] = None  # legacy request compatibility; never written
     status: str = "trial"
     address: Optional[str] = ""
     notes: Optional[str] = ""
+
+    @field_validator("email", mode="before")
+    @classmethod
+    def empty_email_is_absent(cls, value):
+        return None if isinstance(value, str) and not value.strip() else value
 
 
 class TenantOnboardingIn(TenantIn):
@@ -1292,7 +1354,7 @@ def _new_tenant_doc(payload: TenantIn) -> dict:
         "name": payload.name.strip(),
         "slug": _slug(payload.name),
         "owner_name": payload.owner_name.strip(),
-        "email": payload.email.lower(),
+        "email": str(payload.email).lower() if payload.email else "",
         "phone": payload.phone or "",
         "mobile_phone": mobile_phone,
         "status": payload.status,
@@ -1346,10 +1408,12 @@ async def _create_tenant_with_owner(payload: TenantOnboardingIn, background_task
     # owner identity at onboarding.  Do not accept alternate access details:
     # that would create two competing identities for one new restaurant.
     access_name = payload.owner_name.strip()
-    access_email = payload.email.lower()
+    access_email = str(payload.email).lower() if payload.email else None
     if not access_name:
         raise HTTPException(400, "Nome do responsável é obrigatório")
-    if await _email_in_use(access_email):
+    if payload.access_channel == "email" and not access_email:
+        raise HTTPException(400, "E-mail do responsável é obrigatório para envio por e-mail")
+    if access_email and await _email_in_use(access_email):
         raise HTTPException(409, "Já existe um usuário com este e-mail")
 
     inserted = await db.tenants.insert_one(doc)
@@ -1522,7 +1586,7 @@ async def resend_portal_owner_first_access(tid: str, user: dict = Depends(get_su
         raise HTTPException(409, "O convite de primeiro acesso não está disponível para esta conta")
     if not await _owner_contact_confirmation_allowed(tid, "first_access"):
         raise HTTPException(429, "Muitas solicitações. Tente novamente mais tarde.")
-    raw = await _issue_password_reset(str(owner["_id"]), owner["email"], "restaurant", first_access=True,
+    raw = await _issue_password_reset(str(owner["_id"]), owner.get("email"), "restaurant", first_access=True,
                                       phone_binding_version=version, expires_in=timedelta(hours=24))
     delivered = await _send_whatsapp_reset(phone, raw, "first_access", tenant_id=tid)
     if delivered is not DeliveryResult.ACCEPTED:
@@ -1782,17 +1846,19 @@ async def confirm_owner_email(payload: OwnerContactConfirmationIn):
                                         "deleted_at": None})
     if not owner or not tenant:
         raise HTTPException(400, "Confirmação inválida ou expirada")
-    old_email = owner["email"]
+    old_email = owner.get("email")
+    email_match = old_email if "email" in owner else {"$exists": False}
     updated = await db.tenant_users.update_one(
-        {"_id": owner["_id"], "tenant_id": tid, "email": old_email},
+        {"_id": owner["_id"], "tenant_id": tid, "email": email_match},
         _version_increment_update("token_version", {"email": new_email}),
     )
     if updated.matched_count != 1:
         raise HTTPException(400, "Confirmação inválida ou expirada")
     # Keep a separate commercial address intact.  Legacy tenants where both
     # addresses were the same stay consistent without changing another party.
-    await db.tenants.update_one({"_id": tenant["_id"], "email": old_email},
-                                {"$set": {"email": new_email, "updated_at": now_utc().isoformat()}})
+    if old_email is not None:
+        await db.tenants.update_one({"_id": tenant["_id"], "email": old_email},
+                                    {"$set": {"email": new_email, "updated_at": now_utc().isoformat()}})
     await revoke_user_sessions(db, user_id=owner_id, user_type="restaurant", reason="owner_email_changed")
     await log_activity(actor_id=owner_id, actor_name=owner.get("name", "Proprietário"),
                        action="tenant.owner_email_confirmed", target_type="tenant", target_id=tid,
@@ -1829,10 +1895,15 @@ async def confirm_owner_whatsapp(payload: OwnerContactConfirmationIn):
     if duplicate:
         raise HTTPException(409, "Este WhatsApp não está mais disponível")
     version = secrets.token_urlsafe(32)
-    changed = await db.tenant_users.update_one(
-        {"_id": owner["_id"], "tenant_id": tid, "status": "active", "deleted_at": None},
-        _version_increment_update("token_version", {"phone_number": phone, "phone_binding_version": version}),
-    )
+    try:
+        changed = await db.tenant_users.update_one(
+            {"_id": owner["_id"], "tenant_id": tid, "status": "active", "deleted_at": None},
+            _version_increment_update("token_version", {"phone_number": phone, "phone_binding_version": version}),
+        )
+    except DuplicateKeyError:
+        # The preflight above provides a clear error; this catches the only
+        # remaining race without binding one mobile to two identities.
+        raise HTTPException(409, "Este WhatsApp não está mais disponível") from None
     if changed.matched_count != 1:
         raise HTTPException(400, "Confirmação inválida ou expirada")
     if transfer:
@@ -1854,7 +1925,7 @@ async def confirm_owner_whatsapp(payload: OwnerContactConfirmationIn):
     continuation = None
     if owner.get("password_reset_required"):
         continuation = await _issue_password_reset(
-            owner_id, owner["email"], "restaurant", first_access=True,
+            owner_id, owner.get("email"), "restaurant", first_access=True,
             phone_binding_version=version, expires_in=timedelta(hours=24),
             owner_transfer_id=transfer_id,
         )
@@ -2336,23 +2407,25 @@ async def _create_tenant_user(tid: str, payload: TenantUserIn, actor: dict) -> d
     return out
 
 
-async def _create_initial_tenant_manager(tid: str, name: str, email: str) -> str:
+async def _create_initial_tenant_manager(tid: str, name: str, email: Optional[str]) -> str:
     """Persist the invite-only first manager without ever exposing a password.
 
     This is intentionally separate from the legacy user-creation helper: its
     audit write happens after the complete onboarding succeeds, so a failure
     can compensate every document created by this request.
     """
-    if await _email_in_use(email):
+    if email and await _email_in_use(email):
         raise HTTPException(409, "Já existe um usuário com este e-mail")
     doc = {
-        "tenant_id": tid, "name": name, "email": email,
+        "tenant_id": tid, "name": name,
         "role": "manager", "status": "active", "user_type": "restaurant",
         # A random unusable credential satisfies the legacy schema only; the
         # reset-required flag blocks login until the invite link sets a password.
         "password_hash": hash_password(secrets.token_urlsafe(32)), "password_reset_required": True,
         "token_version": 0, "created_at": now_utc().isoformat(),
     }
+    if email:
+        doc["email"] = email
     try:
         result = await db.tenant_users.insert_one(doc)
     except DuplicateKeyError:
@@ -3270,14 +3343,26 @@ async def startup():
         await asyncio.wait_for(db.command("ping"), timeout=MONGO_STARTUP_TIMEOUT_SECONDS)
     except (asyncio.TimeoutError, PyMongoError) as exc:
         raise RuntimeError("MongoDB não ficou disponível durante a inicialização") from exc
-    logger.info("MongoDB disponível; criando índices e aplicando migrações de startup")
+    logger.info("MongoDB disponível; criando índices de aplicação")
     await db.hub_users.create_index("email", unique=True)
     await db.tenants.create_index("email")
     await db.tenants.create_index("slug", unique=True)
     await db.modules.create_index("key", unique=True)
     await db.tenant_modules.create_index([("tenant_id", 1), ("module_key", 1)], unique=True)
     await db.tenant_users.create_index("tenant_id")
-    await db.tenant_users.create_index("email", unique=True)
+    # Identifier indexes are schema, not startup migrations.  In particular,
+    # never drop a live unique index from an application process.  The explicit
+    # backend/migrate_auth_indexes.py utility performs the guarded transition.
+    try:
+        tenant_user_indexes = await db.tenant_users.list_indexes().to_list(None)
+    except PyMongoError as exc:
+        raise RuntimeError("Não foi possível verificar os índices de autenticação") from exc
+    index_errors = identifier_index_errors(tenant_user_indexes)
+    if index_errors:
+        logger.error("auth_identifier_index_contract_invalid: %s", ",".join(index_errors))
+        raise RuntimeError(
+            "Índices de autenticação incompatíveis; execute a migração administrativa antes de iniciar o HUB"
+        )
     await db.activity_log.create_index([("created_at", -1)])
     await db.login_attempts.create_index("email")
     await db.login_attempts.create_index("identifier")

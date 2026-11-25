@@ -156,7 +156,8 @@ test('gateway rejects unauthenticated requests and does not resend accepted or i
   try {
     const store = openStore(join(dir, 'state.sqlite'), randomBytes(32));
     let sends = 0;
-    const connection = { state: 'open', send: async () => { sends++; } };
+    const purposes = [];
+    const connection = { state: 'open', send: async (_number, _text, _expiresAt, purpose) => { sends++; purposes.push(purpose); } };
     const secret = 'x'.repeat(32);
     const adminSecret = 'y'.repeat(32);
     const pairingSecret = 'z'.repeat(32);
@@ -184,6 +185,7 @@ test('gateway rejects unauthenticated requests and does not resend accepted or i
     confirmation.signature = createHmac('sha256', secret).update(confirmation.timestamp + '.').update(confirmation.rawBody).digest('hex');
     assert.equal((await gateway.handle(confirmation)).status, 202);
     assert.equal(sends, 2);
+    assert.deepEqual(purposes, ['recovery', 'contact_confirmation']);
     connection.send = async () => { sends++; throw new Error('test'); };
     const secondToken = 'b'.repeat(43);
     const second = { ...request, id: createHash('sha256').update(secondToken).digest('hex'), body: { ...request.body, link: `https://hub.example.test/reset-password?token=${secondToken}` } };
@@ -355,14 +357,61 @@ test('Baileys retry callback returns only the original cached transaction and do
     assert.equal(socketConfig.maxMsgRetryCount, 3);
     assert.deepEqual(await socketConfig.getMessage(messageKey), { conversation: 'transactional retry body' });
     assert.equal(await socketConfig.getMessage({ ...messageKey, remoteJid: '5511988888888@s.whatsapp.net' }), undefined);
+    // In 6.7.24 an own-device retry may put the original chat in remoteJid
+    // and the requesting own device in participant.
+    assert.equal(await socketConfig.getMessage({ ...messageKey, participant: sessionId }), undefined);
     // Direct receipt keys in Baileys 6.7.24 can be marked fromMe=false.
     events.emit('messages.update', [{ key: { ...messageKey, fromMe: false, remoteJid: '5511912345678@lid' }, update: { status: 2 } }]);
     assert.deepEqual(outboundEvents.map(({ kind, status }) => [kind, status]), [
       ['submitted', undefined], ['retry_requested', undefined], ['retry_served', undefined],
+      ['retry_requested', undefined], ['retry_unavailable', undefined],
       ['retry_requested', undefined], ['retry_unavailable', undefined], ['status', 2],
     ]);
+    assert.equal(outboundEvents[5].details.retryScope, 'own_account');
+    assert.equal(outboundEvents[3].details.retryScope, 'unknown');
     assert.equal(sends, 1, 'retrieving a retry must not initiate another confirmation request');
   } finally { connection?.stop(); store.close(); removeTestDirectory(dir); }
+});
+
+test('own-copy observations preserve the Baileys payload and stay with their overlapping sends', async () => {
+  const events = new EventEmitter();
+  const submissions = new Map();
+  const observed = [];
+  const ownNumber = '5511987654321';
+  const otherNumber = '5511912345678';
+  const ownBase = `${ownNumber}@s.whatsapp.net`;
+  const ownDevice = `${ownNumber}:3@s.whatsapp.net`;
+  let socketConfig;
+  const socket = {
+    ev: events, user: { id: ownDevice }, end() {},
+    async sendMessage(remoteJid, { text }) {
+      await new Promise(resolve => submissions.set(remoteJid, resolve));
+      const message = { conversation: text };
+      const copy = { deviceSentMessage: { destinationJid: remoteJid, message } };
+      const candidates = remoteJid === ownBase ? [ownBase, ownDevice, ownDevice] : [ownBase, ownDevice, '123456789:2@lid', 'unrecognized'];
+      assert.equal(socketConfig.patchMessageBeforeSending(copy, candidates), copy);
+      assert.equal(socketConfig.patchMessageBeforeSending(message, [remoteJid]), message);
+      return { key: { id: remoteJid === ownBase ? 'self-message' : 'other-message', remoteJid }, message };
+    },
+  };
+  const connection = createConnection({
+    makeSocket: config => { socketConfig = config; return socket; },
+    auth: { state: { creds: { me: { id: ownDevice } } }, saveCreds() {} }, logger: {}, loggedOutCode: 401,
+    onOutboundEvent: ({ kind, key, details }) => { if (kind === 'submitted') observed.push([key.id, details]); },
+  });
+  try {
+    events.emit('connection.update', { connection: 'open' });
+    const self = connection.send(`+${ownNumber}`, 'self text', Date.now() + 60000, 'contact_confirmation');
+    const other = connection.send(`+${otherNumber}`, 'other text', Date.now() + 60000, 'recovery');
+    submissions.get(`${otherNumber}@s.whatsapp.net`)();
+    await other;
+    submissions.get(ownBase)();
+    await self;
+    assert.deepEqual(observed.map(([id, { purpose, destinationScope, copies }]) => [id, purpose, destinationScope, copies]), [
+      ['other-message', 'recovery', 'other_account', { total: 4, distinct: 4, pn: 2, lid: 1, unknown: 1, base: true }],
+      ['self-message', 'contact_confirmation', 'own_account', { total: 3, distinct: 2, pn: 3, lid: 0, unknown: 0, base: true }],
+    ]);
+  } finally { connection.stop(); }
 });
 
 test('own-device inspection is aggregate-only, refreshes once, and never sends a message', async () => {

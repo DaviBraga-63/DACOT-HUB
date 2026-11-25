@@ -67,6 +67,17 @@ class Services:
         self.wait(lambda: self.mongo.admin.command("hello").get("isWritablePrimary") or (_ for _ in ()).throw(RuntimeError("not primary")), "mongo")
         self.db = self.mongo.hub_p0
         self.odb = self.mongo.orders_p0
+        # Production receives these through the explicit schema migration.
+        # P0 creates an empty disposable database, so provision the exact
+        # contract before the application validates it during startup.
+        self.db.tenant_users.create_index(
+            "email", unique=True, name="tenant_users_email_unique",
+            partialFilterExpression={"email": {"$type": "string"}},
+        )
+        self.db.tenant_users.create_index(
+            "phone_number", unique=True, name="tenant_users_confirmed_phone_unique",
+            partialFilterExpression={"phone_number": {"$type": "string"}},
+        )
         self.hport, self.oport = hp, op
         self.restart_hub()
         self.orders_env = {

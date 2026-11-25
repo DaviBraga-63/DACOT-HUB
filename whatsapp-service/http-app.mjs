@@ -8,7 +8,7 @@ const diagnosticPath = /^\/internal\/outbound-diagnostics(?:\?trace=[a-f0-9]{16}
 const ownDeviceDiagnosticPath = '/internal/own-device-sync-diagnostics';
 const accountSwitchPath = /^\/internal\/account-switch\/[a-f0-9]{32,64}\/(prepare|status|code|promote|cancel)$/;
 
-export function createListener({ gateway, administrative = false, tls, now = Date.now }) {
+export function createListener({ gateway, administrative = false, tls, now = Date.now, localShutdown }) {
   let windowStart = now(), attempts = 0;
   const handler = (req, res) => {
     res.setHeader('Cache-Control', 'no-store');
@@ -22,6 +22,16 @@ export function createListener({ gateway, administrative = false, tls, now = Dat
     if (++attempts > (administrative ? 30 : 120)) return reply(429);
     if (administrative) {
       if (!['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(req.socket.remoteAddress)) return reply(404);
+      if (req.url === '/internal/local-shutdown' && typeof localShutdown === 'function') {
+        if (req.method !== 'POST') return reply(405);
+        void gateway.handle({ method: 'GET', path: '/internal/status', authorization: req.headers.authorization })
+          .then(result => {
+            if (result.status !== 200) return reply(401);
+            res.once('finish', () => setImmediate(localShutdown));
+            reply(202, { state: 'shutting_down' });
+          }).catch(() => reply(401));
+        return;
+      }
       if (!adminPaths.has(req.url)) return reply(404);
       if ((req.url === '/internal/pairing/reset' ? 'POST' : 'GET') !== req.method) return reply(405);
     } else {

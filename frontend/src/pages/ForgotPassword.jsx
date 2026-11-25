@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import { api, formatApiErrorDetail } from "@/lib/api";
 
 export default function ForgotPassword() {
-  const [email, setEmail] = useState("");
+  const [identifier, setIdentifier] = useState("");
   const [channel, setChannel] = useState("email");
   const [done, setDone] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -13,7 +13,7 @@ export default function ForgotPassword() {
     e.preventDefault();
     setBusy(true); setErr(null);
     try {
-      await api.post("/auth/forgot-password", { email: email.trim(), channel });
+      await api.post("/auth/forgot-password", { identifier: identifier.trim(), channel });
       setDone(true);
     } catch (e) {
       setErr(formatApiErrorDetail(e.response?.data?.detail) || e.message);
@@ -35,10 +35,10 @@ export default function ForgotPassword() {
         ) : (
           <form onSubmit={submit} className="space-y-5">
             <p className="text-[15px] text-slate-600">
-              Informe o e-mail da sua conta DACOT Hub e escolha receber o link por e-mail ou WhatsApp.
+              Informe o e-mail ou WhatsApp confirmado da sua conta e escolha o canal de recuperação.
             </p>
-            <input type="email" required value={email} onChange={(e) => setEmail(e.target.value)}
-                   className="dh-input" placeholder="voce@dacot.com" data-testid="forgot-email" />
+            <input type="text" required value={identifier} onChange={(e) => setIdentifier(e.target.value)}
+                   className="dh-input" placeholder="voce@dacot.com ou (11) 91234-5678" data-testid="forgot-identifier" />
             <label className="block text-[13px]">Canal de recuperação
               <select className="dh-input mt-1" value={channel} onChange={(e) => setChannel(e.target.value)}>
                 <option value="email">E-mail</option><option value="whatsapp">WhatsApp</option>

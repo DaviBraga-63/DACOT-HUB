@@ -5,6 +5,7 @@ from enum import Enum
 import hashlib
 import hmac
 import json
+import os
 import re
 import time
 from urllib.parse import quote, urlsplit
@@ -56,9 +57,31 @@ def _https_origin(value: str) -> bool:
         return False
 
 
+def whatsapp_invitation_origin(frontend_url: str) -> str:
+    """Keep development QR tests on the localhost invitation proxy."""
+    if os.environ.get("APP_ENV", "production").strip().lower() != "development":
+        return frontend_url
+    local_origin = os.environ.get("WHATSAPP_LOCAL_INVITE_ORIGIN")
+    if not local_origin:
+        return frontend_url
+    match = re.fullmatch(r"https://localhost:([1-9][0-9]{0,4})/?", local_origin)
+    if not match or int(match[1]) > 65535:
+        raise RuntimeError("WHATSAPP_LOCAL_INVITE_ORIGIN deve ser https://localhost:<porta>")
+    return local_origin.rstrip("/")
+
+
 def _service_origin(value: str, transport: str) -> bool:
     if _https_origin(value):
         return True
+    if (os.environ.get("APP_ENV", "production").strip().lower() == "development"
+            and transport == "local-loopback-http"):
+        try:
+            parsed = urlsplit(value)
+            return (parsed.scheme == "http" and parsed.hostname in {"127.0.0.1", "localhost", "::1"}
+                    and parsed.port is not None and not parsed.username and not parsed.password
+                    and parsed.path in ("", "/") and not parsed.query and not parsed.fragment)
+        except ValueError:
+            return False
     return transport == "speedtrail-private-http" and value.rstrip("/") == "http://dacot-whatsapp:3002"
 
 

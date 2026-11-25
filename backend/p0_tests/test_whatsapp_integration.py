@@ -8,6 +8,14 @@ from bson import ObjectId
 from pymongo.errors import DuplicateKeyError
 
 
+def _unique_test_phone(service):
+    """Return a valid Brazilian mobile number unused by this disposable DB."""
+    while True:
+        phone = f"+55119{secrets.randbelow(100_000_000):08d}"
+        if not service.db.tenant_users.find_one({"phone_number": phone}):
+            return phone
+
+
 def test_onboarding_whatsapp_keeps_recovery_unbound_until_phone_confirmation(services, monkeypatch):
     monkeypatch.delenv("WHATSAPP_SERVICE_URL", raising=False)
     monkeypatch.delenv("WHATSAPP_SERVICE_SECRET", raising=False)
@@ -97,11 +105,12 @@ def test_pending_owner_transfer_completes_only_after_confirmation_and_first_acce
     current = services.restaurant()
     tid, previous_id = current["tid"], current["uid"]
     previous = services.db.tenant_users.find_one({"_id": ObjectId(previous_id)})
+    phone = _unique_test_phone(services)
     services.db.tenant_users.update_one({"_id": previous["_id"]}, {"$set": {
-        "phone_number": "+5511912345678", "phone_binding_version": "old-binding",
+        "phone_number": phone, "phone_binding_version": "old-binding",
     }})
     services.db.tenants.update_one({"_id": ObjectId(tid)}, {"$set": {
-        "mobile_phone": "+5511912345678", "phone_user_id": previous_id,
+        "mobile_phone": phone, "phone_user_id": previous_id,
     }})
 
     new_id = ObjectId()

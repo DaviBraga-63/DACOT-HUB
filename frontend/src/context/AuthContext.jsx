@@ -51,13 +51,13 @@ export function AuthProvider({ children }) {
     };
   }, [refresh, user]);
 
-  const login = async (email, password) => {
+  const login = async (identifier, password) => {
     authRequestRef.current += 1;
     setError(null);
     try {
       // Explicit login always gets a new opaque identity for this tab.
       startNewTabSession();
-      const { data } = await api.post("/auth/login", { email, password });
+      const { data } = await api.post("/auth/login", { identifier, password });
       setUser(data);
       return data;
     } catch (e) {
