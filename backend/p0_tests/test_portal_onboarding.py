@@ -146,6 +146,26 @@ def test_confirmed_whatsapp_only_owner_can_login_and_recover_without_email(servi
     assert recovery.status_code == 200
     assert service.db.password_reset_tokens.count_documents({"user_id": str(owner["_id"]), "used": False}) == 1
 
+    # A WhatsApp-only owner can later prove ownership of an email without
+    # replacing the account, password, or confirmed phone binding.
+    from datetime import datetime, timedelta, timezone
+    email = f"later-{tag}@example.com"
+    token = secrets.token_urlsafe(32)
+    now = datetime.now(timezone.utc)
+    service.db.owner_contact_confirmations.insert_one({
+        "token_hash": hashlib.sha256(token.encode()).hexdigest(), "tenant_id": tid,
+        "owner_user_id": str(owner["_id"]), "kind": "email", "proposed_value": email,
+        "used": False, "created_at": now, "expires_at": now + timedelta(hours=1),
+    })
+    assert _login_with_identifier(service, email, service.password).status_code == 401
+    response = requests.post(service.hub + "/api/auth/confirm-owner-email", json={"token": token}, timeout=10)
+    assert response.status_code == 200, response.text
+    assert _login_with_identifier(service, email, service.password).status_code == 200
+    assert _login_with_identifier(service, phone, service.password).status_code == 200
+    updated = service.db.tenant_users.find_one({"_id": owner["_id"]})
+    assert updated["email"] == email and updated["phone_number"] == phone
+    assert service.db.tenant_users.count_documents({"tenant_id": tid}) == 1
+
 
 def test_phone_login_requires_confirmed_unique_binding(services):
     service = services

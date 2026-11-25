@@ -1843,17 +1843,19 @@ async def confirm_owner_email(payload: OwnerContactConfirmationIn):
                                         "deleted_at": None})
     if not owner or not tenant:
         raise HTTPException(400, "Confirmação inválida ou expirada")
-    old_email = owner["email"]
+    old_email = owner.get("email")
+    email_match = old_email if "email" in owner else {"$exists": False}
     updated = await db.tenant_users.update_one(
-        {"_id": owner["_id"], "tenant_id": tid, "email": old_email},
+        {"_id": owner["_id"], "tenant_id": tid, "email": email_match},
         _version_increment_update("token_version", {"email": new_email}),
     )
     if updated.matched_count != 1:
         raise HTTPException(400, "Confirmação inválida ou expirada")
     # Keep a separate commercial address intact.  Legacy tenants where both
     # addresses were the same stay consistent without changing another party.
-    await db.tenants.update_one({"_id": tenant["_id"], "email": old_email},
-                                {"$set": {"email": new_email, "updated_at": now_utc().isoformat()}})
+    if old_email is not None:
+        await db.tenants.update_one({"_id": tenant["_id"], "email": old_email},
+                                    {"$set": {"email": new_email, "updated_at": now_utc().isoformat()}})
     await revoke_user_sessions(db, user_id=owner_id, user_type="restaurant", reason="owner_email_changed")
     await log_activity(actor_id=owner_id, actor_name=owner.get("name", "Proprietário"),
                        action="tenant.owner_email_confirmed", target_type="tenant", target_id=tid,
