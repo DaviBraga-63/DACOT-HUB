@@ -209,6 +209,8 @@
 }
 .dh-chip-success { background: var(--dh-success-bg); color: var(--dh-success-fg); border-color: var(--dh-success-bd); }
 .dh-chip-warning { background: var(--dh-warning-bg); color: var(--dh-warning-fg); border-color: var(--dh-warning-bd); }
+.dh-support-info { background: #E9F1F7; color: #365B73; border-color: #B9CEDD; }
+:root[data-theme="dark"] .dh-support-info { background: rgba(132, 181, 211, 0.14); color: #A3C9E0; border-color: rgba(132, 181, 211, 0.42); }
 .dh-chip-error   { background: var(--dh-error-bg);   color: var(--dh-error-fg);   border-color: var(--dh-error-bd); }
 .dh-chip-neutral { background: var(--dh-neutral-bg); color: var(--dh-neutral-fg); border-color: var(--dh-neutral-bd); }
 

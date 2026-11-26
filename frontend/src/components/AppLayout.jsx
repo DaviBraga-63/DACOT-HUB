@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { NavLink, useLocation, useNavigate, Outlet, Navigate } from "react-router-dom";
-import { LayoutDashboard, Building2, Blocks, Users, MessageCircle, LogOut, Menu, Moon, Sun, X, ChevronDown } from "lucide-react";
+import { LayoutDashboard, Building2, Blocks, Users, MessageCircle, Headset, LogOut, Menu, Moon, Sun, X, ChevronDown } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 import { useTheme } from "@/context/ThemeContext";
+import { canUseSupport, SupportUnreadBadge, useSupportNotifications } from "@/context/SupportNotifications";
 import { api } from "@/lib/api";
 import { getModuleIcon } from "@/lib/moduleIcons";
 import { isReleasedModule } from "@/lib/releasedModules";
@@ -16,6 +17,7 @@ const NAV = [
   { to: "/modulos", label: "Módulos", icon: Blocks, testid: "menu-modulos" },
   { to: "/equipe", label: "Equipe", icon: Users, testid: "menu-equipe" },
   { to: "/integracao/whatsapp", label: "WhatsApp", icon: MessageCircle, testid: "menu-whatsapp" },
+  { to: "/suporte", label: "Suporte", icon: Headset, testid: "menu-support" },
 ];
 
 function Brand({ compact }) {
@@ -36,6 +38,7 @@ function Brand({ compact }) {
 export default function AppLayout() {
   const { user, logout } = useAuth();
   const { theme, toggleTheme } = useTheme();
+  const { count: supportUnread } = useSupportNotifications();
   const navigate = useNavigate();
   const location = useLocation();
   const [drawer, setDrawer] = useState(false);
@@ -174,6 +177,7 @@ export default function AppLayout() {
 
   const navItems = (variant, onNavigate) => NAV
     .filter((item) => item.to !== "/integracao/whatsapp" || user?.role === "super_admin")
+    .filter((item) => item.to !== "/suporte" || canUseSupport(user, true))
     .map(({ to, label, icon: Icon, testid, end }) => {
     if (variant === "desktop" && to === "/modulos") return desktopModulesMenu;
     return (
@@ -187,6 +191,7 @@ export default function AppLayout() {
       >
         <Icon size={18} strokeWidth={1.75} />
         <span>{label}</span>
+        {to === "/suporte" && <SupportUnreadBadge count={supportUnread} />}
       </NavLink>
     );
     });
