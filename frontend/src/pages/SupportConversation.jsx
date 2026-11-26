@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { ArrowLeft, ArrowUpRight, Check, RotateCcw, Send } from "lucide-react";
 import { useSupportNotifications, useSupportPolling } from "@/context/SupportNotifications";
@@ -15,56 +15,110 @@ function mergeMessages(earlier, later) {
     .sort((left, right) => left.seq - right.seq);
 }
 
+const messageDay = new Intl.DateTimeFormat("pt-BR", { dateStyle: "long" });
+const messageTime = new Intl.DateTimeFormat("pt-BR", { timeStyle: "short" });
+
+function formatMessageDate(value, formatter) {
+  const date = new Date(value);
+  return value && !Number.isNaN(date.valueOf()) ? formatter.format(date) : "";
+}
+
 function ConversationMessage({ message, staff }) {
   const fromRestaurant = message.author_type === "restaurant";
   const author = !staff && !fromRestaurant ? "Equipe DACOT"
     : message.is_mine ? "Você" : message.author_label;
-  const time = <time dateTime={message.created_at}>{formatSupportDate(message.created_at)}</time>;
+  const time = <time className="tabular-nums" dateTime={message.created_at}>{formatMessageDate(message.created_at, messageTime) || "—"}</time>;
 
   if (message.kind !== "message") {
     const label = message.kind === "resolved" ? "Ticket marcado como resolvido" : "Ticket reaberto";
-    return <li className="my-1 text-center text-xs text-[var(--dh-muted)]">{label} · {time}</li>;
+    return <li className="py-1 text-center text-xs leading-relaxed text-[var(--dh-muted)]">{label} · {time}</li>;
   }
 
   return (
     <li className={`flex ${fromRestaurant ? "justify-end" : "justify-start"}`} data-testid="support-message">
-      <div className={`min-w-0 max-w-[90%] rounded-lg border border-[var(--dh-border-soft)] px-3 py-2.5 sm:max-w-[80%] sm:px-4 ${fromRestaurant ? "bg-[var(--dh-accent-soft)]" : "bg-[var(--dh-surface-secondary)]"}`}>
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-[var(--dh-muted)]">
-          <span className="font-semibold text-[var(--dh-text)]">{author}</span>
+      <div className={`min-w-0 max-w-[min(92%,64ch)] rounded-xl border border-[var(--dh-border-soft)] px-4 py-3 sm:max-w-[min(80%,64ch)] sm:px-5 sm:py-4 ${fromRestaurant ? "rounded-br-sm bg-[var(--dh-accent-soft)]" : "rounded-bl-sm bg-[var(--dh-surface-secondary)]"}`}>
+        <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 text-xs text-[var(--dh-muted)]">
+          <span className="text-[13px] font-semibold text-[var(--dh-text)] [overflow-wrap:anywhere]">{author}</span>
           {time}
         </div>
-        <p className="mt-1 whitespace-pre-wrap break-words text-sm leading-relaxed text-[var(--dh-text)] [overflow-wrap:anywhere]">{message.text}</p>
+        <p className="mt-1.5 whitespace-pre-wrap text-[15px] leading-relaxed text-[var(--dh-text)] [overflow-wrap:anywhere]">{message.text}</p>
       </div>
     </li>
   );
 }
 
+function ConversationHistory({ messages, staff }) {
+  return (
+    <ol className="grid gap-4 sm:gap-5" aria-label="Histórico da conversa" data-testid="support-message-list">
+      {messages.map((message, index) => {
+        const day = formatMessageDate(message.created_at, messageDay);
+        const previousDay = formatMessageDate(messages[index - 1]?.created_at, messageDay);
+        return (
+          <Fragment key={message.id}>
+            {day && day !== previousDay && (
+              <li className="flex items-center gap-3 py-1 text-center sm:gap-4">
+                <span aria-hidden className="h-px flex-1 bg-[var(--dh-border-soft)]" />
+                <time className="text-xs font-semibold text-[var(--dh-muted-strong)]" dateTime={message.created_at}>{day}</time>
+                <span aria-hidden className="h-px flex-1 bg-[var(--dh-border-soft)]" />
+              </li>
+            )}
+            <ConversationMessage message={message} staff={staff} />
+          </Fragment>
+        );
+      })}
+    </ol>
+  );
+}
+
 function ClientDetails({ restaurant, ticket }) {
-  const fields = [
-    ["Restaurante", restaurant.name],
+  const clientFields = [
     ["Identificador", restaurant.id],
     ["Responsável", restaurant.owner_name],
     ["Solicitante", restaurant.requester_name],
-    ["E-mail", restaurant.email],
+    ["E-mail", restaurant.email, true],
     ["WhatsApp", restaurant.whatsapp],
     ["Status da conta", restaurant.status ? <StatusBadge status={restaurant.status} /> : null],
+  ];
+  const ticketFields = [
     ["Ticket", ticket.number],
     ["Categoria", SUPPORT_CATEGORIES[ticket.category]],
-    ["Assunto", ticket.subject],
+    ["Assunto", ticket.subject, true],
     ["Abertura", formatSupportDate(ticket.created_at)],
     ["Última atividade", formatSupportDate(ticket.updated_at)],
     ["Atendimento", <TicketStatus status={ticket.status} />],
   ];
   return (
-    <aside className="dh-card self-start space-y-4 p-4 sm:p-5" aria-label="Dados do restaurante" data-testid="support-client-details">
-      <h2 className="dh-font-display text-lg font-bold text-[var(--dh-text)]">Dados do restaurante</h2>
-      <dl className="grid gap-3 text-sm">
-        {fields.map(([label, value]) => (
-          <div key={label}><dt className="text-xs text-[var(--dh-muted)]">{label}</dt><dd className="mt-0.5 min-w-0 break-words font-medium text-[var(--dh-text)] [overflow-wrap:anywhere]">{value || "—"}</dd></div>
-        ))}
-      </dl>
-      {restaurant.id && <Link to={`/clientes/${restaurant.id}`} className="dh-btn dh-btn-outline w-full justify-center">Abrir cadastro <ArrowUpRight size={15} aria-hidden /></Link>}
+    <aside className="dh-card min-w-0 self-start" aria-label="Dados do restaurante" data-testid="support-client-details">
+      <div className="border-b border-[var(--dh-border-soft)] px-5 py-5 sm:px-6">
+        <h2 className="dh-font-display text-xl font-bold text-[var(--dh-text)]">Dados do restaurante</h2>
+        <p className="mt-2 text-base font-semibold leading-snug text-[var(--dh-muted-strong)] [overflow-wrap:anywhere]">{restaurant.name || "—"}</p>
+      </div>
+      <div className="space-y-5 px-5 py-5 sm:px-6">
+        <DetailsList fields={clientFields} />
+        {restaurant.id && (
+          <Link to={`/clientes/${restaurant.id}`} className="dh-btn dh-btn-outline min-h-11 w-full">
+            Abrir cadastro <ArrowUpRight size={17} aria-hidden />
+          </Link>
+        )}
+      </div>
+      <div className="border-t border-[var(--dh-border-soft)] px-5 py-5 sm:px-6">
+        <h3 className="dh-font-display mb-4 text-lg font-bold text-[var(--dh-text)]">Dados do ticket</h3>
+        <DetailsList fields={ticketFields} />
+      </div>
     </aside>
+  );
+}
+
+function DetailsList({ fields }) {
+  return (
+    <dl className="grid gap-x-5 gap-y-4 sm:grid-cols-2 lg:grid-cols-1 2xl:grid-cols-2">
+      {fields.map(([label, value, fullRow]) => (
+        <div className={fullRow ? "min-w-0 col-span-full" : "min-w-0"} key={label}>
+          <dt className="text-xs font-medium text-[var(--dh-muted)]">{label}</dt>
+          <dd className="mt-1 text-sm font-medium text-[var(--dh-text)] [overflow-wrap:anywhere]">{value || "—"}</dd>
+        </div>
+      ))}
+    </dl>
   );
 }
 
@@ -213,81 +267,88 @@ export default function SupportConversation({ staff, ticketId, apiPath, basePath
   const changeStatus = (status) => mutate("status", { status }, statusAttempt, () => setResolving(false));
 
   return (
-    <div className="mx-auto max-w-6xl space-y-4 dh-fade-in" data-testid="support-conversation-page">
-      <Link to={basePath} className="dh-btn dh-btn-ghost self-start"><ArrowLeft size={16} aria-hidden /> Voltar aos tickets</Link>
+    <div className="w-full min-w-0 space-y-5 sm:space-y-6 dh-fade-in" data-testid="support-conversation-page">
+      <Link to={basePath} className="dh-btn dh-btn-ghost min-h-11"><ArrowLeft size={18} aria-hidden /> Voltar aos tickets</Link>
       <SupportError error={loadError} retry={load} />
       {!thread && !loadError && <SupportLoading />}
       {thread && (
         <>
-          <header className="grid gap-3 sm:flex sm:items-start sm:justify-between">
-            <div className="min-w-0">
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="font-mono text-xs font-semibold text-[var(--dh-muted-strong)]">{thread.ticket.number}</span>
-                <TicketStatus status={thread.ticket.status} testId="support-ticket-status" />
-              </div>
-              <h1 className="dh-font-display mt-2 break-words text-2xl font-bold tracking-tight text-[var(--dh-text)] sm:text-3xl" data-testid="support-ticket-title">{thread.ticket.subject}</h1>
-              <p className="mt-1 text-sm text-[var(--dh-muted)]">{SUPPORT_CATEGORIES[thread.ticket.category]} · Aberto em <time dateTime={thread.ticket.created_at}>{formatSupportDate(thread.ticket.created_at)}</time></p>
-            </div>
-            {thread.ticket.status === "resolved" ? (
-              <button type="button" className="dh-btn dh-btn-outline justify-self-start disabled:opacity-50" disabled={!!busy} onClick={() => changeStatus("awaiting_support")} data-testid="support-reopen">
-                <RotateCcw size={16} aria-hidden /> Reabrir ticket
-              </button>
-            ) : staff && (
-              <button type="button" className="dh-btn dh-btn-outline justify-self-start disabled:opacity-50" disabled={!!busy} onClick={() => setResolving(true)} data-testid="support-resolve">
-                <Check size={17} aria-hidden /> Marcar como resolvido
-              </button>
-            )}
-          </header>
+          <div className={`grid min-w-0 gap-5 xl:gap-7 ${staff ? "lg:grid-cols-[minmax(0,7fr)_minmax(14rem,3fr)] xl:grid-cols-[minmax(0,11fr)_minmax(0,4fr)]" : ""}`} data-testid="support-conversation-workspace">
+            <div className="min-w-0 space-y-5 sm:space-y-6" data-testid="support-conversation-main">
+              <header className="flex flex-wrap items-start justify-between gap-4">
+                <div className="min-w-0 flex-1 basis-60 space-y-2.5">
+                  <div className="flex flex-wrap items-center gap-2.5">
+                    <span className="font-mono text-[13px] font-semibold text-[var(--dh-muted)] [overflow-wrap:anywhere]">{thread.ticket.number}</span>
+                    <TicketStatus status={thread.ticket.status} testId="support-ticket-status" />
+                  </div>
+                  <h1 className="dh-font-display text-3xl font-bold tracking-tight text-[var(--dh-text)] [overflow-wrap:anywhere] sm:text-4xl" data-testid="support-ticket-title">{thread.ticket.subject}</h1>
+                  <p className="flex flex-wrap items-baseline gap-x-3 gap-y-1 text-[15px] text-[var(--dh-muted)]">
+                    <span>{SUPPORT_CATEGORIES[thread.ticket.category]}</span>
+                    <span>Aberto em <time dateTime={thread.ticket.created_at}>{formatSupportDate(thread.ticket.created_at)}</time></span>
+                  </p>
+                </div>
+                {thread.ticket.status === "resolved" ? (
+                  <button type="button" className="dh-btn dh-btn-outline min-h-11 disabled:opacity-50" disabled={!!busy} onClick={() => changeStatus("awaiting_support")} data-testid="support-reopen">
+                    <RotateCcw size={17} aria-hidden /> Reabrir ticket
+                  </button>
+                ) : staff && (
+                  <button type="button" className="dh-btn dh-btn-outline min-h-11 disabled:opacity-50" disabled={!!busy} onClick={() => setResolving(true)} data-testid="support-resolve">
+                    <Check size={18} aria-hidden /> Marcar como resolvido
+                  </button>
+                )}
+              </header>
 
-          <div className={`grid min-w-0 gap-4 ${staff ? "lg:grid-cols-[minmax(0,1fr)_280px]" : ""}`}>
-            <section className="dh-card min-w-0" aria-label="Conversa">
-              <div className="max-h-[55dvh] min-h-[180px] overflow-y-auto overscroll-contain p-4 sm:p-5" ref={scroller}
-                onScroll={(event) => {
-                  const { scrollHeight, clientHeight, scrollTop } = event.currentTarget;
-                  setPinned(scrollHeight - clientHeight - scrollTop < 50);
-                }}>
-                {thread.next_before && (
-                  <div className="mb-4 text-center">
-                    <button className="dh-btn dh-btn-outline disabled:opacity-50" type="button" disabled={olderBusy} onClick={loadOlder} data-testid="support-load-older">
-                      {olderBusy ? "Carregando…" : "Carregar mensagens anteriores"}
-                    </button>
+              <section className="dh-card flex h-[clamp(27rem,74dvh,52rem)] min-w-0 flex-col sm:h-[clamp(28rem,calc(100dvh-22rem),52rem)]" aria-label="Conversa">
+                <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-5 sm:px-6 sm:py-6 lg:px-8" ref={scroller}
+                  onScroll={(event) => {
+                    const { scrollHeight, clientHeight, scrollTop } = event.currentTarget;
+                    setPinned(scrollHeight - clientHeight - scrollTop < 50);
+                  }}>
+                  {thread.next_before && (
+                    <div className="mb-5 text-center">
+                      <button className="dh-btn dh-btn-outline min-h-11 disabled:opacity-50" type="button" disabled={olderBusy} onClick={loadOlder} data-testid="support-load-older">
+                        {olderBusy ? "Carregando…" : "Carregar mensagens anteriores"}
+                      </button>
+                    </div>
+                  )}
+                  <SupportError error={historyError} />
+                  <ConversationHistory messages={thread.messages} staff={staff} />
+                </div>
+                {!pinned && (
+                  <div className="px-4 pb-2 sm:px-6 lg:px-8">
+                    <button type="button" className="dh-btn dh-btn-ghost" onClick={() => setPinned(true)}>Ir para mensagens recentes</button>
                   </div>
                 )}
-                <SupportError error={historyError} />
-                <ol className="grid gap-3" aria-label="Histórico da conversa" data-testid="support-message-list">
-                  {thread.messages.map((message) => <ConversationMessage key={message.id} message={message} staff={staff} />)}
-                </ol>
-              </div>
-              {!pinned && <button type="button" className="dh-btn dh-btn-ghost m-2" onClick={() => setPinned(true)}>Ir para mensagens recentes</button>}
-              <div className="grid gap-3 border-t border-[var(--dh-border-soft)] p-4">
-                <SupportError error={mutationError} />
-                {thread.ticket.status === "resolved" ? (
-                  <p className="text-sm text-[var(--dh-muted)]">Reabra o ticket para continuar a conversa.</p>
-                ) : (
-                  <form className="grid gap-2" onSubmit={send}>
-                    <label className="grid gap-1.5 text-sm font-medium text-[var(--dh-text)]">
-                      Mensagem
-                      <textarea className="dh-input min-h-20 w-full resize-y" value={text} onChange={(event) => setText(event.target.value)}
-                        placeholder="Escreva uma mensagem" required maxLength={4000} disabled={!!busy} data-testid="support-reply-input" />
-                    </label>
-                    <button className="dh-btn dh-btn-primary justify-self-end" type="submit" disabled={!!busy} data-testid="support-send-reply">
-                      <Send size={15} aria-hidden /> {busy === "messages" ? "Enviando…" : "Enviar"}
-                    </button>
-                  </form>
-                )}
-              </div>
-            </section>
+                <div className="grid shrink-0 gap-3 border-t border-[var(--dh-border-soft)] px-4 py-4 sm:px-6 sm:py-5 lg:px-8">
+                  <SupportError error={mutationError} />
+                  {thread.ticket.status === "resolved" ? (
+                    <p className="py-1 text-[15px] text-[var(--dh-muted)]">Reabra o ticket para continuar a conversa.</p>
+                  ) : (
+                    <form className="grid gap-3" onSubmit={send}>
+                      <label className="grid gap-2 text-sm font-semibold text-[var(--dh-text)]">
+                        Mensagem
+                        <textarea className="dh-input min-h-24 max-h-[24dvh] w-full resize-y leading-relaxed" value={text} onChange={(event) => setText(event.target.value)}
+                          placeholder="Escreva uma mensagem" required maxLength={4000} disabled={!!busy} data-testid="support-reply-input" />
+                      </label>
+                      <button className="dh-btn dh-btn-primary min-h-11 w-full sm:min-w-32 sm:w-auto sm:justify-self-end" type="submit" disabled={!!busy} data-testid="support-send-reply">
+                        <Send size={17} aria-hidden /> {busy === "messages" ? "Enviando…" : "Enviar"}
+                      </button>
+                    </form>
+                  )}
+                </div>
+              </section>
+            </div>
             {staff && thread.restaurant && <ClientDetails restaurant={thread.restaurant} ticket={thread.ticket} />}
           </div>
 
           <AlertDialog open={resolving} onOpenChange={(next) => { if (!submitting.current) setResolving(next); }}>
-            <AlertDialogContent className="max-w-[min(32rem,calc(100vw-2rem))] border-[var(--dh-border)] bg-[var(--dh-surface)] text-[var(--dh-text)]">
-              <AlertDialogTitle className="dh-font-display text-xl">Marcar ticket como resolvido?</AlertDialogTitle>
+            <AlertDialogContent className="max-w-[min(34rem,calc(100vw-2rem))] border-[var(--dh-border)] bg-[var(--dh-surface)] text-[var(--dh-text)] sm:p-7">
+              <AlertDialogTitle className="dh-font-display text-2xl">Marcar ticket como resolvido?</AlertDialogTitle>
               <AlertDialogDescription className="text-[var(--dh-muted)]">O restaurante receberá uma notificação e poderá reabrir o ticket.</AlertDialogDescription>
               <SupportError error={mutationError} />
-              <div className="flex flex-wrap justify-end gap-2">
-                <AlertDialogCancel asChild><button className="dh-btn dh-btn-outline" type="button" disabled={!!busy}>Cancelar</button></AlertDialogCancel>
-                <button type="button" className="dh-btn dh-btn-primary" disabled={!!busy} onClick={() => changeStatus("resolved")} data-testid="support-confirm-resolve">
+              <div className="flex flex-wrap justify-end gap-3">
+                <AlertDialogCancel asChild><button className="dh-btn dh-btn-outline min-h-11" type="button" disabled={!!busy}>Cancelar</button></AlertDialogCancel>
+                <button type="button" className="dh-btn dh-btn-primary min-h-11" disabled={!!busy} onClick={() => changeStatus("resolved")} data-testid="support-confirm-resolve">
                   {busy ? "Concluindo…" : "Confirmar resolução"}
                 </button>
               </div>
