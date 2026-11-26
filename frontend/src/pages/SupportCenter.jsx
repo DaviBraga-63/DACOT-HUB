@@ -103,34 +103,36 @@ function TicketRow({ ticket, staff, basePath }) {
   const priority = staff && ticket.status === "awaiting_support";
   return (
     <li className="min-w-0">
-      <Link to={`${basePath}/${ticket.id}`} className="dh-card group relative grid min-w-0 gap-4 p-5 transition-colors hover:bg-[var(--dh-surface-hover)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--dh-accent)] sm:p-6" data-testid={`support-ticket-${ticket.id}`}>
+      <Link to={`${basePath}/${ticket.id}`} className="dh-card group relative grid min-w-0 gap-2 px-4 py-3.5 transition-colors hover:bg-[var(--dh-surface-hover)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--dh-accent)] sm:px-5" data-testid={`support-ticket-${ticket.id}`}>
         {(ticket.unread || priority) && <span className={`pointer-events-none absolute inset-y-0 left-0 w-0.5 ${ticket.unread ? "bg-[var(--dh-accent)]" : "bg-[var(--dh-warning-bd)]"}`} aria-hidden />}
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div className="min-w-0 flex-[1_1_16rem]">
-            <h2 className={`dh-font-display break-words font-bold text-[var(--dh-text)] ${staff ? "text-xl sm:text-2xl" : "text-2xl"}`}>{staff ? ticket.restaurant_name : ticket.subject}</h2>
-            <span className="mt-1 block break-all font-mono text-xs text-[var(--dh-muted)]">{ticket.number}</span>
-          </div>
+        <div className="flex min-w-0 flex-wrap items-center justify-between gap-x-4 gap-y-1.5">
+          <h2 className="dh-font-display min-w-0 flex-[1_1_16rem] text-lg font-bold leading-tight text-[var(--dh-text)] [overflow-wrap:anywhere] sm:text-xl sm:leading-tight">{ticket.subject}</h2>
           <div className="flex max-w-full flex-wrap items-center gap-2 sm:gap-3">
             {ticket.unread && <TicketUnread />}
             <TicketStatus status={ticket.status} staff={staff} />
             <ChevronRight size={19} className="shrink-0 text-[var(--dh-muted)] transition-colors group-hover:text-[var(--dh-accent)] group-focus-visible:text-[var(--dh-accent)]" aria-hidden />
           </div>
         </div>
-        <div className={`grid min-w-0 gap-3 ${staff ? "md:grid-cols-[minmax(0,3fr)_minmax(0,1fr)_minmax(0,1fr)]" : "md:grid-cols-[minmax(0,4fr)_minmax(0,1fr)]"}`}>
-          <div className="min-w-0">
-            {staff && <h3 className="break-words text-lg font-semibold leading-snug text-[var(--dh-text)]">{ticket.subject}</h3>}
-            {ticket.last_message_preview && <p className={`line-clamp-2 break-words text-sm leading-relaxed text-[var(--dh-muted-strong)] ${staff ? "mt-1" : ""}`}>{ticket.last_message_preview}</p>}
+        {(staff || ticket.last_message_preview) && (
+          <div className={`grid min-w-0 items-baseline gap-x-5 gap-y-1 text-sm leading-snug text-[var(--dh-muted-strong)] ${staff ? "lg:grid-cols-[minmax(0,2.5fr)_minmax(0,1fr)_minmax(0,1fr)]" : ""}`}>
+            <p className="line-clamp-2 min-w-0 [overflow-wrap:anywhere]">{ticket.last_message_preview}</p>
+            {staff && (
+              <>
+                <p className="min-w-0 [overflow-wrap:anywhere]">
+                  <span className="mr-1 text-xs text-[var(--dh-muted)]">Restaurante</span>{" "}
+                  <strong className="font-semibold">{ticket.restaurant_name}</strong>
+                </p>
+                <p className="min-w-0 [overflow-wrap:anywhere]">
+                  <span className="mr-1 text-xs text-[var(--dh-muted)]">Solicitante</span>{" "}
+                  <strong className="font-semibold">{ticket.requester_name}</strong>
+                </p>
+              </>
+            )}
           </div>
-          {staff && <div className="grid min-w-0 content-start gap-1">
-            <span className="text-xs text-[var(--dh-muted)]">Solicitante</span>
-            <span className="break-words text-sm font-semibold text-[var(--dh-text)]">{ticket.requester_name}</span>
-          </div>}
-          <div className="grid min-w-0 content-start gap-1">
-            <span className="text-xs text-[var(--dh-muted)]">Categoria</span>
-            <span className="break-words text-sm font-semibold text-[var(--dh-text)]">{SUPPORT_CATEGORIES[ticket.category]}</span>
-          </div>
-        </div>
-        <div className="flex flex-wrap gap-x-7 gap-y-1.5 border-t border-[var(--dh-border-soft)] pt-3 text-xs leading-relaxed text-[var(--dh-muted)] sm:text-sm">
+        )}
+        <div className="flex min-w-0 flex-wrap items-baseline gap-x-5 gap-y-1 text-xs leading-relaxed text-[var(--dh-muted)] sm:text-[13px]">
+          <span className="min-w-0 font-mono [overflow-wrap:anywhere]">{ticket.number}</span>
+          <span className="font-medium text-[var(--dh-muted-strong)]">{SUPPORT_CATEGORIES[ticket.category]}</span>
           <span>Aberto em <time className="font-medium text-[var(--dh-muted-strong)]" dateTime={ticket.created_at}>{formatSupportDate(ticket.created_at)}</time></span>
           <span>Última atividade <time className="font-medium text-[var(--dh-muted-strong)]" dateTime={ticket.updated_at}>{formatSupportDate(ticket.updated_at)}</time></span>
         </div>
