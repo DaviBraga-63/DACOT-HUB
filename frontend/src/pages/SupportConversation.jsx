@@ -4,7 +4,7 @@ import { ArrowLeft, ArrowUpRight, Check, RotateCcw, Send } from "lucide-react";
 import { useSupportNotifications, useSupportPolling } from "@/context/SupportNotifications";
 import { api, formatApiErrorDetail } from "@/lib/api";
 import { formatSupportDate, supportRequestId, SUPPORT_CATEGORIES } from "@/lib/support";
-import { SupportError, SupportLoading, TicketStatus } from "@/components/SupportElements";
+import { ConversationMessage, SupportError, SupportLoading, TicketStatus } from "@/components/SupportElements";
 import StatusBadge from "@/components/StatusBadge";
 import {
   AlertDialog, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogTitle,
@@ -23,30 +23,6 @@ function formatMessageDate(value, formatter) {
   return value && !Number.isNaN(date.valueOf()) ? formatter.format(date) : "";
 }
 
-function ConversationMessage({ message, staff }) {
-  const fromRestaurant = message.author_type === "restaurant";
-  const author = !staff && !fromRestaurant ? "Equipe DACOT"
-    : message.is_mine ? "Você" : message.author_label;
-  const time = <time className="tabular-nums" dateTime={message.created_at}>{formatMessageDate(message.created_at, messageTime) || "—"}</time>;
-
-  if (message.kind !== "message") {
-    const label = message.kind === "resolved" ? "Ticket marcado como resolvido" : "Ticket reaberto";
-    return <li className="py-1 text-center text-xs leading-relaxed text-[var(--dh-muted)]">{label} · {time}</li>;
-  }
-
-  return (
-    <li className={`flex ${fromRestaurant ? "justify-end" : "justify-start"}`} data-testid="support-message">
-      <div className={`min-w-0 max-w-[min(92%,64ch)] rounded-xl border border-[var(--dh-border-soft)] px-4 py-3 sm:max-w-[min(80%,64ch)] sm:px-5 sm:py-4 ${fromRestaurant ? "rounded-br-sm bg-[var(--dh-accent-soft)]" : "rounded-bl-sm bg-[var(--dh-surface-secondary)]"}`}>
-        <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1 text-xs text-[var(--dh-muted)]">
-          <span className="text-[13px] font-semibold text-[var(--dh-text)] [overflow-wrap:anywhere]">{author}</span>
-          {time}
-        </div>
-        <p className="mt-1.5 whitespace-pre-wrap text-[15px] leading-relaxed text-[var(--dh-text)] [overflow-wrap:anywhere]">{message.text}</p>
-      </div>
-    </li>
-  );
-}
-
 function ConversationHistory({ messages, staff }) {
   return (
     <ol className="grid gap-4 sm:gap-5" aria-label="Histórico da conversa" data-testid="support-message-list">
@@ -62,7 +38,7 @@ function ConversationHistory({ messages, staff }) {
                 <span aria-hidden className="h-px flex-1 bg-[var(--dh-border-soft)]" />
               </li>
             )}
-            <ConversationMessage message={message} staff={staff} />
+            <ConversationMessage message={message} staff={staff} timeLabel={formatMessageDate(message.created_at, messageTime) || "—"} />
           </Fragment>
         );
       })}
