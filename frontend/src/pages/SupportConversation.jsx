@@ -85,7 +85,7 @@ function ClientDetails({ restaurant, ticket }) {
     ["Assunto", ticket.subject, true],
     ["Abertura", formatSupportDate(ticket.created_at)],
     ["Última atividade", formatSupportDate(ticket.updated_at)],
-    ["Atendimento", <TicketStatus status={ticket.status} />],
+    ["Atendimento", <TicketStatus status={ticket.status} staff />],
   ];
   return (
     <aside className="dh-card min-w-0 self-start" aria-label="Dados do restaurante" data-testid="support-client-details">
@@ -279,7 +279,7 @@ export default function SupportConversation({ staff, ticketId, apiPath, basePath
                 <div className="min-w-0 flex-1 basis-60 space-y-2.5">
                   <div className="flex flex-wrap items-center gap-2.5">
                     <span className="font-mono text-[13px] font-semibold text-[var(--dh-muted)] [overflow-wrap:anywhere]">{thread.ticket.number}</span>
-                    <TicketStatus status={thread.ticket.status} testId="support-ticket-status" />
+                    <TicketStatus status={thread.ticket.status} staff={staff} testId="support-ticket-status" />
                   </div>
                   <h1 className="dh-font-display text-3xl font-bold tracking-tight text-[var(--dh-text)] [overflow-wrap:anywhere] sm:text-4xl" data-testid="support-ticket-title">{thread.ticket.subject}</h1>
                   <p className="flex flex-wrap items-baseline gap-x-3 gap-y-1 text-[15px] text-[var(--dh-muted)]">

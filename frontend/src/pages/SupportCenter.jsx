@@ -112,7 +112,7 @@ function TicketRow({ ticket, staff, basePath }) {
           </div>
           <div className="flex max-w-full flex-wrap items-center gap-2 sm:gap-3">
             {ticket.unread && <TicketUnread />}
-            <TicketStatus status={ticket.status} />
+            <TicketStatus status={ticket.status} staff={staff} />
             <ChevronRight size={19} className="shrink-0 text-[var(--dh-muted)] transition-colors group-hover:text-[var(--dh-accent)] group-focus-visible:text-[var(--dh-accent)]" aria-hidden />
           </div>
         </div>

@@ -7,8 +7,9 @@ const statusColor = {
   resolved: "dh-chip-success",
 };
 
-export function TicketStatus({ status, testId }) {
-  return <span className={`dh-chip dh-chip-dot shrink-0 whitespace-nowrap ${statusColor[status] || "dh-chip-neutral"}`} data-testid={testId}>{SUPPORT_STATUSES[status]}</span>;
+export function TicketStatus({ status, staff, testId }) {
+  const label = !staff && status === "awaiting_customer" ? "Aguardando sua resposta" : SUPPORT_STATUSES[status];
+  return <span className={`dh-chip dh-chip-dot shrink-0 whitespace-nowrap ${statusColor[status] || "dh-chip-neutral"}`} data-testid={testId}>{label}</span>;
 }
 
 export function TicketUnread() {
