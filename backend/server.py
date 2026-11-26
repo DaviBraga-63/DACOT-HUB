@@ -37,6 +37,7 @@ from auth_sessions import (
     revoke_user_sessions, valid_tab_session_id,
 )
 from auth_index_contract import identifier_index_errors
+from support import ensure_support_indexes, support_router
 
 import bcrypt
 import jwt
@@ -64,7 +65,8 @@ class _ContactTokenAccessLogFilter(logging.Filter):
             target = args[2]
             if isinstance(target, str):
                 path = target.split("?", 1)[0]
-                if path in {"/reset-password", "/confirm-owner-whatsapp", "/confirm-owner-email"}:
+                if (path in {"/reset-password", "/confirm-owner-whatsapp", "/confirm-owner-email"}
+                        or path.startswith(("/api/portal/support/", "/api/hub/support/"))):
                     args[2] = path
                     record.args = tuple(args)
         return True
@@ -3378,6 +3380,7 @@ async def startup():
     await db.whatsapp_pairing_requests.create_index("created_at", expireAfterSeconds=900)
     await db.whatsapp_account_switch_rate.create_index("created_at", expireAfterSeconds=900)
     await ensure_indexes(db)
+    await ensure_support_indexes(db)
 
     # Seed admin
     admin_email = os.environ["ADMIN_EMAIL"].lower()
@@ -3464,6 +3467,7 @@ async def startup():
     logger.info("Índices e migrações de startup concluídos")
 
 
+api_router.include_router(support_router(db, get_restaurant_user, get_staff_write))
 app.include_router(api_router)
 
 
