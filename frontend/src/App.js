@@ -1,6 +1,7 @@
 import "@/App.css";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { AuthProvider } from "@/context/AuthContext";
+import { SupportNotificationsProvider } from "@/context/SupportNotifications";
 import { ThemeProvider } from "@/context/ThemeContext";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -24,6 +25,7 @@ import Portal from "@/pages/Portal";
 import PortalModulos from "@/pages/PortalModulos";
 import PortalEquipe from "@/pages/PortalEquipe";
 import WhatsAppPairing from "@/pages/WhatsAppPairing";
+import { SupportCenter, SupportTicket } from "@/pages/SupportCenter";
 
 export default function App() {
   return (
@@ -31,6 +33,7 @@ export default function App() {
       <div className="App">
         <BrowserRouter>
           <AuthProvider>
+          <SupportNotificationsProvider>
           <TooltipProvider>
           <Routes>
             <Route path="/login" element={<Login />} />
@@ -49,16 +52,21 @@ export default function App() {
               <Route path="/equipe" element={<Equipe />} />
               <Route path="/integracao/whatsapp" element={<WhatsAppPairing />} />
               <Route path="/administracao/whatsapp" element={<WhatsAppPairing />} />
+              <Route path="/suporte" element={<SupportCenter staff />} />
+              <Route path="/suporte/:ticketId" element={<SupportTicket staff />} />
             </Route>
             <Route element={<ProtectedRoute><RestaurantRoute><PortalLayout /></RestaurantRoute></ProtectedRoute>}>
               <Route path="/portal" element={<Portal />} />
               <Route path="/portal/modulos" element={<PortalModulos />} />
               <Route path="/portal/equipe" element={<PortalEquipe />} />
+              <Route path="/portal/suporte" element={<SupportCenter />} />
+              <Route path="/portal/suporte/:ticketId" element={<SupportTicket />} />
             </Route>
             <Route path="*" element={<Navigate to="/login" replace />} />
           </Routes>
           <Toaster position="top-right" />
           </TooltipProvider>
+          </SupportNotificationsProvider>
           </AuthProvider>
         </BrowserRouter>
       </div>

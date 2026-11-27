@@ -1,31 +1,34 @@
 import { NavLink, Outlet, useNavigate } from "react-router-dom";
-import { LayoutDashboard, Blocks, Users, LogOut, Moon, Settings, Sun } from "lucide-react";
+import { LayoutDashboard, Blocks, Users, Headset, LogOut, Moon, Settings, Sun } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 import { useTheme } from "@/context/ThemeContext";
+import { canUseSupport, SupportUnreadBadge, useSupportNotifications } from "@/context/SupportNotifications";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 
 export default function PortalLayout() {
   const { user, logout } = useAuth();
   const { theme, toggleTheme } = useTheme();
+  const { count: supportUnread } = useSupportNotifications();
   const navigate = useNavigate();
   const exit = async () => { await logout(); navigate("/login"); };
 
   return (
     <div className="min-h-screen bg-[var(--dh-bg)]">
-      <header className="dh-topnav sticky top-0 z-30 flex h-[68px] items-center px-5 sm:px-8 lg:px-10">
-        <div className="shrink-0 pr-5 sm:pr-8 xl:pr-12">
+      <header className="dh-topnav sticky top-0 z-30 flex h-[68px] items-center px-3 sm:px-8 lg:px-10">
+        <div className="shrink-0 pr-2 sm:pr-8 xl:pr-12">
           <div className="flex items-center gap-3">
             <img src="/dacot-symbol-orange-v1.png" alt="DACOT" className="dh-brand-logo" />
             <span className="hidden sm:inline dh-font-display text-[17px] font-bold tracking-tight text-[var(--dh-text)]">DACOT</span>
           </div>
         </div>
-        <nav className="flex min-w-0 flex-1 items-center gap-1" aria-label="Navegação do portal">
+        <nav className="flex min-w-0 flex-1 items-center sm:gap-1" aria-label="Navegação do portal">
           <PortalLink to="/portal" end icon={LayoutDashboard} label="Painel" testid="portal-nav-dashboard" />
           <PortalLink to="/portal/modulos" icon={Blocks} label="Módulos" testid="portal-nav-modules" />
           <PortalLink to="/portal/equipe" icon={Users} label="Equipe" testid="portal-nav-team" />
+          {canUseSupport(user, false) && <PortalLink to="/portal/suporte" icon={Headset} label="Suporte" testid="portal-nav-support" unread={supportUnread} />}
         </nav>
-        <div className="flex items-center gap-2">
-          <div className="hidden sm:block text-right leading-tight mr-2">
+        <div className="flex shrink-0 items-center gap-1 sm:gap-2">
+          <div className="hidden xl:block text-right leading-tight mr-2">
             <div className="text-[12px] font-semibold text-[var(--dh-text)]">{user?.name}</div>
             <div className="text-[10px] text-[var(--dh-muted)]">{user?.email}</div>
           </div>
@@ -56,6 +59,12 @@ export default function PortalLayout() {
   );
 }
 
-function PortalLink({ to, end, icon: Icon, label, testid }) {
-  return <NavLink to={to} end={end} data-testid={testid} className={({ isActive }) => `dh-topnav-link ${isActive ? "dh-topnav-link-active" : ""}`}><Icon size={18} strokeWidth={1.75} /><span>{label}</span></NavLink>;
+function PortalLink({ to, end, icon: Icon, label, testid, unread }) {
+  return (
+    <NavLink to={to} end={end} title={label} data-testid={testid} className={({ isActive }) => `dh-topnav-link relative shrink-0 ${isActive ? "dh-topnav-link-active" : ""}`}>
+      <Icon size={18} strokeWidth={1.75} aria-hidden />
+      <span className="sr-only md:not-sr-only">{label}</span>
+      {unread > 0 && <span className="absolute -right-1 -top-1 md:static"><SupportUnreadBadge count={unread} /></span>}
+    </NavLink>
+  );
 }
